@@ -421,10 +421,10 @@ async fn apply_profile_refresh(
     let scope = pb::RefreshScope::try_from(refresh.scope).unwrap_or(pb::RefreshScope::All);
     let mut refreshed_user_ids = Vec::new();
 
-    if matches!(scope, pb::RefreshScope::Agent | pb::RefreshScope::All) {
-        if let Some(profile) = runtime.fetch_agent_profile(&state.agent_id).await {
-            state.agent_profile_copy = profile;
-        }
+    if matches!(scope, pb::RefreshScope::Agent | pb::RefreshScope::All)
+        && let Some(profile) = runtime.fetch_agent_profile(&state.agent_id).await
+    {
+        state.agent_profile_copy = profile;
     }
 
     if matches!(scope, pb::RefreshScope::User | pb::RefreshScope::All) {

@@ -17,4 +17,4 @@
 ## Post-Edit Verification
 - After finishing code edits, always run:
   - `cargo fmt --all`
-  - `cargo check --workspace`
+  - `cargo clippy --workspace --all-targets`

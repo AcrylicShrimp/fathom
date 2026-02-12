@@ -42,12 +42,12 @@ pub async fn run_tui(server: &str) -> Result<()> {
             frame.render_widget(paragraph, frame.area());
         })?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
-                    break Ok(());
-                }
-            }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Char('q')
+        {
+            break Ok(());
         }
     };
 
