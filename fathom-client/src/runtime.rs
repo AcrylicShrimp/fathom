@@ -1,13 +1,21 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use tonic::transport::Channel;
-use tracing::warn;
 
 use crate::pb;
 use crate::pb::runtime_service_client::RuntimeServiceClient;
 use crate::util::now_unix_ms;
-use crate::view::render_event;
+
+const DEFAULT_AGENT_ID: &str = "agent-default";
+const DEFAULT_USER_ID: &str = "user-default";
+
+#[derive(Debug, Clone)]
+pub struct ClientSession {
+    pub session_id: String,
+    pub agent_id: String,
+    pub user_id: String,
+}
 
 async fn runtime_client(server: &str) -> Result<RuntimeServiceClient<Channel>> {
     let endpoint = Channel::from_shared(server.to_string())?;
@@ -15,14 +23,37 @@ async fn runtime_client(server: &str) -> Result<RuntimeServiceClient<Channel>> {
     Ok(RuntimeServiceClient::new(channel))
 }
 
-pub async fn bootstrap_demo(server: &str) -> Result<Vec<String>> {
+pub async fn wait_for_server(server: &str, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let result = async {
+            let mut client = runtime_client(server).await?;
+            client.list_sessions(pb::ListSessionsRequest {}).await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) if Instant::now() < deadline => {
+                let _ = error;
+                tokio::time::sleep(Duration::from_millis(120)).await;
+            }
+            Err(error) => {
+                return Err(anyhow!("server at {server} was not ready in time: {error}"));
+            }
+        }
+    }
+}
+
+pub async fn setup_default_session(server: &str) -> Result<ClientSession> {
     let mut client = runtime_client(server).await?;
 
     let now = now_unix_ms();
     client
         .upsert_agent_profile(pb::UpsertAgentProfileRequest {
             profile: Some(pb::AgentProfile {
-                agent_id: "agent-default".to_string(),
+                agent_id: DEFAULT_AGENT_ID.to_string(),
                 display_name: "Fathom".to_string(),
                 agents_md: "# AGENTS.md\n".to_string(),
                 soul_md: "# SOUL.md\n".to_string(),
@@ -35,10 +66,11 @@ pub async fn bootstrap_demo(server: &str) -> Result<Vec<String>> {
             }),
         })
         .await?;
+
     client
         .upsert_user_profile(pb::UpsertUserProfileRequest {
             profile: Some(pb::UserProfile {
-                user_id: "user-default".to_string(),
+                user_id: DEFAULT_USER_ID.to_string(),
                 name: "User".to_string(),
                 nickname: "user".to_string(),
                 preferences_json: "{}".to_string(),
@@ -51,63 +83,76 @@ pub async fn bootstrap_demo(server: &str) -> Result<Vec<String>> {
 
     let create_response = client
         .create_session(pb::CreateSessionRequest {
-            agent_id: "agent-default".to_string(),
-            participant_user_ids: vec!["user-default".to_string()],
+            agent_id: DEFAULT_AGENT_ID.to_string(),
+            participant_user_ids: vec![DEFAULT_USER_ID.to_string()],
         })
         .await?
         .into_inner();
+
     let session_id = create_response
         .session
-        .ok_or_else(|| anyhow!("missing session"))?
+        .ok_or_else(|| anyhow!("missing session in create_session response"))?
         .session_id;
 
-    let mut events = client
+    Ok(ClientSession {
+        session_id,
+        agent_id: DEFAULT_AGENT_ID.to_string(),
+        user_id: DEFAULT_USER_ID.to_string(),
+    })
+}
+
+pub async fn attach_session_events(
+    server: &str,
+    session_id: &str,
+) -> Result<tonic::Streaming<pb::SessionEvent>> {
+    let mut client = runtime_client(server).await?;
+    let stream = client
         .attach_session_events(pb::AttachSessionEventsRequest {
-            session_id: session_id.clone(),
+            session_id: session_id.to_string(),
         })
         .await?
         .into_inner();
+    Ok(stream)
+}
 
-    client
+pub async fn enqueue_user_message(
+    server: &str,
+    session_id: &str,
+    user_id: &str,
+    text: &str,
+) -> Result<String> {
+    let mut client = runtime_client(server).await?;
+    let response = client
         .enqueue_trigger(pb::EnqueueTriggerRequest {
-            session_id: session_id.clone(),
+            session_id: session_id.to_string(),
             trigger: Some(pb::Trigger {
                 trigger_id: String::new(),
                 created_at_unix_ms: 0,
                 kind: Some(pb::trigger::Kind::UserMessage(pb::UserMessageTrigger {
-                    user_id: "user-default".to_string(),
-                    text: "/tool memory.append {\"note\":\"remember this\"}".to_string(),
+                    user_id: user_id.to_string(),
+                    text: text.to_string(),
                 })),
             }),
         })
-        .await?;
-    client
+        .await?
+        .into_inner();
+
+    Ok(response.trigger_id)
+}
+
+pub async fn enqueue_heartbeat(server: &str, session_id: &str) -> Result<String> {
+    let mut client = runtime_client(server).await?;
+    let response = client
         .enqueue_trigger(pb::EnqueueTriggerRequest {
-            session_id,
+            session_id: session_id.to_string(),
             trigger: Some(pb::Trigger {
                 trigger_id: String::new(),
                 created_at_unix_ms: 0,
                 kind: Some(pb::trigger::Kind::Heartbeat(pb::HeartbeatTrigger {})),
             }),
         })
-        .await?;
+        .await?
+        .into_inner();
 
-    let mut lines = Vec::new();
-    for _ in 0..8 {
-        match tokio::time::timeout(Duration::from_millis(800), events.message()).await {
-            Ok(Ok(Some(event))) => lines.push(render_event(&event)),
-            Ok(Ok(None)) => break,
-            Ok(Err(status)) => {
-                lines.push(format!("event stream error: {}", status.message()));
-                break;
-            }
-            Err(_) => break,
-        }
-    }
-
-    if lines.is_empty() {
-        warn!("no events captured in demo bootstrap");
-        lines.push("No events captured from server".to_string());
-    }
-    Ok(lines)
+    Ok(response.trigger_id)
 }

@@ -66,6 +66,22 @@ async fn run_server_and_client(
         }
     }
 
+    let readiness = tokio::select! {
+        result = fathom_client::wait_for_server(server, Duration::from_secs(15)) => result,
+        server_result = &mut server_task => {
+            return match server_result {
+                Ok(result) => result,
+                Err(join_error) => Err(anyhow::anyhow!("server task failed: {join_error}")),
+            };
+        }
+    };
+
+    if let Err(error) = readiness {
+        server_task.as_mut().abort();
+        let _ = server_task.await;
+        return Err(error);
+    }
+
     let client_result = fathom_client::run_tui(server).await;
     server_task.as_mut().abort();
     let _ = server_task.await;
