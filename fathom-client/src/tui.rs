@@ -102,11 +102,6 @@ async fn run_interactive(server: &str, session: ClientSession) -> Result<()> {
         }
     });
 
-    match enqueue_heartbeat(server, &session.session_id).await {
-        Ok(trigger_id) => app.push_log(format!("[local] heartbeat queued id={trigger_id}")),
-        Err(error) => app.push_log(format!("[local] failed to queue heartbeat: {error}")),
-    }
-
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -140,14 +135,14 @@ async fn run_loop(
                 .constraints([
                     Constraint::Min(5),
                     Constraint::Length(3),
-                    Constraint::Length(2),
+                    Constraint::Length(1),
                 ])
                 .split(area);
 
             let log_panel = Paragraph::new(app.visible_logs())
                 .block(
                     Block::default()
-                        .title("fathom-client events")
+                        .title(format!("fathom-client events [{}]", app.session.session_id))
                         .borders(Borders::ALL),
                 )
                 .wrap(Wrap { trim: false });
@@ -155,16 +150,14 @@ async fn run_loop(
 
             let input_panel = Paragraph::new(app.input.as_str()).block(
                 Block::default()
-                    .title("Input (Enter=send)")
+                    .title(format!("Input ({})", app.status))
                     .borders(Borders::ALL),
             );
             frame.render_widget(input_panel, rows[1]);
 
-            let footer = format!(
-                "session={} | {} | q quit | /heartbeat",
-                app.session.session_id, app.status
-            );
-            let footer_panel = Paragraph::new(footer).block(Block::default().borders(Borders::ALL));
+            let footer =
+                "Keys: Enter send | q quit (empty input) | Ctrl+C quit | Esc clear input | /hb";
+            let footer_panel = Paragraph::new(footer);
             frame.render_widget(footer_panel, rows[2]);
 
             let x = rows[1]
