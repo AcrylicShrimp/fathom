@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use anyhow::{Context, bail};
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tonic::Status;
 
@@ -24,6 +26,7 @@ struct RuntimeInner {
     sessions: RwLock<HashMap<String, SessionRuntime>>,
     user_profiles: RwLock<HashMap<String, pb::UserProfile>>,
     agent_profiles: RwLock<HashMap<String, pb::AgentProfile>>,
+    workspace_root: PathBuf,
     session_seq: AtomicU64,
     trigger_seq: AtomicU64,
     task_seq: AtomicU64,
@@ -34,11 +37,33 @@ struct RuntimeInner {
 
 impl Runtime {
     pub(crate) fn new(task_capacity: usize, task_runtime_ms: u64) -> Self {
+        let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::new_with_workspace_root(task_capacity, task_runtime_ms, workspace_root)
+            .unwrap_or_else(|_| {
+                Self::new_unchecked(task_capacity, task_runtime_ms, PathBuf::from("."))
+            })
+    }
+
+    pub(crate) fn new_with_workspace_root(
+        task_capacity: usize,
+        task_runtime_ms: u64,
+        workspace_root: PathBuf,
+    ) -> anyhow::Result<Self> {
+        let workspace_root = canonicalize_workspace_root(workspace_root)?;
+        Ok(Self::new_unchecked(
+            task_capacity,
+            task_runtime_ms,
+            workspace_root,
+        ))
+    }
+
+    fn new_unchecked(task_capacity: usize, task_runtime_ms: u64, workspace_root: PathBuf) -> Self {
         Self {
             inner: Arc::new(RuntimeInner {
                 sessions: RwLock::new(HashMap::new()),
                 user_profiles: RwLock::new(HashMap::new()),
                 agent_profiles: RwLock::new(HashMap::new()),
+                workspace_root,
                 session_seq: AtomicU64::new(0),
                 trigger_seq: AtomicU64::new(0),
                 task_seq: AtomicU64::new(0),
@@ -76,6 +101,10 @@ impl Runtime {
 
     pub(crate) fn task_runtime_ms(&self) -> u64 {
         self.inner.task_runtime_ms
+    }
+
+    pub(crate) fn workspace_root(&self) -> &Path {
+        self.inner.workspace_root.as_path()
     }
 
     pub(crate) fn agent_orchestrator(&self) -> AgentOrchestrator {
@@ -327,5 +356,54 @@ impl Runtime {
 
     pub(crate) async fn fetch_user_profile(&self, user_id: &str) -> Option<pb::UserProfile> {
         self.inner.user_profiles.read().await.get(user_id).cloned()
+    }
+}
+
+fn canonicalize_workspace_root(workspace_root: PathBuf) -> anyhow::Result<PathBuf> {
+    let workspace_root = if workspace_root.is_absolute() {
+        workspace_root
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current working directory")?
+            .join(workspace_root)
+    };
+
+    let canonical = std::fs::canonicalize(&workspace_root).with_context(|| {
+        format!(
+            "failed to resolve workspace root `{}`",
+            workspace_root.display()
+        )
+    })?;
+    let metadata = std::fs::metadata(&canonical).with_context(|| {
+        format!(
+            "failed to read workspace root metadata `{}`",
+            canonical.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!(
+            "workspace root must be a directory: `{}`",
+            canonical.display()
+        );
+    }
+    Ok(canonical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Runtime;
+
+    #[tokio::test]
+    async fn creates_session_with_profile_copies() {
+        let runtime = Runtime::new(2, 10);
+        let session = runtime
+            .create_session("agent-a".to_string(), vec!["user-a".to_string()])
+            .await
+            .expect("create session");
+
+        assert_eq!(session.agent_id, "agent-a");
+        assert_eq!(session.participant_user_ids, vec!["user-a".to_string()]);
+        assert!(session.agent_profile_copy.is_some());
+        assert_eq!(session.participant_user_profiles_copy.len(), 1);
     }
 }

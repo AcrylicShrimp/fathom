@@ -55,6 +55,21 @@ Tasks are background jobs created by agent actions.
   - Otherwise remain `Pending`.
 - Task completion re-enters the session as `Trigger::TaskDone`.
 - One model tool call maps to one background task.
+- Implemented filesystem tools execute as real background jobs:
+  - `fs_list(path)`
+  - `fs_read(path)`
+  - `fs_write(path, content, allow_override)`
+  - `fs_replace(path, old, new, mode)`
+
+### Filesystem Path Spaces
+Filesystem tools use URI-style paths:
+
+- `managed://...` for profile-backed managed files
+  - `managed://agent/<agent_id>/<field>`
+  - `managed://user/<user_id>/<field>`
+- `fs://...` for real workspace files (workspace-relative only)
+
+Managed files are mapped to profile fields (agent/user profile content and memory). Real filesystem paths are sandboxed to the configured workspace root.
 
 ## Identity and Memory
 

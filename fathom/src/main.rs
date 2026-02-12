@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -17,6 +18,9 @@ struct Cli {
 
     #[arg(long, global = true, default_value_t = 300)]
     startup_delay_ms: u64,
+
+    #[arg(long, global = true)]
+    workspace_root: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -40,10 +44,18 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Server) => fathom_server::serve(cli.addr).await,
+        Some(Command::Server) => {
+            fathom_server::serve_with_workspace_root(cli.addr, cli.workspace_root).await
+        }
         Some(Command::Client) => fathom_client::run_tui(&cli.server).await,
         Some(Command::Both) | None => {
-            run_server_and_client(cli.addr, &cli.server, cli.startup_delay_ms).await
+            run_server_and_client(
+                cli.addr,
+                &cli.server,
+                cli.startup_delay_ms,
+                cli.workspace_root,
+            )
+            .await
         }
     }
 }
@@ -52,8 +64,11 @@ async fn run_server_and_client(
     addr: SocketAddr,
     server: &str,
     startup_delay_ms: u64,
+    workspace_root: Option<PathBuf>,
 ) -> Result<()> {
-    let server_task = tokio::spawn(async move { fathom_server::serve(addr).await });
+    let server_task = tokio::spawn(async move {
+        fathom_server::serve_with_workspace_root(addr, workspace_root).await
+    });
     tokio::pin!(server_task);
 
     tokio::select! {

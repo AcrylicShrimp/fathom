@@ -55,6 +55,59 @@ impl ToolRegistry {
                         "additionalProperties": false
                     }),
                 },
+                ToolSpec {
+                    name: "fs_list",
+                    description: "List files in managed:// or fs:// path.",
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string" }
+                        },
+                        "required": ["path"],
+                        "additionalProperties": false
+                    }),
+                },
+                ToolSpec {
+                    name: "fs_read",
+                    description: "Read text content from a managed:// or fs:// file path.",
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string" }
+                        },
+                        "required": ["path"],
+                        "additionalProperties": false
+                    }),
+                },
+                ToolSpec {
+                    name: "fs_write",
+                    description: "Write full text content to a managed:// or fs:// file path.",
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string" },
+                            "content": { "type": "string" },
+                            "allow_override": { "type": "boolean" }
+                        },
+                        "required": ["path", "content", "allow_override"],
+                        "additionalProperties": false
+                    }),
+                },
+                ToolSpec {
+                    name: "fs_replace",
+                    description: "Replace text in a managed:// or fs:// file path.",
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string" },
+                            "old": { "type": "string" },
+                            "new": { "type": "string" },
+                            "mode": { "type": "string", "enum": ["first", "all"] }
+                        },
+                        "required": ["path", "old", "new", "mode"],
+                        "additionalProperties": false
+                    }),
+                },
             ],
         }
     }
@@ -108,6 +161,45 @@ impl ToolRegistry {
                     .ok_or_else(|| "schedule_heartbeat.delay_ms must be an integer".to_string())?;
                 if delay < 0 {
                     return Err("schedule_heartbeat.delay_ms must be >= 0".to_string());
+                }
+                Ok(())
+            }
+            "fs_list" | "fs_read" => {
+                let path = read_required_string(args_obj, "path")?;
+                if !path.starts_with("managed://") && !path.starts_with("fs://") {
+                    return Err("path must start with managed:// or fs://".to_string());
+                }
+                Ok(())
+            }
+            "fs_write" => {
+                let path = read_required_string(args_obj, "path")?;
+                if !path.starts_with("managed://") && !path.starts_with("fs://") {
+                    return Err("path must start with managed:// or fs://".to_string());
+                }
+                args_obj
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "fs_write.content must be a string".to_string())?;
+                let allow_override = args_obj
+                    .get("allow_override")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| "fs_write.allow_override must be a boolean".to_string())?;
+                let _ = allow_override;
+                Ok(())
+            }
+            "fs_replace" => {
+                let path = read_required_string(args_obj, "path")?;
+                if !path.starts_with("managed://") && !path.starts_with("fs://") {
+                    return Err("path must start with managed:// or fs://".to_string());
+                }
+                read_required_string(args_obj, "old")?;
+                args_obj
+                    .get("new")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "fs_replace.new must be a string".to_string())?;
+                let mode = read_required_string(args_obj, "mode")?;
+                if mode != "first" && mode != "all" {
+                    return Err("fs_replace.mode must be `first` or `all`".to_string());
                 }
                 Ok(())
             }

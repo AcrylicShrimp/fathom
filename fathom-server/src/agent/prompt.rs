@@ -11,6 +11,8 @@ pub(crate) fn build_tool_only_prompt(
     lines.push("Never emit plain assistant text as the final answer for this turn.".to_string());
     lines.push("If no action is needed, call schedule_heartbeat with a short delay.".to_string());
     lines.push("All tools are server-managed background jobs.".to_string());
+    lines.push("Use fs_list/fs_read/fs_write/fs_replace for file operations.".to_string());
+    lines.push("Task results arrive as JSON text in task_done.result_message.".to_string());
     lines.push(String::new());
 
     lines.push("## Session".to_string());

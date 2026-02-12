@@ -1,5 +1,7 @@
+use std::path::PathBuf;
 use std::pin::Pin;
 
+use anyhow::Result;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::{Stream, StreamExt};
@@ -20,6 +22,18 @@ impl Default for FathomRuntimeService {
         Self {
             runtime: Runtime::new(DEFAULT_TASK_CAPACITY, DEFAULT_TASK_RUNTIME_MS),
         }
+    }
+}
+
+impl FathomRuntimeService {
+    pub fn with_workspace_root(workspace_root: PathBuf) -> Result<Self> {
+        Ok(Self {
+            runtime: Runtime::new_with_workspace_root(
+                DEFAULT_TASK_CAPACITY,
+                DEFAULT_TASK_RUNTIME_MS,
+                workspace_root,
+            )?,
+        })
     }
 }
 

@@ -4,6 +4,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 
 use crate::agent::{StreamNote, ToolInvocation};
+use crate::fs;
 use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::state::{SessionCommand, SessionState};
@@ -316,7 +317,13 @@ fn queue_task(
 
     if should_run_now {
         state.running_task_ids.insert(task_id.clone());
-        spawn_task_completion(runtime, command_tx.clone(), task_id, tool_name);
+        spawn_task_execution(
+            runtime,
+            command_tx.clone(),
+            task_id,
+            tool_name,
+            task.args_json.clone(),
+        );
     } else {
         state.pending_task_ids.push_back(task_id);
     }
@@ -456,6 +463,7 @@ fn maybe_start_pending_tasks(
         task.status = pb::TaskStatus::Running as i32;
         task.updated_at_unix_ms = now_unix_ms();
         let tool_name = task.tool_name.clone();
+        let args_json = task.args_json.clone();
         let task_snapshot = task.clone();
 
         state.running_task_ids.insert(task_id.clone());
@@ -466,24 +474,32 @@ fn maybe_start_pending_tasks(
                 task: Some(task_snapshot),
             }),
         );
-        spawn_task_completion(runtime, command_tx.clone(), task_id, tool_name);
+        spawn_task_execution(runtime, command_tx.clone(), task_id, tool_name, args_json);
     }
 }
 
-fn spawn_task_completion(
+fn spawn_task_execution(
     runtime: &Runtime,
     command_tx: mpsc::Sender<SessionCommand>,
     task_id: String,
     tool_name: String,
+    args_json: String,
 ) {
-    let runtime_ms = runtime.task_runtime_ms();
+    let runtime = runtime.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(runtime_ms)).await;
+        let (succeeded, message) =
+            if let Some(outcome) = fs::execute_tool(&runtime, &tool_name, &args_json).await {
+                (outcome.succeeded, outcome.message)
+            } else {
+                tokio::time::sleep(Duration::from_millis(runtime.task_runtime_ms())).await;
+                (true, format!("tool `{tool_name}` completed"))
+            };
+
         let _ = command_tx
             .send(SessionCommand::TaskFinished {
                 task_id,
-                succeeded: true,
-                message: format!("tool `{tool_name}` completed"),
+                succeeded,
+                message,
             })
             .await;
     });
