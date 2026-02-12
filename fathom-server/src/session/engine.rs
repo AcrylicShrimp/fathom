@@ -9,6 +9,8 @@ use crate::runtime::Runtime;
 use crate::session::state::{SessionCommand, SessionState};
 use crate::util::{now_unix_ms, refresh_scope_label, task_status_label};
 
+const AUTO_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
 pub(crate) async fn run_session_actor(
     runtime: Runtime,
     mut state: SessionState,
@@ -16,56 +18,86 @@ pub(crate) async fn run_session_actor(
     mut command_rx: mpsc::Receiver<SessionCommand>,
     events_tx: broadcast::Sender<pb::SessionEvent>,
 ) {
-    while let Some(command) = command_rx.recv().await {
-        match command {
-            SessionCommand::EnqueueTrigger {
-                trigger,
-                respond_to,
-            } => {
-                let queue_depth = enqueue_trigger(&mut state, &events_tx, trigger);
-                let _ = respond_to.send(Ok(pb::EnqueueTriggerResponse {
-                    trigger_id: state
-                        .trigger_queue
-                        .back()
-                        .map(|trigger| trigger.trigger_id.clone())
-                        .unwrap_or_default(),
-                    queue_depth,
-                }));
-                process_turns(&runtime, &mut state, &command_tx, &events_tx).await;
+    let mut heartbeat_interval = tokio::time::interval(AUTO_HEARTBEAT_INTERVAL);
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let _ = heartbeat_interval.tick().await;
+
+    loop {
+        tokio::select! {
+            command = command_rx.recv() => {
+                let Some(command) = command else {
+                    break;
+                };
+
+                match command {
+                    SessionCommand::EnqueueTrigger {
+                        trigger,
+                        respond_to,
+                    } => {
+                        let queue_depth = enqueue_trigger(&mut state, &events_tx, trigger);
+                        let _ = respond_to.send(Ok(pb::EnqueueTriggerResponse {
+                            trigger_id: state
+                                .trigger_queue
+                                .back()
+                                .map(|trigger| trigger.trigger_id.clone())
+                                .unwrap_or_default(),
+                            queue_depth,
+                        }));
+                        process_turns(&runtime, &mut state, &command_tx, &events_tx).await;
+                    }
+                    SessionCommand::GetSummary { respond_to } => {
+                        let _ = respond_to.send(state.to_summary());
+                    }
+                    SessionCommand::ListTasks { respond_to } => {
+                        let mut tasks = state.tasks.values().cloned().collect::<Vec<_>>();
+                        tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+                        let _ = respond_to.send(tasks);
+                    }
+                    SessionCommand::CancelTask {
+                        task_id,
+                        respond_to,
+                    } => {
+                        let response =
+                            cancel_task(&runtime, &mut state, &command_tx, &events_tx, &task_id);
+                        let _ = respond_to.send(response);
+                    }
+                    SessionCommand::TaskFinished {
+                        task_id,
+                        succeeded,
+                        message,
+                    } => {
+                        handle_finished_task(
+                            &runtime,
+                            &mut state,
+                            &command_tx,
+                            &events_tx,
+                            &task_id,
+                            succeeded,
+                            message,
+                        );
+                        process_turns(&runtime, &mut state, &command_tx, &events_tx).await;
+                    }
+                }
             }
-            SessionCommand::GetSummary { respond_to } => {
-                let _ = respond_to.send(state.to_summary());
-            }
-            SessionCommand::ListTasks { respond_to } => {
-                let mut tasks = state.tasks.values().cloned().collect::<Vec<_>>();
-                tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
-                let _ = respond_to.send(tasks);
-            }
-            SessionCommand::CancelTask {
-                task_id,
-                respond_to,
-            } => {
-                let response = cancel_task(&runtime, &mut state, &command_tx, &events_tx, &task_id);
-                let _ = respond_to.send(response);
-            }
-            SessionCommand::TaskFinished {
-                task_id,
-                succeeded,
-                message,
-            } => {
-                handle_finished_task(
-                    &runtime,
-                    &mut state,
-                    &command_tx,
-                    &events_tx,
-                    &task_id,
-                    succeeded,
-                    message,
-                );
+            _ = heartbeat_interval.tick() => {
+                enqueue_automatic_heartbeat(&runtime, &mut state, &events_tx);
                 process_turns(&runtime, &mut state, &command_tx, &events_tx).await;
             }
         }
     }
+}
+
+fn enqueue_automatic_heartbeat(
+    runtime: &Runtime,
+    state: &mut SessionState,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+) {
+    let trigger = pb::Trigger {
+        trigger_id: runtime.next_trigger_id(),
+        created_at_unix_ms: now_unix_ms(),
+        kind: Some(pb::trigger::Kind::Heartbeat(pb::HeartbeatTrigger {})),
+    };
+    enqueue_trigger(state, events_tx, trigger);
 }
 
 fn enqueue_trigger(
