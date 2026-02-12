@@ -513,6 +513,7 @@ dependencies = [
  "prost",
  "ratatui",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -526,6 +527,7 @@ dependencies = [
  "anyhow",
  "prost",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -1920,6 +1922,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -1,38 +1,31 @@
 use std::net::SocketAddr;
 
 use anyhow::Result;
-use tonic::{Request, Response, Status, transport::Server};
+use tonic::transport::Server;
 use tracing::info;
 
 pub mod pb {
     tonic::include_proto!("fathom.v1");
 }
 
-use pb::agent_service_server::{AgentService, AgentServiceServer};
-use pb::{PingRequest, PingResponse};
+mod runtime;
+mod service;
+mod session;
+mod util;
 
-#[derive(Default)]
-pub struct FathomAgentService;
-
-#[tonic::async_trait]
-impl AgentService for FathomAgentService {
-    async fn ping(&self, request: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
-        let message = request.into_inner().message;
-        info!(%message, "received ping");
-
-        Ok(Response::new(PingResponse {
-            message: format!("pong: {message}"),
-        }))
-    }
-}
+use pb::runtime_service_server::RuntimeServiceServer;
+pub use service::FathomRuntimeService;
 
 pub async fn serve(addr: SocketAddr) -> Result<()> {
     info!(%addr, "starting grpc server");
 
     Server::builder()
-        .add_service(AgentServiceServer::new(FathomAgentService))
+        .add_service(RuntimeServiceServer::new(FathomRuntimeService::default()))
         .serve(addr)
         .await?;
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

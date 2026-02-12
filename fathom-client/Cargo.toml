@@ -10,6 +10,7 @@ crossterm.workspace = true
 prost.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 tracing.workspace = true
