@@ -46,5 +46,12 @@ pub(crate) fn render_event(event: &pb::SessionEvent) -> String {
             ),
             data.refreshed_user_ids.join(",")
         ),
+        pb::session_event::Kind::AgentStream(data) => {
+            format!("{prefix} agent stream [{}] {}", data.phase, data.detail)
+        }
+        pb::session_event::Kind::TurnFailure(data) => format!(
+            "{prefix} turn {} failed [{}]: {}",
+            data.turn_id, data.reason_code, data.message
+        ),
     }
 }

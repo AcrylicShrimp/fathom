@@ -129,6 +129,18 @@ message ProfileRefreshedEvent {
   uint64 agent_spec_version = 3;
 }
 
+message AgentStreamEvent {
+  string phase = 1;
+  string detail = 2;
+  int64 created_at_unix_ms = 3;
+}
+
+message TurnFailureEvent {
+  uint64 turn_id = 1;
+  string reason_code = 2;
+  string message = 3;
+}
+
 message SessionEvent {
   string session_id = 1;
   int64 created_at_unix_ms = 2;
@@ -139,6 +151,8 @@ message SessionEvent {
     AssistantOutputEvent assistant_output = 13;
     TaskStateChangedEvent task_state_changed = 14;
     ProfileRefreshedEvent profile_refreshed = 15;
+    AgentStreamEvent agent_stream = 16;
+    TurnFailureEvent turn_failure = 17;
   }
 }
 

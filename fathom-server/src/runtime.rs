@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tonic::Status;
 
+use crate::agent::{AgentOrchestrator, TurnSnapshot};
 use crate::pb;
 use crate::session::{SessionCommand, SessionRuntime, SessionState, run_session_actor};
 use crate::util::{dedup_ids, default_agent_profile, default_user_profile, now_unix_ms};
@@ -28,6 +29,7 @@ struct RuntimeInner {
     task_seq: AtomicU64,
     task_capacity: usize,
     task_runtime_ms: u64,
+    orchestrator: AgentOrchestrator,
 }
 
 impl Runtime {
@@ -42,6 +44,7 @@ impl Runtime {
                 task_seq: AtomicU64::new(0),
                 task_capacity,
                 task_runtime_ms,
+                orchestrator: AgentOrchestrator::new(),
             }),
         }
     }
@@ -73,6 +76,40 @@ impl Runtime {
 
     pub(crate) fn task_runtime_ms(&self) -> u64 {
         self.inner.task_runtime_ms
+    }
+
+    pub(crate) fn agent_orchestrator(&self) -> AgentOrchestrator {
+        self.inner.orchestrator.clone()
+    }
+
+    pub(crate) fn build_turn_snapshot(
+        &self,
+        state: &SessionState,
+        turn_id: u64,
+        triggers: &[pb::Trigger],
+    ) -> TurnSnapshot {
+        const HISTORY_WINDOW_SIZE: usize = 80;
+        let recent_history = if state.history.len() > HISTORY_WINDOW_SIZE {
+            state.history[state.history.len() - HISTORY_WINDOW_SIZE..].to_vec()
+        } else {
+            state.history.clone()
+        };
+
+        let participant_profiles = state
+            .participant_user_ids
+            .iter()
+            .filter_map(|id| state.participant_user_profiles_copy.get(id).cloned())
+            .collect::<Vec<_>>();
+
+        TurnSnapshot {
+            session_id: state.session_id.clone(),
+            turn_id,
+            agent_profile: state.agent_profile_copy.clone(),
+            participant_profiles,
+            triggers: triggers.to_vec(),
+            recent_history,
+            compaction: state.compaction.clone(),
+        }
     }
 
     pub(crate) async fn create_session(

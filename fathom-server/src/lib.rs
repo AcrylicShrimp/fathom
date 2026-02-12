@@ -8,6 +8,7 @@ pub mod pb {
     tonic::include_proto!("fathom.v1");
 }
 
+mod agent;
 mod runtime;
 mod service;
 mod session;

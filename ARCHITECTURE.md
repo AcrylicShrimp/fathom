@@ -7,6 +7,7 @@ Fathom is a session-oriented agent runtime with a gRPC server and TUI client.
 - Each session is processed by a single actor task for deterministic ordering.
 - Clients can attach to one or more sessions and consume event streams.
 - Agent input is trigger-based, not direct message-based.
+- Agent intelligence is backed by OpenAI Responses API.
 
 ## Core Concepts
 
@@ -39,9 +40,11 @@ Turn cut policy is snapshot-based:
 Per turn:
 
 1. Consume trigger snapshot.
-2. Produce actions (speak, queue task, refresh copy response).
-3. Emit session events.
-4. Flush trigger snapshot and assistant outputs into history atomically.
+2. Build prompt context from profile copies + trigger snapshot + recent history.
+3. Invoke OpenAI Responses API in streaming mode with tool-only policy.
+4. Dispatch tool calls immediately as background tasks.
+5. Emit session events.
+6. Flush trigger snapshot and assistant outputs into history atomically.
 
 ### Task
 Tasks are background jobs created by agent actions.
@@ -51,6 +54,7 @@ Tasks are background jobs created by agent actions.
   - Start immediately when worker capacity is available.
   - Otherwise remain `Pending`.
 - Task completion re-enters the session as `Trigger::TaskDone`.
+- One model tool call maps to one background task.
 
 ## Identity and Memory
 
@@ -75,6 +79,8 @@ Each session publishes a stream of `SessionEvent`:
 - `AssistantOutput`
 - `TaskStateChanged`
 - `ProfileRefreshed`
+- `AgentStream`
+- `TurnFailure`
 
 ## Components
 
@@ -84,6 +90,10 @@ Each session publishes a stream of `SessionEvent`:
   - global profile stores
   - session registry
   - per-session actor loop
+- OpenAI-backed `AgentOrchestrator` with:
+  - static tool registry (server-defined tools only)
+  - streaming Responses API integration
+  - retry policy with backoff/jitter and `Retry-After` support
 
 ### Client (`fathom-client`)
 - gRPC client wrapper for runtime API.
@@ -100,5 +110,8 @@ Each session publishes a stream of `SessionEvent`:
 
 ## Current Scope
 This implementation is intentionally in-memory and bootstrap-focused.
-Persistence, authorization/approval policy, and tool backends can be layered on top of this runtime contract.
+Persistence, authorization/approval policy, and real tool backends can be layered on top of this runtime contract.
 
+## Environment
+- Required: `OPENAI_API_KEY`
+- For local development, use `direnv` or equivalent shell environment loader.

@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
+use crate::agent::{SessionCompactionSnapshot, SummaryBlockRefSnapshot};
 use crate::pb;
 use crate::util::now_unix_ms;
 
@@ -48,6 +49,7 @@ pub(crate) struct SessionState {
     pub(crate) running_task_ids: HashSet<String>,
     pub(crate) turn_seq: u64,
     pub(crate) turn_in_progress: bool,
+    pub(crate) compaction: SessionCompactionSnapshot,
 }
 
 impl SessionState {
@@ -72,6 +74,16 @@ impl SessionState {
             running_task_ids: HashSet::new(),
             turn_seq: 0,
             turn_in_progress: false,
+            compaction: SessionCompactionSnapshot {
+                last_compacted_history_index: 0,
+                summary_blocks: vec![SummaryBlockRefSnapshot {
+                    id: "summary-bootstrap".to_string(),
+                    source_range_start: 0,
+                    source_range_end: 0,
+                    summary_text: "Compaction is modeled but not active yet.".to_string(),
+                    created_at_unix_ms: now_unix_ms(),
+                }],
+            },
         }
     }
 
