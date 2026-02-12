@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package fathom.v1;
+
+service AgentService {
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+message PingRequest {
+  string message = 1;
+}
+
+message PingResponse {
+  string message = 1;
+}
+

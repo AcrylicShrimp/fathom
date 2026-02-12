@@ -1,0 +1,15 @@
+[package]
+name = "fathom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+fathom-client = { path = "../fathom-client" }
+fathom-server = { path = "../fathom-server" }
