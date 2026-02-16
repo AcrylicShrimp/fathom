@@ -102,6 +102,10 @@ impl LineBuffer {
         self.lines.len()
     }
 
+    pub(super) fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
     pub(super) fn text(&self) -> String {
         if self.lines.is_empty() {
             "(no events yet)".to_string()
