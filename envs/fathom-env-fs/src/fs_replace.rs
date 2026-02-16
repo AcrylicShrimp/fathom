@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use crate::FILESYSTEM_ENVIRONMENT_ID;
 use crate::validate::{
-    args_object, require_non_empty_string, require_relative_path, require_string,
+    args_object, optional_u64, require_non_empty_string, require_relative_path, require_string,
 };
 
 pub struct FsReplaceAction;
@@ -13,14 +13,15 @@ impl Action for FsReplaceAction {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
             action_name: "replace",
-            description: "Replace text in a base-path-relative file path. Requires non-empty relative `path`, non-empty `old`, string `new`, and `mode` in {`first`,`all`}.",
+            description: "Replace UTF-8 text in a base-path-relative file path. Requires `path`, non-empty `old`, string `new`, `mode` in {`first`,`all`}; optional `expected_replacements` guard.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
                     "old": { "type": "string" },
                     "new": { "type": "string" },
-                    "mode": { "type": "string", "enum": ["first", "all"] }
+                    "mode": { "type": "string", "enum": ["first", "all"] },
+                    "expected_replacements": { "type": "integer", "minimum": 0 }
                 },
                 "required": ["path", "old", "new", "mode"],
                 "additionalProperties": false
@@ -38,6 +39,7 @@ impl Action for FsReplaceAction {
         if mode != "first" && mode != "all" {
             return Err("filesystem__replace.mode must be `first` or `all`".to_string());
         }
+        optional_u64(args, "expected_replacements")?;
         Ok(())
     }
 }

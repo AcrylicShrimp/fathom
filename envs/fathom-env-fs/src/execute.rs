@@ -9,6 +9,17 @@ use serde_json::{Value, json};
 
 use self::error::FsError;
 use self::path::{ParsedPath, parse_path, resolve_base_path};
+use self::real::{GlobOptions, ListOptions, ReadOptions, SearchOptions};
+
+const LIST_DEFAULT_MAX_ENTRIES: usize = 200;
+const LIST_MAX_ENTRIES_CAP: usize = 5_000;
+const READ_DEFAULT_OFFSET_LINE: usize = 1;
+const READ_DEFAULT_LIMIT_LINES: usize = 200;
+const READ_MAX_LIMIT_LINES: usize = 2_000;
+const GLOB_DEFAULT_MAX_RESULTS: usize = 500;
+const GLOB_MAX_RESULTS_CAP: usize = 5_000;
+const SEARCH_DEFAULT_MAX_RESULTS: usize = 200;
+const SEARCH_MAX_RESULTS_CAP: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -21,12 +32,17 @@ enum ReplaceMode {
 #[serde(deny_unknown_fields)]
 struct ListArgs {
     path: String,
+    recursive: Option<bool>,
+    max_entries: Option<u64>,
+    include_hidden: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadArgs {
     path: String,
+    offset_line: Option<u64>,
+    limit_lines: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +51,7 @@ struct WriteArgs {
     path: String,
     content: String,
     allow_override: bool,
+    create_parents: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +61,26 @@ struct ReplaceArgs {
     old: String,
     new: String,
     mode: ReplaceMode,
+    expected_replacements: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GlobArgs {
+    pattern: String,
+    path: Option<String>,
+    max_results: Option<u64>,
+    include_hidden: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchArgs {
+    pattern: String,
+    path: Option<String>,
+    include: Option<Vec<String>>,
+    max_results: Option<u64>,
+    case_sensitive: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +98,8 @@ pub fn execute_action(
         "read" => Some(execute_read(args_json, environment_state)),
         "write" => Some(execute_write(args_json, environment_state)),
         "replace" => Some(execute_replace(args_json, environment_state)),
+        "glob" => Some(execute_glob(args_json, environment_state)),
+        "search" => Some(execute_search(args_json, environment_state)),
         _ => None,
     }
 }
@@ -89,12 +128,23 @@ fn execute_list(args_json: &str, environment_state: &Value) -> ActionOutcome {
         Ok(args) => args,
         Err(error) => return result::failure("list", None, &error, None),
     };
-
     let parsed = match parse_path(&args.path) {
         Ok(parsed) => parsed,
         Err(error) => return result::failure("list", Some(&args.path), &error, None),
     };
-    execute_list_on_path(parsed, environment_state)
+    let options = match parse_list_options(args) {
+        Ok(options) => options,
+        Err(error) => {
+            return result::failure(
+                "list",
+                Some(parsed.normalized_path()),
+                &error,
+                Some("filesystem"),
+            );
+        }
+    };
+
+    execute_list_on_path(parsed, options, environment_state)
 }
 
 fn execute_read(args_json: &str, environment_state: &Value) -> ActionOutcome {
@@ -102,12 +152,23 @@ fn execute_read(args_json: &str, environment_state: &Value) -> ActionOutcome {
         Ok(args) => args,
         Err(error) => return result::failure("read", None, &error, None),
     };
-
     let parsed = match parse_path(&args.path) {
         Ok(parsed) => parsed,
         Err(error) => return result::failure("read", Some(&args.path), &error, None),
     };
-    execute_read_on_path(parsed, environment_state)
+    let options = match parse_read_options(args) {
+        Ok(options) => options,
+        Err(error) => {
+            return result::failure(
+                "read",
+                Some(parsed.normalized_path()),
+                &error,
+                Some("filesystem"),
+            );
+        }
+    };
+
+    execute_read_on_path(parsed, options, environment_state)
 }
 
 fn execute_write(args_json: &str, environment_state: &Value) -> ActionOutcome {
@@ -115,15 +176,16 @@ fn execute_write(args_json: &str, environment_state: &Value) -> ActionOutcome {
         Ok(args) => args,
         Err(error) => return result::failure("write", None, &error, None),
     };
-
     let parsed = match parse_path(&args.path) {
         Ok(parsed) => parsed,
         Err(error) => return result::failure("write", Some(&args.path), &error, None),
     };
+
     execute_write_on_path(
         parsed,
         &args.content,
         args.allow_override,
+        args.create_parents.unwrap_or(true),
         environment_state,
     )
 }
@@ -133,29 +195,111 @@ fn execute_replace(args_json: &str, environment_state: &Value) -> ActionOutcome 
         Ok(args) => args,
         Err(error) => return result::failure("replace", None, &error, None),
     };
-
     let parsed = match parse_path(&args.path) {
         Ok(parsed) => parsed,
         Err(error) => return result::failure("replace", Some(&args.path), &error, None),
     };
-    execute_replace_on_path(parsed, &args.old, &args.new, args.mode, environment_state)
+    let expected_replacements = match parse_optional_usize(
+        args.expected_replacements,
+        "filesystem__replace",
+        "expected_replacements",
+        0,
+        usize::MAX,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return result::failure(
+                "replace",
+                Some(parsed.normalized_path()),
+                &error,
+                Some("filesystem"),
+            );
+        }
+    };
+
+    execute_replace_on_path(
+        parsed,
+        &args.old,
+        &args.new,
+        args.mode,
+        expected_replacements,
+        environment_state,
+    )
 }
 
-fn execute_list_on_path(path: ParsedPath, environment_state: &Value) -> ActionOutcome {
+fn execute_glob(args_json: &str, environment_state: &Value) -> ActionOutcome {
+    let args = match parse_args::<GlobArgs>(args_json, "filesystem__glob") {
+        Ok(args) => args,
+        Err(error) => return result::failure("glob", None, &error, None),
+    };
+    let path = args.path.unwrap_or_else(|| ".".to_string());
+    let parsed = match parse_path(&path) {
+        Ok(parsed) => parsed,
+        Err(error) => return result::failure("glob", Some(&path), &error, None),
+    };
+    let options = match parse_glob_options(args.max_results, args.include_hidden) {
+        Ok(options) => options,
+        Err(error) => {
+            return result::failure(
+                "glob",
+                Some(parsed.normalized_path()),
+                &error,
+                Some("filesystem"),
+            );
+        }
+    };
+
+    execute_glob_on_path(parsed, &args.pattern, options, environment_state)
+}
+
+fn execute_search(args_json: &str, environment_state: &Value) -> ActionOutcome {
+    let args = match parse_args::<SearchArgs>(args_json, "filesystem__search") {
+        Ok(args) => args,
+        Err(error) => return result::failure("search", None, &error, None),
+    };
+    let path = args.path.unwrap_or_else(|| ".".to_string());
+    let parsed = match parse_path(&path) {
+        Ok(parsed) => parsed,
+        Err(error) => return result::failure("search", Some(&path), &error, None),
+    };
+    let options = match parse_search_options(args.include, args.max_results, args.case_sensitive) {
+        Ok(options) => options,
+        Err(error) => {
+            return result::failure(
+                "search",
+                Some(parsed.normalized_path()),
+                &error,
+                Some("filesystem"),
+            );
+        }
+    };
+
+    execute_search_on_path(parsed, &args.pattern, options, environment_state)
+}
+
+fn execute_list_on_path(
+    path: ParsedPath,
+    options: ListOptions,
+    environment_state: &Value,
+) -> ActionOutcome {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 
-    match real::list(&path, environment_state) {
+    match real::list(&path, options, environment_state) {
         Ok(data) => result::success("list", &normalized_path, target, data),
         Err(error) => result::failure("list", Some(&normalized_path), &error, Some(target)),
     }
 }
 
-fn execute_read_on_path(path: ParsedPath, environment_state: &Value) -> ActionOutcome {
+fn execute_read_on_path(
+    path: ParsedPath,
+    options: ReadOptions,
+    environment_state: &Value,
+) -> ActionOutcome {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 
-    match real::read(&path, environment_state) {
+    match real::read(&path, options, environment_state) {
         Ok(data) => result::success("read", &normalized_path, target, data),
         Err(error) => result::failure("read", Some(&normalized_path), &error, Some(target)),
     }
@@ -165,12 +309,19 @@ fn execute_write_on_path(
     path: ParsedPath,
     content: &str,
     allow_override: bool,
+    create_parents: bool,
     environment_state: &Value,
 ) -> ActionOutcome {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 
-    match real::write(&path, content, allow_override, environment_state) {
+    match real::write(
+        &path,
+        content,
+        allow_override,
+        create_parents,
+        environment_state,
+    ) {
         Ok(data) => result::success("write", &normalized_path, target, data),
         Err(error) => result::failure("write", Some(&normalized_path), &error, Some(target)),
     }
@@ -181,15 +332,163 @@ fn execute_replace_on_path(
     old: &str,
     new: &str,
     mode: ReplaceMode,
+    expected_replacements: Option<usize>,
     environment_state: &Value,
 ) -> ActionOutcome {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 
-    match real::replace(&path, old, new, mode, environment_state) {
+    match real::replace(
+        &path,
+        old,
+        new,
+        mode,
+        expected_replacements,
+        environment_state,
+    ) {
         Ok(data) => result::success("replace", &normalized_path, target, data),
         Err(error) => result::failure("replace", Some(&normalized_path), &error, Some(target)),
     }
+}
+
+fn execute_glob_on_path(
+    path: ParsedPath,
+    pattern: &str,
+    options: GlobOptions,
+    environment_state: &Value,
+) -> ActionOutcome {
+    let target = path.target_label();
+    let normalized_path = path.normalized_path().to_string();
+
+    match real::glob(&path, pattern, options, environment_state) {
+        Ok(data) => result::success("glob", &normalized_path, target, data),
+        Err(error) => result::failure("glob", Some(&normalized_path), &error, Some(target)),
+    }
+}
+
+fn execute_search_on_path(
+    path: ParsedPath,
+    pattern: &str,
+    options: SearchOptions,
+    environment_state: &Value,
+) -> ActionOutcome {
+    let target = path.target_label();
+    let normalized_path = path.normalized_path().to_string();
+
+    match real::search(&path, pattern, options, environment_state) {
+        Ok(data) => result::success("search", &normalized_path, target, data),
+        Err(error) => result::failure("search", Some(&normalized_path), &error, Some(target)),
+    }
+}
+
+fn parse_list_options(args: ListArgs) -> Result<ListOptions, FsError> {
+    let max_entries = parse_optional_usize(
+        args.max_entries,
+        "filesystem__list",
+        "max_entries",
+        1,
+        LIST_MAX_ENTRIES_CAP,
+    )?
+    .unwrap_or(LIST_DEFAULT_MAX_ENTRIES);
+
+    Ok(ListOptions {
+        recursive: args.recursive.unwrap_or(false),
+        max_entries,
+        include_hidden: args.include_hidden.unwrap_or(false),
+    })
+}
+
+fn parse_read_options(args: ReadArgs) -> Result<ReadOptions, FsError> {
+    let offset_line = parse_optional_usize(
+        args.offset_line,
+        "filesystem__read",
+        "offset_line",
+        1,
+        usize::MAX,
+    )?
+    .unwrap_or(READ_DEFAULT_OFFSET_LINE);
+
+    let limit_lines = parse_optional_usize(
+        args.limit_lines,
+        "filesystem__read",
+        "limit_lines",
+        1,
+        READ_MAX_LIMIT_LINES,
+    )?
+    .unwrap_or(READ_DEFAULT_LIMIT_LINES);
+
+    Ok(ReadOptions {
+        offset_line,
+        limit_lines,
+    })
+}
+
+fn parse_glob_options(
+    max_results: Option<u64>,
+    include_hidden: Option<bool>,
+) -> Result<GlobOptions, FsError> {
+    let max_results = parse_optional_usize(
+        max_results,
+        "filesystem__glob",
+        "max_results",
+        1,
+        GLOB_MAX_RESULTS_CAP,
+    )?
+    .unwrap_or(GLOB_DEFAULT_MAX_RESULTS);
+
+    Ok(GlobOptions {
+        max_results,
+        include_hidden: include_hidden.unwrap_or(false),
+    })
+}
+
+fn parse_search_options(
+    include: Option<Vec<String>>,
+    max_results: Option<u64>,
+    case_sensitive: Option<bool>,
+) -> Result<SearchOptions, FsError> {
+    let max_results = parse_optional_usize(
+        max_results,
+        "filesystem__search",
+        "max_results",
+        1,
+        SEARCH_MAX_RESULTS_CAP,
+    )?
+    .unwrap_or(SEARCH_DEFAULT_MAX_RESULTS);
+
+    Ok(SearchOptions {
+        include: include.unwrap_or_default(),
+        max_results,
+        case_sensitive: case_sensitive.unwrap_or(false),
+    })
+}
+
+fn parse_optional_usize(
+    value: Option<u64>,
+    action_id: &str,
+    field: &str,
+    min: usize,
+    max: usize,
+) -> Result<Option<usize>, FsError> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let converted = usize::try_from(raw).map_err(|_| {
+        FsError::invalid_args(format!(
+            "`{action_id}.{field}` value is too large for this platform"
+        ))
+    })?;
+    if converted < min {
+        return Err(FsError::invalid_args(format!(
+            "`{action_id}.{field}` must be >= {min}"
+        )));
+    }
+    if converted > max {
+        return Err(FsError::invalid_args(format!(
+            "`{action_id}.{field}` must be <= {max}"
+        )));
+    }
+    Ok(Some(converted))
 }
 
 fn parse_args<T>(args_json: &str, action_id: &str) -> Result<T, FsError>
@@ -202,140 +501,4 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::{Value, json};
-
-    use super::execute_action;
-
-    #[test]
-    fn fs_env_replace_supports_mode_switch() {
-        let root = unique_temp_dir("fathom-fs-replace");
-        std::fs::create_dir_all(&root).expect("create temp root");
-
-        let write_outcome = execute_action(
-            "write",
-            r#"{"path":"notes.txt","content":"a a a","allow_override":true}"#,
-            &json!({ "base_path": root.display().to_string() }),
-        )
-        .expect("fs_write should dispatch");
-        assert!(write_outcome.succeeded);
-
-        let replace_first = execute_action(
-            "replace",
-            r#"{"path":"notes.txt","old":"a","new":"z","mode":"first"}"#,
-            &json!({ "base_path": root.display().to_string() }),
-        )
-        .expect("fs_replace first should dispatch");
-        assert!(replace_first.succeeded);
-
-        let read_after_first = execute_action(
-            "read",
-            r#"{"path":"notes.txt"}"#,
-            &json!({ "base_path": root.display().to_string() }),
-        )
-        .expect("fs_read should dispatch");
-        let payload_first: Value =
-            serde_json::from_str(&read_after_first.message).expect("valid json payload");
-        assert_eq!(
-            payload_first["data"]["content"]
-                .as_str()
-                .unwrap_or_default(),
-            "z a a"
-        );
-
-        let replace_all = execute_action(
-            "replace",
-            r#"{"path":"notes.txt","old":"a","new":"x","mode":"all"}"#,
-            &json!({ "base_path": root.display().to_string() }),
-        )
-        .expect("fs_replace all should dispatch");
-        assert!(replace_all.succeeded);
-
-        let read_after_all = execute_action(
-            "read",
-            r#"{"path":"notes.txt"}"#,
-            &json!({ "base_path": root.display().to_string() }),
-        )
-        .expect("fs_read should dispatch");
-        let payload_all: Value =
-            serde_json::from_str(&read_after_all.message).expect("valid json payload");
-        assert_eq!(
-            payload_all["data"]["content"].as_str().unwrap_or_default(),
-            "z x x"
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn fs_env_reject_workspace_escape() {
-        let root = unique_temp_dir("fathom-fs-escape");
-        std::fs::create_dir_all(&root).expect("create temp root");
-
-        let outcome = execute_action(
-            "read",
-            r#"{"path":"../../etc/passwd"}"#,
-            &json!({ "base_path": root.display().to_string() }),
-        )
-        .expect("fs_read should dispatch");
-        assert!(!outcome.succeeded);
-
-        let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
-        let code = payload
-            .get("error_code")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        assert!(!code.is_empty());
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn fs_env_reject_absolute_path() {
-        let root = unique_temp_dir("fathom-fs-absolute");
-        std::fs::create_dir_all(&root).expect("create temp root");
-
-        let outcome = execute_action(
-            "read",
-            r#"{"path":"/etc/passwd"}"#,
-            &json!({ "base_path": root.display().to_string() }),
-        )
-        .expect("fs_read should dispatch");
-        assert!(!outcome.succeeded);
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn fs_env_get_base_path_returns_canonical_scope() {
-        let root = unique_temp_dir("fathom-fs-base-path");
-        std::fs::create_dir_all(&root).expect("create temp root");
-
-        let outcome = execute_action(
-            "get_base_path",
-            "{}",
-            &json!({ "base_path": root.display().to_string() }),
-        )
-        .expect("filesystem__get_base_path should dispatch");
-        assert!(outcome.succeeded);
-
-        let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
-        let canonical_root =
-            std::fs::canonicalize(&root).expect("base path should canonicalize for comparison");
-        assert_eq!(payload["data"]["source"], json!("filesystem_env_state"));
-        assert_eq!(
-            payload["data"]["base_path"].as_str().unwrap_or_default(),
-            canonical_root.display().to_string()
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{prefix}-{nanos}"))
-    }
-}
+mod tests;

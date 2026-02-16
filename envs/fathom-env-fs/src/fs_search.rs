@@ -1,0 +1,59 @@
+use fathom_env::{Action, ActionSpec};
+use serde_json::{Value, json};
+
+use crate::FILESYSTEM_ENVIRONMENT_ID;
+use crate::validate::{
+    args_object, optional_boolean, optional_non_empty_string, optional_non_empty_string_list,
+    optional_u64, require_non_empty_string, require_relative_path,
+};
+
+const SEARCH_MAX_RESULTS_CAP: u64 = 10_000;
+
+pub struct FsSearchAction;
+
+impl Action for FsSearchAction {
+    fn spec(&self) -> ActionSpec {
+        ActionSpec {
+            environment_id: FILESYSTEM_ENVIRONMENT_ID,
+            action_name: "search",
+            description: "Regex search (Rust regex syntax) across UTF-8 files under a relative path. Requires non-empty `pattern`; optional `path`, `include`, `max_results`, `case_sensitive`.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "path": { "type": "string" },
+                    "include": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "max_results": { "type": "integer", "minimum": 1 },
+                    "case_sensitive": { "type": "boolean" }
+                },
+                "required": ["pattern"],
+                "additionalProperties": false
+            }),
+            discovery: false,
+        }
+    }
+
+    fn validate(&self, args: &Value) -> Result<(), String> {
+        let args = args_object(args)?;
+        require_non_empty_string(args, "pattern")?;
+        if optional_non_empty_string(args, "path")?.is_some() {
+            require_relative_path(args, "path")?;
+        }
+        optional_non_empty_string_list(args, "include")?;
+        optional_boolean(args, "case_sensitive")?;
+        if let Some(max_results) = optional_u64(args, "max_results")? {
+            if max_results == 0 {
+                return Err("filesystem__search.max_results must be >= 1".to_string());
+            }
+            if max_results > SEARCH_MAX_RESULTS_CAP {
+                return Err(format!(
+                    "filesystem__search.max_results must be <= {SEARCH_MAX_RESULTS_CAP}"
+                ));
+            }
+        }
+        Ok(())
+    }
+}

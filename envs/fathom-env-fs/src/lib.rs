@@ -1,8 +1,10 @@
 mod execute;
 mod fs_get_base_path;
+mod fs_glob;
 mod fs_list;
 mod fs_read;
 mod fs_replace;
+mod fs_search;
 mod fs_write;
 mod validate;
 
@@ -12,9 +14,11 @@ use fathom_env::{Action, Environment, EnvironmentSpec};
 use serde_json::{Value, json};
 
 use fs_get_base_path::FsGetBasePathAction;
+use fs_glob::FsGlobAction;
 use fs_list::FsListAction;
 use fs_read::FsReadAction;
 use fs_replace::FsReplaceAction;
+use fs_search::FsSearchAction;
 use fs_write::FsWriteAction;
 
 pub const FILESYSTEM_ENVIRONMENT_ID: &str = "filesystem";
@@ -27,7 +31,7 @@ impl Environment for FilesystemEnvironment {
         EnvironmentSpec {
             id: FILESYSTEM_ENVIRONMENT_ID,
             name: "Filesystem",
-            description: "Stateful filesystem environment rooted at a base path. All action paths must be non-empty relative paths under base_path; enforcement is strict at action validation.",
+            description: "Stateful filesystem environment rooted at a base path. All action paths must be non-empty relative paths under base_path; read/replace/search operate on UTF-8 text files.",
         }
     }
 
@@ -44,6 +48,8 @@ impl Environment for FilesystemEnvironment {
             Arc::new(FsReadAction),
             Arc::new(FsWriteAction),
             Arc::new(FsReplaceAction),
+            Arc::new(FsGlobAction),
+            Arc::new(FsSearchAction),
         ]
     }
 }

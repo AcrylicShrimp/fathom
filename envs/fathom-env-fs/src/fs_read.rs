@@ -2,7 +2,9 @@ use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::FILESYSTEM_ENVIRONMENT_ID;
-use crate::validate::{args_object, require_relative_path};
+use crate::validate::{args_object, optional_u64, require_relative_path};
+
+const READ_MAX_LIMIT_LINES: u64 = 2_000;
 
 pub struct FsReadAction;
 
@@ -11,11 +13,13 @@ impl Action for FsReadAction {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
             action_name: "read",
-            description: "Read text content from a base-path-relative file path. `path` must be a non-empty relative file path (prefer paths discovered via filesystem__list).",
+            description: "Read UTF-8 text content from a base-path-relative file path with optional line windowing (`offset_line`, `limit_lines`).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string" }
+                    "path": { "type": "string" },
+                    "offset_line": { "type": "integer", "minimum": 1 },
+                    "limit_lines": { "type": "integer", "minimum": 1 }
                 },
                 "required": ["path"],
                 "additionalProperties": false
@@ -27,6 +31,21 @@ impl Action for FsReadAction {
     fn validate(&self, args: &Value) -> Result<(), String> {
         let args = args_object(args)?;
         require_relative_path(args, "path")?;
+        if let Some(offset_line) = optional_u64(args, "offset_line")?
+            && offset_line == 0
+        {
+            return Err("filesystem__read.offset_line must be >= 1".to_string());
+        }
+        if let Some(limit_lines) = optional_u64(args, "limit_lines")? {
+            if limit_lines == 0 {
+                return Err("filesystem__read.limit_lines must be >= 1".to_string());
+            }
+            if limit_lines > READ_MAX_LIMIT_LINES {
+                return Err(format!(
+                    "filesystem__read.limit_lines must be <= {READ_MAX_LIMIT_LINES}"
+                ));
+            }
+        }
         Ok(())
     }
 }

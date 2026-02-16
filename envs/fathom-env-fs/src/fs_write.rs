@@ -2,7 +2,9 @@ use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::FILESYSTEM_ENVIRONMENT_ID;
-use crate::validate::{args_object, require_boolean, require_relative_path, require_string};
+use crate::validate::{
+    args_object, optional_boolean, require_boolean, require_relative_path, require_string,
+};
 
 pub struct FsWriteAction;
 
@@ -11,13 +13,14 @@ impl Action for FsWriteAction {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
             action_name: "write",
-            description: "Write text content to a base-path-relative file path. Requires non-empty relative `path`, string `content`, and explicit boolean `allow_override`.",
+            description: "Write text content to a base-path-relative file path. Requires `path`, `content`, `allow_override`; optional `create_parents` (default true).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
                     "content": { "type": "string" },
-                    "allow_override": { "type": "boolean" }
+                    "allow_override": { "type": "boolean" },
+                    "create_parents": { "type": "boolean" }
                 },
                 "required": ["path", "content", "allow_override"],
                 "additionalProperties": false
@@ -31,6 +34,7 @@ impl Action for FsWriteAction {
         require_relative_path(args, "path")?;
         require_string(args, "content")?;
         require_boolean(args, "allow_override")?;
+        optional_boolean(args, "create_parents")?;
         Ok(())
     }
 }

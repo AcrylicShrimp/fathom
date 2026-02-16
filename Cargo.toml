@@ -21,8 +21,10 @@ crossterm = "0.29"
 fathom-env = { path = "fathom-env" }
 fathom-env-fs = { path = "envs/fathom-env-fs" }
 futures-util = "0.3"
+glob = "0.3"
 prost = "0.14"
 ratatui = "0.30"
+regex = "1"
 reqwest = { version = "0.13", features = ["json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

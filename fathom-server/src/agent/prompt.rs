@@ -8,7 +8,7 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
         "You may emit assistant text and/or action calls.".to_string(),
         "When calling actions, use canonical action ids in the format env__action.".to_string(),
         "All actions are server-managed background jobs and emit task_done triggers after commit.".to_string(),
-        "Use filesystem__get_base_path/filesystem__list/filesystem__read/filesystem__write/filesystem__replace for base-path-relative file operations.".to_string(),
+        "Use filesystem__get_base_path/filesystem__list/filesystem__read/filesystem__write/filesystem__replace/filesystem__glob/filesystem__search for base-path-relative file operations.".to_string(),
         "If you need fresher clock data than this snapshot, call system__get_time.".to_string(),
         "If you need environment docs, call system__describe_environment.".to_string(),
         "Task results arrive as JSON text in task_done.result_message.".to_string(),
