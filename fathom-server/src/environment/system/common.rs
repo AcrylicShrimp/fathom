@@ -2,6 +2,8 @@ use fathom_env::ActionSpec;
 use serde_json::Value;
 
 pub(super) const SYSTEM_ENVIRONMENT_ID: &str = "system";
+const SYSTEM_ACTION_MAX_TIMEOUT_MS: u64 = 5_000;
+const SYSTEM_ACTION_DESIRED_TIMEOUT_MS: u64 = 2_000;
 
 pub(super) type ArgsObject = serde_json::Map<String, Value>;
 
@@ -16,6 +18,8 @@ pub(super) fn system_spec(
         description,
         input_schema,
         discovery: true,
+        max_timeout_ms: SYSTEM_ACTION_MAX_TIMEOUT_MS,
+        desired_timeout_ms: Some(SYSTEM_ACTION_DESIRED_TIMEOUT_MS),
     }
 }
 

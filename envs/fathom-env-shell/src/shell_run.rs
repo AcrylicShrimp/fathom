@@ -2,10 +2,13 @@ use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::SHELL_ENVIRONMENT_ID;
-use crate::constants::{MAX_COMMAND_BYTES, MAX_ENV_VARS, MAX_TIMEOUT_MS, is_valid_env_key};
+use crate::constants::{
+    ACTION_DESIRED_TIMEOUT_MS, ACTION_MAX_TIMEOUT_MS, MAX_COMMAND_BYTES, MAX_ENV_VARS,
+    is_valid_env_key,
+};
 use crate::validate::{
-    args_object, optional_non_empty_string, optional_object, optional_u64,
-    require_non_empty_string, validate_relative_path,
+    args_object, optional_non_empty_string, optional_object, require_non_empty_string,
+    validate_relative_path,
 };
 
 pub struct ShellRunAction;
@@ -15,7 +18,7 @@ impl Action for ShellRunAction {
         ActionSpec {
             environment_id: SHELL_ENVIRONMENT_ID,
             action_name: "run",
-            description: "Execute one non-interactive shell command at a base-path-relative working directory. Non-zero exit code marks the task as failed.",
+            description: "Execute one non-interactive shell command at a base-path-relative working directory. Non-zero exit code marks the task as failed; timeout is runtime-managed.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -24,13 +27,14 @@ impl Action for ShellRunAction {
                     "env": {
                         "type": "object",
                         "additionalProperties": { "type": "string" }
-                    },
-                    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_MS }
+                    }
                 },
                 "required": ["command"],
                 "additionalProperties": false
             }),
             discovery: false,
+            max_timeout_ms: ACTION_MAX_TIMEOUT_MS,
+            desired_timeout_ms: Some(ACTION_DESIRED_TIMEOUT_MS),
         }
     }
 
@@ -45,15 +49,6 @@ impl Action for ShellRunAction {
 
         if let Some(path) = optional_non_empty_string(args, "path")? {
             validate_relative_path("path", path)?;
-        }
-
-        if let Some(timeout_ms) = optional_u64(args, "timeout_ms")? {
-            if timeout_ms == 0 {
-                return Err("shell__run.timeout_ms must be >= 1".to_string());
-            }
-            if timeout_ms > MAX_TIMEOUT_MS {
-                return Err(format!("shell__run.timeout_ms must be <= {MAX_TIMEOUT_MS}"));
-            }
         }
 
         if let Some(env) = optional_object(args, "env")? {

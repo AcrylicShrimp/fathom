@@ -16,8 +16,8 @@ use self::error::ShellError;
 use self::path::{ParsedPath, parse_path, resolve_target_dir};
 use self::real::{RealRunOptions, run_command};
 use crate::constants::{
-    DEFAULT_MAX_STDERR_BYTES, DEFAULT_MAX_STDOUT_BYTES, DEFAULT_TIMEOUT_MS, MAX_COMMAND_BYTES,
-    MAX_ENV_VARS, MAX_TIMEOUT_MS, is_valid_env_key,
+    DEFAULT_MAX_STDERR_BYTES, DEFAULT_MAX_STDOUT_BYTES, MAX_COMMAND_BYTES, MAX_ENV_VARS,
+    is_valid_env_key,
 };
 
 #[derive(Debug, Deserialize)]
@@ -26,21 +26,25 @@ struct RunArgs {
     command: String,
     path: Option<String>,
     env: Option<BTreeMap<String, String>>,
-    timeout_ms: Option<u64>,
 }
 
 pub async fn execute_action(
     action_name: &str,
     args_json: &str,
     environment_state: &Value,
+    execution_timeout_ms: u64,
 ) -> Option<ActionOutcome> {
     match action_name {
-        "run" => Some(execute_run(args_json, environment_state).await),
+        "run" => Some(execute_run(args_json, environment_state, execution_timeout_ms).await),
         _ => None,
     }
 }
 
-async fn execute_run(args_json: &str, environment_state: &Value) -> ActionOutcome {
+async fn execute_run(
+    args_json: &str,
+    environment_state: &Value,
+    execution_timeout_ms: u64,
+) -> ActionOutcome {
     let args = match parse_args::<RunArgs>(args_json, "shell__run") {
         Ok(args) => args,
         Err(error) => return result::failure("run", None, &error, None),
@@ -64,12 +68,11 @@ async fn execute_run(args_json: &str, environment_state: &Value) -> ActionOutcom
         Err(error) => return result::failure("run", Some(path.as_str()), &error, None),
     };
 
-    let timeout_ms = match parse_timeout_ms(args.timeout_ms) {
-        Ok(value) => value,
-        Err(error) => {
-            return result::failure("run", Some(parsed.normalized_path()), &error, None);
-        }
-    };
+    let timeout_ms = execution_timeout_ms;
+    if timeout_ms == 0 {
+        let error = ShellError::invalid_args("shell execution timeout must be greater than zero");
+        return result::failure("run", Some(parsed.normalized_path()), &error, None);
+    }
     let env_overrides = match parse_env_overrides(args.env) {
         Ok(value) => value,
         Err(error) => {
@@ -142,21 +145,6 @@ async fn execute_run_on_path(
     }
 
     result::success("run", parsed.normalized_path(), data)
-}
-
-fn parse_timeout_ms(timeout_ms: Option<u64>) -> Result<u64, ShellError> {
-    let timeout_ms = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-    if timeout_ms == 0 {
-        return Err(ShellError::invalid_args(
-            "shell__run.timeout_ms must be >= 1",
-        ));
-    }
-    if timeout_ms > MAX_TIMEOUT_MS {
-        return Err(ShellError::invalid_args(format!(
-            "shell__run.timeout_ms must be <= {MAX_TIMEOUT_MS}"
-        )));
-    }
-    Ok(timeout_ms)
 }
 
 fn parse_env_overrides(

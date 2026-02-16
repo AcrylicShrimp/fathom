@@ -1,9 +1,12 @@
 use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
-use crate::FILESYSTEM_ENVIRONMENT_ID;
 use crate::validate::{
     args_object, optional_boolean, require_boolean, require_relative_path, require_string,
+};
+use crate::{
+    FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS, FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
+    FILESYSTEM_ENVIRONMENT_ID,
 };
 
 pub struct FsWriteAction;
@@ -26,6 +29,8 @@ impl Action for FsWriteAction {
                 "additionalProperties": false
             }),
             discovery: false,
+            max_timeout_ms: FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
+            desired_timeout_ms: Some(FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS),
         }
     }
 

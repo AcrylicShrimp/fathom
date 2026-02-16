@@ -37,6 +37,8 @@ pub(crate) fn trigger_line(state: &SessionState, trigger: &pb::Trigger) -> Strin
             let status = pb::TaskStatus::try_from(done.status)
                 .map(task_status_label)
                 .unwrap_or("unknown");
+            let result_ref = format!("task://{}/result", done.task_id);
+            let result_preview = build_payload_preview(&done.result_message, result_ref);
             HistoryEventLine {
                 ts_unix_ms: trigger.created_at_unix_ms,
                 event: "trigger_task_done".to_string(),
@@ -45,7 +47,8 @@ pub(crate) fn trigger_line(state: &SessionState, trigger: &pb::Trigger) -> Strin
                 profile_ref: active_agent_profile_ref(state),
                 payload: json!({
                     "status": status,
-                    "result_message": done.result_message,
+                    "result_preview": result_preview,
+                    "lookup_action": TASK_PAYLOAD_LOOKUP_ACTION,
                 }),
             }
             .to_json_line()

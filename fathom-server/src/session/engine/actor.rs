@@ -67,7 +67,7 @@ pub(crate) async fn run_session_actor(
                                 .unwrap_or_default(),
                             queue_depth,
                         }));
-                        process_turns(
+                        maybe_process_turns(
                             &runtime,
                             &mut state,
                             &command_tx,
@@ -99,7 +99,7 @@ pub(crate) async fn run_session_actor(
                             &events_tx,
                             committed,
                         );
-                        process_turns(
+                        maybe_process_turns(
                             &runtime,
                             &mut state,
                             &command_tx,
@@ -112,7 +112,7 @@ pub(crate) async fn run_session_actor(
             }
             _ = heartbeat_interval.tick() => {
                 enqueue_automatic_heartbeat(&runtime, &mut state, &events_tx);
-                process_turns(
+                maybe_process_turns(
                     &runtime,
                     &mut state,
                     &command_tx,
@@ -123,4 +123,18 @@ pub(crate) async fn run_session_actor(
             }
         }
     }
+}
+
+async fn maybe_process_turns(
+    runtime: &Runtime,
+    state: &mut SessionState,
+    command_tx: &mpsc::Sender<SessionCommand>,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+    environment_handles: &std::collections::HashMap<String, EnvironmentActorHandle>,
+) {
+    if !state.in_flight_actions.is_empty() {
+        return;
+    }
+
+    process_turns(runtime, state, command_tx, events_tx, environment_handles).await;
 }

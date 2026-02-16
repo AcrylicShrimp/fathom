@@ -1,6 +1,7 @@
 use crate::agent::types::TurnSnapshot;
-use crate::history::HISTORY_FORMAT;
+use crate::history::{HISTORY_FORMAT, TASK_PAYLOAD_LOOKUP_ACTION, build_payload_preview};
 use crate::pb;
+use crate::util::task_status_label;
 
 pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option<&str>) -> String {
     let mut lines: Vec<String> = vec![
@@ -11,7 +12,7 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
         "If you need more context, prefer discovery actions listed below.".to_string(),
         "All actions are server-managed background jobs and emit task_done triggers after commit."
             .to_string(),
-        "Task results arrive as JSON text in task_done.result_message.".to_string(),
+        "Task_done triggers include result previews only; call system__get_task_payload for full args/results when needed.".to_string(),
         "Action input schemas are enforced by the runtime; provide exact argument shapes."
             .to_string(),
         String::new(),
@@ -243,9 +244,18 @@ fn trigger_text(trigger: &pb::Trigger) -> String {
             )
         }
         pb::trigger::Kind::TaskDone(done) => {
+            let status = pb::TaskStatus::try_from(done.status)
+                .map(task_status_label)
+                .unwrap_or("unknown");
+            let preview = build_payload_preview(
+                &done.result_message,
+                format!("task://{}/result", done.task_id),
+            );
+            let preview_json = serde_json::to_string(&preview)
+                .unwrap_or_else(|_| "{\"preview\":\"<unavailable>\"}".to_string());
             format!(
-                "task_done task_id={} result={}",
-                done.task_id, done.result_message
+                "task_done task_id={} status={} result_preview={} lookup_action={}",
+                done.task_id, status, preview_json, TASK_PAYLOAD_LOOKUP_ACTION
             )
         }
         pb::trigger::Kind::Heartbeat(_) => "heartbeat".to_string(),

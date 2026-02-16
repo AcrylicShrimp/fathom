@@ -20,6 +20,10 @@ A session is the unit of conversation and orchestration.
 
 - Accepts triggers from users, tasks, heartbeat, and cron.
 - Runs exactly one agent turn at a time.
+- Uses barrier scheduling for agent invocation:
+  - a turn can start only when trigger queue is non-empty and there are no in-flight actions
+  - while actions are running, incoming triggers are queued (including user messages)
+  - when barrier opens, queued triggers are merged into one turn snapshot
 - Maintains:
   - immutable profile copies (`agent_profile_copy`, `participant_user_profiles_copy`)
   - queued triggers
@@ -42,6 +46,7 @@ Turn cut behavior is snapshot-based:
 
 1. At turn start, all currently queued triggers are snapshotted.
 2. New triggers arriving during the turn remain queued for the next turn.
+3. If in-flight actions exist, trigger processing is deferred until the barrier opens.
 
 ### Agent Turn
 Per turn:
@@ -66,6 +71,13 @@ Tasks are background jobs created by agent actions.
   - Environment actor may execute independent actions in parallel.
   - Commit order is deterministic per environment sequence.
   - `TaskDone` is emitted after commit finalization (success or failure).
+  - `TaskDone` triggers do not force immediate turn execution while in-flight actions remain.
+- Timeout contract:
+  - each action defines `max_timeout_ms` and optional `desired_timeout_ms`
+  - effective timeout is resolved server-side (`desired` or `max`)
+  - if `desired > max`, task fails fast with timeout-policy error
+  - if execution exceeds effective timeout, task fails with timeout-exceeded error
+  - timeout behavior is server/runtime controlled, not model-controlled
 - Implemented filesystem actions execute as real background jobs:
   - `filesystem__get_base_path()`
   - `filesystem__list(path)`
@@ -75,7 +87,7 @@ Tasks are background jobs created by agent actions.
   - `filesystem__glob(pattern, path?, max_results?, include_hidden?)`
   - `filesystem__search(pattern, path?, include?, max_results?, case_sensitive?)`
 - Implemented shell action executes as real background job:
-  - `shell__run(command, path?, env?, timeout_ms?)`
+  - `shell__run(command, path?, env?)`
 - Assistant output behavior:
   - User-facing messages come from native assistant model output (not a special action).
   - Streaming uses `AssistantStream`; finalized content uses matching `AssistantOutput(stream_id=...)`.
@@ -105,7 +117,7 @@ Shell actions use plain relative directory paths resolved from the shell environ
 
 - `shell__run.path` defaults to `.`
 - Absolute paths, URI schemes, and escapes outside base path are rejected
-- Command execution is non-interactive with timeout + bounded stdout/stderr capture
+- Command execution is non-interactive with runtime-managed timeout + bounded stdout/stderr capture
 - Non-zero exit codes produce failed task outcomes
 
 ## Identity and Memory
@@ -163,7 +175,8 @@ Client-side dedup behavior:
     - `environment/registry.rs`: composes environments and canonical action registry
     - `environment/actor.rs`: per-environment child actor runtime with in-order commit
     - `environment/system/*`: built-in privileged system environment actions (`system__*`)
-  - `session/*`: deterministic session actor + action-task orchestration
+- `session/*`: deterministic session actor + action-task orchestration
+    - barrier scheduling: triggers are drained only when no in-flight actions exist
   - `session/engine/assistant_stream.rs`: native assistant text streaming and batching
   - `history/*`: structured history line transformation and preview truncation
   - `system_env/*`: runtime/profile/session/task discovery action execution
@@ -186,7 +199,7 @@ Client-side dedup behavior:
 - `envs/fathom-env-shell`:
   - shell environment action instance (`run`)
   - action schema and validation
-  - async command execution backend (cwd/env overrides, timeout, bounded output capture)
+  - async command execution backend (cwd/env overrides, runtime-managed timeout, bounded output capture)
 - System actions remain built-in in `fathom-server` because they require privileged server/runtime access.
 
 ### Client (`fathom-client`)

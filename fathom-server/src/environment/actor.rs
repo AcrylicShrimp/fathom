@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::environment::{EnvironmentRegistry, ResolvedAction};
@@ -10,6 +11,8 @@ use crate::session::task_context::TaskExecutionContext;
 use crate::util::now_unix_ms;
 
 use fathom_env::{ActionOutcome, EnvironmentSnapshot, FinalizedAction};
+
+const EXECUTION_TIMEOUT_GRACE_MS: u64 = 250;
 
 #[derive(Debug, Clone)]
 pub(crate) struct EnvironmentCommittedAction {
@@ -192,27 +195,61 @@ fn maybe_start_pending(
         };
         *running_count += 1;
 
+        let effective_timeout_ms = match submission
+            .resolved_action
+            .timeout_policy
+            .effective_timeout_ms()
+        {
+            Ok(timeout_ms) => timeout_ms,
+            Err(error) => {
+                let finished = EnvironmentFinishedExecution {
+                    task_id: submission.task_id,
+                    env_seq: submission.env_seq,
+                    resolved_action: submission.resolved_action,
+                    args_json: submission.args_json,
+                    outcome: timeout_policy_failure_outcome(&error),
+                };
+                let command_tx = command_tx.clone();
+                tokio::spawn(async move {
+                    let _ = command_tx
+                        .send(EnvironmentActorCommand::ExecutionFinished(finished))
+                        .await;
+                });
+                continue;
+            }
+        };
+
         let runtime = runtime.clone();
         let command_tx = command_tx.clone();
         let environment_state = snapshot.state_json.clone();
 
         tokio::spawn(async move {
-            let outcome = EnvironmentRegistry::execute_action(
+            let timeout_with_grace_ms =
+                effective_timeout_ms.saturating_add(EXECUTION_TIMEOUT_GRACE_MS);
+            let timeout_duration = Duration::from_millis(timeout_with_grace_ms);
+            let action_future = EnvironmentRegistry::execute_action(
                 &runtime,
                 &submission.execution_context,
                 &submission.resolved_action,
                 &submission.args_json,
                 &environment_state,
-            )
-            .await
-            .unwrap_or(ActionOutcome {
-                succeeded: false,
-                message: format!(
-                    "environment action `{}` execution unavailable",
-                    submission.resolved_action.canonical_action_id
+                effective_timeout_ms,
+            );
+            let outcome = match tokio::time::timeout(timeout_duration, action_future).await {
+                Ok(Some(outcome)) => outcome,
+                Ok(None) => ActionOutcome {
+                    succeeded: false,
+                    message: format!(
+                        "environment action `{}` execution unavailable",
+                        submission.resolved_action.canonical_action_id
+                    ),
+                    state_patch: None,
+                },
+                Err(_) => timeout_exceeded_outcome(
+                    &submission.resolved_action.canonical_action_id,
+                    effective_timeout_ms,
                 ),
-                state_patch: None,
-            });
+            };
 
             let finished = EnvironmentFinishedExecution {
                 task_id: submission.task_id,
@@ -226,6 +263,34 @@ fn maybe_start_pending(
                 .send(EnvironmentActorCommand::ExecutionFinished(finished))
                 .await;
         });
+    }
+}
+
+fn timeout_policy_failure_outcome(reason: &str) -> ActionOutcome {
+    ActionOutcome {
+        succeeded: false,
+        message: json!({
+            "ok": false,
+            "error_code": "timeout_policy_invalid",
+            "message": reason,
+        })
+        .to_string(),
+        state_patch: None,
+    }
+}
+
+fn timeout_exceeded_outcome(canonical_action_id: &str, timeout_ms: u64) -> ActionOutcome {
+    ActionOutcome {
+        succeeded: false,
+        message: json!({
+            "ok": false,
+            "error_code": "timeout_exceeded",
+            "canonical_action_id": canonical_action_id,
+            "timeout_ms": timeout_ms,
+            "message": format!("action execution exceeded timeout of {timeout_ms}ms"),
+        })
+        .to_string(),
+        state_patch: None,
     }
 }
 

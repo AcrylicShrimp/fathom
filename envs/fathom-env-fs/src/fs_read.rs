@@ -1,8 +1,11 @@
 use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
-use crate::FILESYSTEM_ENVIRONMENT_ID;
 use crate::validate::{args_object, optional_u64, require_relative_path};
+use crate::{
+    FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS, FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
+    FILESYSTEM_ENVIRONMENT_ID,
+};
 
 const READ_MAX_LIMIT_LINES: u64 = 2_000;
 
@@ -25,6 +28,8 @@ impl Action for FsReadAction {
                 "additionalProperties": false
             }),
             discovery: false,
+            max_timeout_ms: FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
+            desired_timeout_ms: Some(FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS),
         }
     }
 

@@ -1,10 +1,13 @@
 use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
-use crate::FILESYSTEM_ENVIRONMENT_ID;
 use crate::validate::{
     args_object, optional_boolean, optional_non_empty_string, optional_u64,
     require_non_empty_string, require_relative_path,
+};
+use crate::{
+    FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS, FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
+    FILESYSTEM_ENVIRONMENT_ID,
 };
 
 const GLOB_MAX_RESULTS_CAP: u64 = 5_000;
@@ -29,6 +32,8 @@ impl Action for FsGlobAction {
                 "additionalProperties": false
             }),
             discovery: false,
+            max_timeout_ms: FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
+            desired_timeout_ms: Some(FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS),
         }
     }
 

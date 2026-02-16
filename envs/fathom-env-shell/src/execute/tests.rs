@@ -15,6 +15,7 @@ async fn shell_run_echo_succeeds() {
         "run",
         args.to_string().as_str(),
         &json!({ "base_path": root.display().to_string() }),
+        20_000,
     )
     .await
     .expect("shell__run should dispatch");
@@ -41,6 +42,7 @@ async fn shell_run_non_zero_exit_fails() {
         "run",
         args.to_string().as_str(),
         &json!({ "base_path": root.display().to_string() }),
+        20_000,
     )
     .await
     .expect("shell__run should dispatch");
@@ -61,12 +63,12 @@ async fn shell_run_timeout_fails() {
 
     let args = json!({
         "command": "sleep 1",
-        "timeout_ms": 10,
     });
     let outcome = execute_action(
         "run",
         args.to_string().as_str(),
         &json!({ "base_path": root.display().to_string() }),
+        10,
     )
     .await
     .expect("shell__run should dispatch");
@@ -93,6 +95,7 @@ async fn shell_run_rejects_escape_path() {
         "run",
         args.to_string().as_str(),
         &json!({ "base_path": root.display().to_string() }),
+        20_000,
     )
     .await
     .expect("shell__run should dispatch");
@@ -121,6 +124,7 @@ async fn shell_run_applies_env_overrides() {
         "run",
         args.to_string().as_str(),
         &json!({ "base_path": root.display().to_string() }),
+        20_000,
     )
     .await
     .expect("shell__run should dispatch");
@@ -145,6 +149,7 @@ async fn shell_run_truncates_large_stdout() {
         "run",
         args.to_string().as_str(),
         &json!({ "base_path": root.display().to_string() }),
+        20_000,
     )
     .await
     .expect("shell__run should dispatch");

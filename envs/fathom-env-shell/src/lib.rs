@@ -20,7 +20,7 @@ impl Environment for ShellEnvironment {
         EnvironmentSpec {
             id: SHELL_ENVIRONMENT_ID,
             name: "Shell",
-            description: "Stateful shell command environment rooted at a base path. Execute non-interactive commands with bounded stdout/stderr and timeout controls.",
+            description: "Stateful shell command environment rooted at a base path. Execute non-interactive commands with bounded stdout/stderr and runtime-managed timeouts.",
         }
     }
 
@@ -40,7 +40,7 @@ impl Environment for ShellEnvironment {
                 title: "Run quick diagnostics".to_string(),
                 steps: vec![
                     "Use shell__run with a non-interactive command and path '.' for environment root.".to_string(),
-                    "Set timeout_ms for potentially slow commands so the task cannot hang indefinitely.".to_string(),
+                    "Execution timeout is managed by the runtime using action policy; do not expect timeout args.".to_string(),
                     "Interpret output via exit_code, stdout, and stderr; non-zero exit means task failure.".to_string(),
                 ],
             },
@@ -55,9 +55,9 @@ impl Environment for ShellEnvironment {
             EnvironmentRecipe {
                 title: "Control runtime environment".to_string(),
                 steps: vec![
-                    "Call shell__run with {command, timeout_ms, env} when command behavior depends on env vars.".to_string(),
+                    "Call shell__run with {command, env} when command behavior depends on env vars.".to_string(),
                     "Use env keys matching [A-Za-z_][A-Za-z0-9_]* and pass only required variables.".to_string(),
-                    "On timeout, split work into smaller commands or raise timeout_ms within allowed bounds.".to_string(),
+                    "On timeout, split work into smaller commands or use narrower command scope.".to_string(),
                     "If stdout/stderr is truncated, rerun with narrower command scope to recover missing detail.".to_string(),
                 ],
             },

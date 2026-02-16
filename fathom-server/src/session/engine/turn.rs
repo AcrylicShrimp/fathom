@@ -23,12 +23,15 @@ pub(super) async fn process_turns(
     events_tx: &broadcast::Sender<pb::SessionEvent>,
     environment_handles: &HashMap<String, EnvironmentActorHandle>,
 ) {
-    if state.turn_in_progress {
+    if state.turn_in_progress
+        || state.trigger_queue.is_empty()
+        || !state.in_flight_actions.is_empty()
+    {
         return;
     }
 
     state.turn_in_progress = true;
-    while !state.trigger_queue.is_empty() {
+    while !state.trigger_queue.is_empty() && state.in_flight_actions.is_empty() {
         state.turn_seq += 1;
         let turn_id = state.turn_seq;
 

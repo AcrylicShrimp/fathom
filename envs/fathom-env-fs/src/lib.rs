@@ -22,6 +22,8 @@ use fs_search::FsSearchAction;
 use fs_write::FsWriteAction;
 
 pub const FILESYSTEM_ENVIRONMENT_ID: &str = "filesystem";
+pub(crate) const FILESYSTEM_ACTION_MAX_TIMEOUT_MS: u64 = 20_000;
+pub(crate) const FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS: u64 = 8_000;
 pub use execute::execute_action;
 
 pub struct FilesystemEnvironment;

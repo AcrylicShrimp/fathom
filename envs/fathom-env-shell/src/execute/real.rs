@@ -41,6 +41,7 @@ pub(crate) async fn run_command(
     process.current_dir(cwd);
     process.stdout(Stdio::piped());
     process.stderr(Stdio::piped());
+    process.kill_on_drop(true);
 
     for (key, value) in &options.env_overrides {
         process.env(key, value);

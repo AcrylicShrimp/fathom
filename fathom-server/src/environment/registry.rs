@@ -15,12 +15,40 @@ use fathom_env::{
 
 use super::system::SystemEnvironment;
 
+#[derive(Debug, Clone)]
+pub(crate) struct ActionTimeoutPolicy {
+    pub(crate) max_timeout_ms: u64,
+    pub(crate) desired_timeout_ms: Option<u64>,
+}
+
+impl ActionTimeoutPolicy {
+    pub(crate) fn effective_timeout_ms(&self) -> Result<u64, String> {
+        if self.max_timeout_ms == 0 {
+            return Err("max_timeout_ms must be > 0".to_string());
+        }
+
+        let timeout_ms = self.desired_timeout_ms.unwrap_or(self.max_timeout_ms);
+        if timeout_ms == 0 {
+            return Err("desired_timeout_ms must be > 0 when set".to_string());
+        }
+        if timeout_ms > self.max_timeout_ms {
+            return Err(format!(
+                "desired_timeout_ms ({timeout_ms}) exceeds max_timeout_ms ({})",
+                self.max_timeout_ms
+            ));
+        }
+
+        Ok(timeout_ms)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ResolvedAction {
     pub(crate) canonical_action_id: String,
     pub(crate) environment_id: String,
     pub(crate) action_name: String,
     pub(crate) environment: Arc<dyn Environment>,
+    pub(crate) timeout_policy: ActionTimeoutPolicy,
 }
 
 #[derive(Clone)]
@@ -39,6 +67,7 @@ struct RegisteredAction {
     action_name: &'static str,
     environment: Arc<dyn Environment>,
     action: Arc<dyn Action>,
+    timeout_policy: ActionTimeoutPolicy,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -184,6 +213,7 @@ impl EnvironmentRegistry {
         resolved: &ResolvedAction,
         args_json: &str,
         environment_state: &Value,
+        execution_timeout_ms: u64,
     ) -> Option<ActionOutcome> {
         match resolved.environment_id.as_str() {
             fathom_env_fs::FILESYSTEM_ENVIRONMENT_ID => fathom_env_fs::execute_action(
@@ -196,6 +226,7 @@ impl EnvironmentRegistry {
                     resolved.action_name.as_str(),
                     args_json,
                     environment_state,
+                    execution_timeout_ms,
                 )
                 .await
             }
@@ -247,6 +278,10 @@ impl EnvironmentRegistry {
                     action_name: spec.action_name,
                     environment: environment.clone(),
                     action,
+                    timeout_policy: ActionTimeoutPolicy {
+                        max_timeout_ms: spec.max_timeout_ms,
+                        desired_timeout_ms: spec.desired_timeout_ms,
+                    },
                 };
                 let old = actions.insert(canonical_action_id.clone(), entry);
                 assert!(
@@ -271,6 +306,7 @@ impl EnvironmentRegistry {
             environment_id: entry.environment_id.to_string(),
             action_name: entry.action_name.to_string(),
             environment: entry.environment.clone(),
+            timeout_policy: entry.timeout_policy.clone(),
         })
     }
 
@@ -335,7 +371,7 @@ fn register_environment(
 mod tests {
     use serde_json::json;
 
-    use super::EnvironmentRegistry;
+    use super::{ActionTimeoutPolicy, EnvironmentRegistry};
 
     #[test]
     fn known_actions_align_with_openai_definitions() {
@@ -401,5 +437,27 @@ mod tests {
                 .iter()
                 .any(|definition| definition["name"] == json!("shell__run"))
         );
+    }
+
+    #[test]
+    fn registered_actions_have_valid_timeout_policies() {
+        let action_ids = EnvironmentRegistry::known_action_ids();
+        for action_id in action_ids {
+            let resolved =
+                EnvironmentRegistry::resolve(&action_id).expect("registered action should resolve");
+            assert!(
+                resolved.timeout_policy.effective_timeout_ms().is_ok(),
+                "timeout policy for `{action_id}` must be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn timeout_policy_rejects_desired_over_max() {
+        let policy = ActionTimeoutPolicy {
+            max_timeout_ms: 1_000,
+            desired_timeout_ms: Some(1_001),
+        };
+        assert!(policy.effective_timeout_ms().is_err());
     }
 }

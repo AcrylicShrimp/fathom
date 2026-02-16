@@ -36,16 +36,6 @@ pub fn optional_non_empty_string<'a>(
     }
 }
 
-pub fn optional_u64(args: &ArgsObject, key: &str) -> Result<Option<u64>, String> {
-    match args.get(key) {
-        Some(value) => value
-            .as_u64()
-            .map(Some)
-            .ok_or_else(|| format!("invalid integer field `{key}`")),
-        None => Ok(None),
-    }
-}
-
 pub fn optional_object<'a>(
     args: &'a ArgsObject,
     key: &str,
