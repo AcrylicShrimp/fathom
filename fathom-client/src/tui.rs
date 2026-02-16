@@ -439,12 +439,12 @@ async fn run_loop(
                 .active_tab_mut()
                 .scroll_to_bottom(viewport_height, viewport_width),
             KeyCode::Enter if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let text = app.input.trim().to_string();
+                let text = normalized_submit_text(app.input.as_str());
                 app.input.clear();
                 app.refresh_completion();
-                if text.is_empty() {
+                let Some(text) = text else {
                     continue;
-                }
+                };
 
                 if text.starts_with('/') {
                     app.status = "running command...".to_string();
@@ -672,9 +672,17 @@ fn wrapped_line_count(text: &str, width: u16) -> u16 {
     wrapped.max(1)
 }
 
+fn normalized_submit_text(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{App, SlashCompletionState};
+    use super::{App, SlashCompletionState, normalized_submit_text};
     use crate::runtime::ClientSession;
 
     fn test_session() -> ClientSession {
@@ -710,5 +718,15 @@ mod tests {
         assert!(app.accept_completion());
         assert_eq!(app.input, "/heartbeat ");
         assert!(!app.completion_is_visible());
+    }
+
+    #[test]
+    fn normalized_submit_text_rejects_blank_and_trims() {
+        assert_eq!(normalized_submit_text(""), None);
+        assert_eq!(normalized_submit_text(" \t\n "), None);
+        assert_eq!(
+            normalized_submit_text("  hello world  "),
+            Some("hello world".to_string())
+        );
     }
 }
