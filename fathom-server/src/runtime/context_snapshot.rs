@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use super::Runtime;
 use crate::agent::{
     ActivatedEnvironmentActionHint, ActivatedEnvironmentHint, ActivatedEnvironmentRecipeHint,
-    InFlightActionHint, SessionIdentityMapSnapshot, SystemContextSnapshot, TurnSnapshot,
+    InFlightActionHint, ResolvedPayloadLookupHint, SessionIdentityMapSnapshot,
+    SystemContextSnapshot, TurnSnapshot,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::pb;
@@ -28,6 +29,22 @@ impl Runtime {
             .iter()
             .filter_map(|id| state.participant_user_profiles_copy.get(id).cloned())
             .collect::<Vec<_>>();
+        let resolved_payload_lookups = state
+            .pending_payload_lookups
+            .iter()
+            .map(|lookup| ResolvedPayloadLookupHint {
+                lookup_task_id: lookup.lookup_task_id.clone(),
+                task_id: lookup.task_id.clone(),
+                part: lookup.part.clone(),
+                offset: lookup.offset,
+                next_offset: lookup.next_offset,
+                full_bytes: lookup.full_bytes,
+                source_truncated: lookup.source_truncated,
+                payload_chunk: lookup.payload_chunk.clone(),
+                injected_truncated: lookup.injected_truncated,
+                injected_omitted_bytes: lookup.injected_omitted_bytes,
+            })
+            .collect::<Vec<_>>();
 
         TurnSnapshot {
             session_id: state.session_id.clone(),
@@ -35,6 +52,7 @@ impl Runtime {
             system_context: self.build_system_context_snapshot(state),
             agent_profile: state.agent_profile_copy.clone(),
             participant_profiles,
+            resolved_payload_lookups,
             triggers: triggers.to_vec(),
             recent_history,
             compaction: state.compaction.clone(),

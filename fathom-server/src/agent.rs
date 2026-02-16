@@ -6,13 +6,17 @@ mod types;
 pub(crate) use types::{
     ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, ActivatedEnvironmentActionHint,
     ActivatedEnvironmentHint, ActivatedEnvironmentRecipeHint, AgentTurnOutcome, InFlightActionHint,
-    SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote, SummaryBlockRefSnapshot,
-    SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
+    ResolvedPayloadLookupHint, SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote,
+    SummaryBlockRefSnapshot, SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
 };
 
 use crate::environment::EnvironmentRegistry;
 use openai::OpenAiClient;
 use prompt::build_agent_prompt;
+
+pub(crate) fn render_prompt(snapshot: &TurnSnapshot, retry_feedback: Option<&str>) -> String {
+    build_agent_prompt(snapshot, retry_feedback)
+}
 
 #[derive(Clone)]
 pub(crate) struct AgentOrchestrator {

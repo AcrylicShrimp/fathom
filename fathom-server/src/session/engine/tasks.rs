@@ -11,6 +11,8 @@ use crate::history;
 use crate::history::build_payload_preview;
 use crate::pb;
 use crate::runtime::Runtime;
+use crate::session::diagnostics::task_to_json;
+use crate::session::payload_lookup::resolve_from_task;
 use crate::session::state::{InFlightActionState, SessionState};
 use crate::session::task_context::TaskExecutionContext;
 use crate::util::{now_unix_ms, task_status_label};
@@ -55,9 +57,11 @@ pub(super) fn queue_task(
             let env_seq = state.allocate_environment_seq(&resolved_action.environment_id);
             let execution_context = TaskExecutionContext::from_state(state);
 
-            let args_preview =
-                build_payload_preview(&task.args_json, format!("task://{}/args", task.task_id))
-                    .preview;
+            let args_preview = serde_json::to_string(&build_payload_preview(
+                &task.args_json,
+                format!("task://{}/args", task.task_id),
+            ))
+            .unwrap_or_else(|_| "{\"head\":\"<unavailable>\",\"tail\":\"\"}".to_string());
 
             state.in_flight_actions.insert(
                 task_id.clone(),
@@ -108,9 +112,27 @@ pub(super) fn queue_task(
     );
 
     history::append_task_started_history(state, &task);
+    runtime.diagnostics().append_session_record(
+        &state.session_id,
+        serde_json::json!({
+            "ts_unix_ms": now_unix_ms(),
+            "event": "task.started",
+            "session_id": state.session_id,
+            "task": task_to_json(&task),
+        }),
+    );
 
     if task.status == pb::TaskStatus::Failed as i32 {
         history::append_task_finished_history(state, &task);
+        runtime.diagnostics().append_session_record(
+            &state.session_id,
+            serde_json::json!({
+                "ts_unix_ms": now_unix_ms(),
+                "event": "task.finished",
+                "session_id": state.session_id,
+                "task": task_to_json(&task),
+            }),
+        );
         enqueue_task_done_trigger(runtime, state, events_tx, &task);
     }
 
@@ -208,6 +230,18 @@ pub(super) fn handle_environment_action_committed(
         }),
     );
     history::append_task_finished_history(state, &task_snapshot);
+    runtime.diagnostics().append_session_record(
+        &state.session_id,
+        serde_json::json!({
+            "ts_unix_ms": now_unix_ms(),
+            "event": "task.finished",
+            "session_id": state.session_id,
+            "task": task_to_json(&task_snapshot),
+        }),
+    );
+    if let Some(lookup) = resolve_from_task(&task_snapshot) {
+        state.push_pending_payload_lookup(lookup);
+    }
 
     enqueue_task_done_trigger(runtime, state, events_tx, &task_snapshot);
 }

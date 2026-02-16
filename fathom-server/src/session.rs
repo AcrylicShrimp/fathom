@@ -1,4 +1,6 @@
+pub(crate) mod diagnostics;
 pub(crate) mod engine;
+pub(crate) mod payload_lookup;
 pub(crate) mod state;
 pub(crate) mod task_context;
 

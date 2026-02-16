@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::pb;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct SummaryBlockRefSnapshot {
     pub(crate) id: String,
     pub(crate) source_range_start: u64,
@@ -13,7 +13,7 @@ pub(crate) struct SummaryBlockRefSnapshot {
     pub(crate) created_at_unix_ms: i64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub(crate) struct SessionCompactionSnapshot {
     pub(crate) last_compacted_history_index: u64,
     pub(crate) summary_blocks: Vec<SummaryBlockRefSnapshot>,
@@ -26,12 +26,13 @@ pub(crate) struct TurnSnapshot {
     pub(crate) system_context: SystemContextSnapshot,
     pub(crate) agent_profile: pb::AgentProfile,
     pub(crate) participant_profiles: Vec<pb::UserProfile>,
+    pub(crate) resolved_payload_lookups: Vec<ResolvedPayloadLookupHint>,
     pub(crate) triggers: Vec<pb::Trigger>,
     pub(crate) recent_history: Vec<String>,
     pub(crate) compaction: SessionCompactionSnapshot,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct SystemContextSnapshot {
     pub(crate) runtime_version: String,
     pub(crate) time_context: SystemTimeContext,
@@ -72,7 +73,7 @@ pub(crate) struct SystemTimeContext {
     pub(crate) time_source: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct SessionIdentityMapSnapshot {
     pub(crate) session_id: String,
     pub(crate) active_agent_id: String,
@@ -93,6 +94,20 @@ pub(crate) struct InFlightActionHint {
     pub(crate) status: String,
     pub(crate) submitted_at_unix_ms: i64,
     pub(crate) args_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ResolvedPayloadLookupHint {
+    pub(crate) lookup_task_id: String,
+    pub(crate) task_id: String,
+    pub(crate) part: String,
+    pub(crate) offset: usize,
+    pub(crate) next_offset: Option<usize>,
+    pub(crate) full_bytes: usize,
+    pub(crate) source_truncated: bool,
+    pub(crate) payload_chunk: String,
+    pub(crate) injected_truncated: bool,
+    pub(crate) injected_omitted_bytes: usize,
 }
 
 #[derive(Debug, Clone)]

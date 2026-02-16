@@ -1,4 +1,5 @@
 mod context_snapshot;
+mod diagnostics;
 mod ids;
 mod profiles;
 mod sessions;
@@ -15,6 +16,7 @@ use tokio::sync::RwLock;
 use crate::agent::AgentOrchestrator;
 use crate::pb;
 use crate::session::SessionRuntime;
+use diagnostics::DiagnosticsSink;
 
 pub(crate) const EVENT_BUFFER_SIZE: usize = 256;
 pub(crate) const SESSION_CMD_BUFFER_SIZE: usize = 128;
@@ -37,6 +39,7 @@ struct RuntimeInner {
     task_capacity: usize,
     task_runtime_ms: u64,
     orchestrator: AgentOrchestrator,
+    diagnostics: DiagnosticsSink,
 }
 
 impl Runtime {
@@ -62,6 +65,7 @@ impl Runtime {
     }
 
     fn new_unchecked(task_capacity: usize, task_runtime_ms: u64, workspace_root: PathBuf) -> Self {
+        let diagnostics = DiagnosticsSink::new(workspace_root.join(".fathom").join("diagnostics"));
         Self {
             inner: Arc::new(RuntimeInner {
                 sessions: RwLock::new(HashMap::new()),
@@ -74,6 +78,7 @@ impl Runtime {
                 task_capacity,
                 task_runtime_ms,
                 orchestrator: AgentOrchestrator::new(),
+                diagnostics,
             }),
         }
     }
@@ -92,6 +97,10 @@ impl Runtime {
 
     pub(crate) fn agent_orchestrator(&self) -> AgentOrchestrator {
         self.inner.orchestrator.clone()
+    }
+
+    pub(crate) fn diagnostics(&self) -> DiagnosticsSink {
+        self.inner.diagnostics.clone()
     }
 }
 

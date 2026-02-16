@@ -12,7 +12,9 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
         "If you need more context, prefer discovery actions listed below.".to_string(),
         "All actions are server-managed background jobs and emit task_done triggers after commit."
             .to_string(),
-        "Task_done triggers include result previews only; call system__get_task_payload for full args/results when needed.".to_string(),
+        "Task_done triggers include head/tail previews; call system__get_task_payload for deeper args/results when needed.".to_string(),
+        "Use Resolved Payload Lookups when present before issuing additional payload fetches."
+            .to_string(),
         "Action input schemas are enforced by the runtime; provide exact argument shapes."
             .to_string(),
         String::new(),
@@ -195,6 +197,31 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
     }
     lines.push(String::new());
 
+    lines.push("## Resolved Payload Lookups (ephemeral)".to_string());
+    if snapshot.resolved_payload_lookups.is_empty() {
+        lines.push("(none)".to_string());
+    } else {
+        for lookup in &snapshot.resolved_payload_lookups {
+            lines.push(format!(
+                "- lookup_task_id={} task_id={} part={} offset={} next_offset={} full_bytes={} source_truncated={} injected_truncated={} injected_omitted_bytes={}",
+                lookup.lookup_task_id,
+                lookup.task_id,
+                lookup.part,
+                lookup.offset,
+                lookup
+                    .next_offset
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-1".to_string()),
+                lookup.full_bytes,
+                lookup.source_truncated,
+                lookup.injected_truncated,
+                lookup.injected_omitted_bytes
+            ));
+            lines.push(format!("  payload_chunk: {}", lookup.payload_chunk));
+        }
+    }
+    lines.push(String::new());
+
     lines.push("## Compaction State (modeled, not actively updated yet)".to_string());
     lines.push(format!(
         "last_compacted_history_index: {}",
@@ -252,7 +279,7 @@ fn trigger_text(trigger: &pb::Trigger) -> String {
                 format!("task://{}/result", done.task_id),
             );
             let preview_json = serde_json::to_string(&preview)
-                .unwrap_or_else(|_| "{\"preview\":\"<unavailable>\"}".to_string());
+                .unwrap_or_else(|_| "{\"head\":\"<unavailable>\",\"tail\":\"\"}".to_string());
             format!(
                 "task_done task_id={} status={} result_preview={} lookup_action={}",
                 done.task_id, status, preview_json, TASK_PAYLOAD_LOOKUP_ACTION
@@ -370,6 +397,7 @@ mod tests {
             },
             agent_profile: default_agent_profile("agent-default"),
             participant_profiles: vec![],
+            resolved_payload_lookups: vec![],
             triggers: vec![],
             recent_history: vec![],
             compaction: SessionCompactionSnapshot::default(),

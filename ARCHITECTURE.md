@@ -12,6 +12,7 @@ Fathom is a session-oriented agent runtime with a gRPC server and TUI client.
 - Server synthesizes authoritative time context (UTC + server-local timezone) for agent turns.
 - Model-facing behavior is defined by context synthesis + history transformation.
 - Environment model currently includes `filesystem`, `brave_search`, `jina`, `shell`, and built-in `system`.
+- Server writes structured diagnostics JSON logs under `.fathom/diagnostics/` for turn/invocation/task tracing.
 
 ## Core Concepts
 
@@ -32,6 +33,7 @@ A session is the unit of conversation and orchestration.
   - engaged environment set (`engaged_environment_ids`)
   - environment state snapshots (`environment_snapshots`)
   - in-flight action hints for prompt context
+  - ephemeral resolved payload lookups (`pending_payload_lookups`)
 
 ### Trigger
 Trigger variants:
@@ -98,8 +100,14 @@ Tasks are background jobs created by agent actions.
 - History transformation contract:
   - `task_started` and `task_finished` are recorded as distinct history events.
   - each task history entry includes `canonical_action_id`, `environment_id`, and `action_name`.
-  - Task args/results are stored in history as truncated previews with byte/line cutoff metadata and lookup references.
-  - Agent can query full payloads with `system__get_task_payload`.
+  - Task args/results are stored in history as head/tail previews with truncation metadata and lookup references.
+  - Agent can query payload chunks with `system__get_task_payload` and use offset paging (`offset`, `limit`, `next_offset`).
+  - Resolved payload chunks are injected into prompt context through an ephemeral lookup buffer.
+  - Ephemeral lookup buffer is cleared only when the session reaches quiescence:
+    - assistant output emitted
+    - no new action calls dispatched
+    - no in-flight actions
+    - no queued triggers
 - Time context contract:
   - Each turn snapshot includes `time_context` (`utc_rfc3339`, `local_rfc3339`, `local_timezone_name`, `local_utc_offset`, `generated_at_unix_ms`).
   - Each turn snapshot includes `activated_environments` (`id`, `name`, `description`).
@@ -189,7 +197,11 @@ Client-side dedup behavior:
 - `session/*`: deterministic session actor + action-task orchestration
     - barrier scheduling: triggers are drained only when no in-flight actions exist
   - `session/engine/assistant_stream.rs`: native assistant text streaming and batching
-  - `history/*`: structured history line transformation and preview truncation
+  - `runtime/diagnostics.rs`: structured JSON diagnostic sink
+    - `sessions/<session_id>/events.jsonl` for coarse execution timeline (turns/invocations/tasks)
+    - `sessions/<session_id>/invocations/invocation-<n>.json` for full per-invocation synthesized context + prompt
+    - excludes high-frequency OpenAI stream delta events from diagnostic note capture
+  - `history/*`: structured history line transformation and head/tail preview synthesis
   - `system_env/*`: runtime/profile/session/task discovery action execution
     - includes environment discovery (`system__describe_environment`) for deeper docs/capabilities/recipes
     - `system__get_context` returns authoritative runtime/session context snapshots

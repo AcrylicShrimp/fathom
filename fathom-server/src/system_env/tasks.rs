@@ -4,6 +4,9 @@ use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::task_context::TaskExecutionContext;
 
+const DEFAULT_LOOKUP_LIMIT: usize = 4096;
+const MAX_LOOKUP_LIMIT: usize = 65536;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TaskPayloadPart {
     Args,
@@ -43,7 +46,7 @@ pub(crate) async fn get_task_payload(
 
     let full_bytes = payload.len();
     let bounded_offset = offset.min(full_bytes);
-    let max_len = if limit == 0 { full_bytes } else { limit };
+    let max_len = normalize_lookup_limit(limit);
     let end = bounded_offset.saturating_add(max_len).min(full_bytes);
     let chunk = payload
         .as_bytes()
@@ -67,4 +70,31 @@ pub(crate) async fn get_task_payload(
         "next_offset": if end < full_bytes { end as i64 } else { -1 },
         "payload": chunk,
     }))
+}
+
+fn normalize_lookup_limit(limit: usize) -> usize {
+    let effective = if limit == 0 {
+        DEFAULT_LOOKUP_LIMIT
+    } else {
+        limit
+    };
+    effective.min(MAX_LOOKUP_LIMIT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_LOOKUP_LIMIT, MAX_LOOKUP_LIMIT, normalize_lookup_limit};
+
+    #[test]
+    fn normalize_lookup_limit_defaults_when_omitted() {
+        assert_eq!(normalize_lookup_limit(0), DEFAULT_LOOKUP_LIMIT);
+    }
+
+    #[test]
+    fn normalize_lookup_limit_clamps_upper_bound() {
+        assert_eq!(
+            normalize_lookup_limit(MAX_LOOKUP_LIMIT + 1234),
+            MAX_LOOKUP_LIMIT
+        );
+    }
 }

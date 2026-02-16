@@ -6,6 +6,7 @@ use tonic::Status;
 use crate::agent::{SessionCompactionSnapshot, SummaryBlockRefSnapshot};
 use crate::environment::EnvironmentCommittedAction;
 use crate::pb;
+use crate::session::payload_lookup::ResolvedPayloadLookup;
 use crate::util::now_unix_ms;
 use fathom_env::EnvironmentSnapshot;
 
@@ -61,6 +62,8 @@ pub(crate) struct SessionState {
     pub(crate) environment_snapshots: HashMap<String, EnvironmentSnapshot>,
     pub(crate) next_environment_seq: HashMap<String, u64>,
     pub(crate) in_flight_actions: HashMap<String, InFlightActionState>,
+    pub(crate) pending_payload_lookups: Vec<ResolvedPayloadLookup>,
+    pub(crate) next_agent_invocation_seq: u64,
     pub(crate) turn_seq: u64,
     pub(crate) turn_in_progress: bool,
     pub(crate) compaction: SessionCompactionSnapshot,
@@ -95,6 +98,8 @@ impl SessionState {
             environment_snapshots,
             next_environment_seq,
             in_flight_actions: HashMap::new(),
+            pending_payload_lookups: Vec::new(),
+            next_agent_invocation_seq: 0,
             turn_seq: 0,
             turn_in_progress: false,
             compaction: SessionCompactionSnapshot {
@@ -149,5 +154,21 @@ impl SessionState {
             .or_insert(0);
         *seq += 1;
         *seq
+    }
+
+    pub(crate) fn push_pending_payload_lookup(&mut self, lookup: ResolvedPayloadLookup) {
+        if self
+            .pending_payload_lookups
+            .iter()
+            .any(|item| item.lookup_task_id == lookup.lookup_task_id)
+        {
+            return;
+        }
+        self.pending_payload_lookups.push(lookup);
+    }
+
+    pub(crate) fn allocate_agent_invocation_seq(&mut self) -> u64 {
+        self.next_agent_invocation_seq += 1;
+        self.next_agent_invocation_seq
     }
 }
