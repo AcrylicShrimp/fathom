@@ -11,7 +11,7 @@ Fathom is a session-oriented agent runtime with a gRPC server and TUI client.
 - Assistant user-facing output supports streaming from server to client.
 - Server synthesizes authoritative time context (UTC + server-local timezone) for agent turns.
 - Model-facing behavior is defined by context synthesis + history transformation.
-- Environment model currently includes `filesystem`, `brave_search`, `shell`, and built-in `system`.
+- Environment model currently includes `filesystem`, `brave_search`, `jina`, `shell`, and built-in `system`.
 
 ## Core Concepts
 
@@ -90,6 +90,8 @@ Tasks are background jobs created by agent actions.
   - `shell__run(command, path?, env?)`
 - Implemented Brave Search action executes as real background job:
   - `brave_search__web_search(query, count?)`
+- Implemented Jina Reader action executes as real background job:
+  - `jina__read_url(url)`
 - Assistant output behavior:
   - User-facing messages come from native assistant model output (not a special action).
   - Streaming uses `AssistantStream`; finalized content uses matching `AssistantOutput(stream_id=...)`.
@@ -121,6 +123,13 @@ Shell actions use plain relative directory paths resolved from the shell environ
 - Absolute paths, URI schemes, and escapes outside base path are rejected
 - Command execution is non-interactive with runtime-managed timeout + bounded stdout/stderr capture
 - Non-zero exit codes produce failed task outcomes
+
+### Jina URL Model
+Jina reader action accepts one absolute URL:
+
+- `jina__read_url.url` must use `http://` or `https://`
+- Relative URLs and non-http schemes are rejected
+- Content output is markdown and may be truncated with explicit metadata
 
 ## Identity and Memory
 
@@ -202,6 +211,10 @@ Client-side dedup behavior:
   - Brave Search environment action instance (`web_search`)
   - action schema and validation
   - API execution backend (server-side credential auth, compact result mapping, structured provider/network failures)
+- `envs/fathom-env-jina`:
+  - Jina Reader environment action instance (`read_url`)
+  - action schema and validation
+  - API execution backend (server-side credential auth, URL validation, markdown extraction, truncation metadata)
 - `envs/fathom-env-shell`:
   - shell environment action instance (`run`)
   - action schema and validation
@@ -248,4 +261,5 @@ Persistence, authorization/approval controls, and real environment backends can 
 ## Environment
 - Required: `OPENAI_API_KEY`
 - Optional per feature: `BRAVE_API_KEY` (required when agent uses `brave_search__web_search`)
+- Optional per feature: `JINA_API_KEY` (required when agent uses `jina__read_url`)
 - For local development, use `direnv` or equivalent shell environment loader.

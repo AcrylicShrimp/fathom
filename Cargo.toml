@@ -7,6 +7,7 @@ members = [
     "envs/fathom-env-fs",
     "envs/fathom-env-shell",
     "envs/fathom-env-brave-search",
+    "envs/fathom-env-jina",
 ]
 resolver = "3"
 
@@ -23,6 +24,7 @@ crossterm = "0.29"
 fathom-env = { path = "fathom-env" }
 fathom-env-brave-search = { path = "envs/fathom-env-brave-search" }
 fathom-env-fs = { path = "envs/fathom-env-fs" }
+fathom-env-jina = { path = "envs/fathom-env-jina" }
 fathom-env-shell = { path = "envs/fathom-env-shell" }
 futures-util = "0.3"
 glob = "0.3"

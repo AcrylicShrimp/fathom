@@ -684,6 +684,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fathom-env-jina"
+version = "0.1.0"
+dependencies = [
+ "fathom-env",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "fathom-env-shell"
 version = "0.1.0"
 dependencies = [
@@ -702,6 +713,7 @@ dependencies = [
  "fathom-env",
  "fathom-env-brave-search",
  "fathom-env-fs",
+ "fathom-env-jina",
  "fathom-env-shell",
  "futures-util",
  "prost",

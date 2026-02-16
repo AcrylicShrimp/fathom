@@ -41,6 +41,7 @@ fn intended_for(env_id: &str) -> &'static str {
             "Working with files and directories under the session's filesystem base_path."
         }
         "brave_search" => "Searching the public web via Brave Search API.",
+        "jina" => "Reading and extracting webpage content via Jina Reader API.",
         "shell" => "Executing non-interactive shell commands under the session's shell base_path.",
         "system" => "Inspecting runtime/session context, profiles, and task payloads.",
         _ => "General environment-specific operations.",
@@ -63,6 +64,12 @@ fn capabilities_for(env_id: &str) -> Vec<&'static str> {
             "Return compact ranked metadata (title, url, description, optional age/source)",
             "Bound result count and enforce strict JSON argument validation",
             "Expose provider/network failures as structured task errors",
+        ],
+        "jina" => vec![
+            "Read one absolute http(s) URL through Jina Reader API",
+            "Return extracted markdown content with source metadata",
+            "Apply output-size truncation with explicit truncated/truncated_bytes metadata",
+            "Expose provider/auth/network failures as structured task errors",
         ],
         "shell" => vec![
             "Run non-interactive shell commands under base_path-relative working directories",

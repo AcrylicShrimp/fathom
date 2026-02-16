@@ -10,6 +10,7 @@ chrono.workspace = true
 fathom-env.workspace = true
 fathom-env-brave-search.workspace = true
 fathom-env-fs.workspace = true
+fathom-env-jina.workspace = true
 fathom-env-shell.workspace = true
 futures-util.workspace = true
 prost.workspace = true

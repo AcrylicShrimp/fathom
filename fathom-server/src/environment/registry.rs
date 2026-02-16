@@ -230,6 +230,15 @@ impl EnvironmentRegistry {
                 )
                 .await
             }
+            fathom_env_jina::JINA_ENVIRONMENT_ID => {
+                fathom_env_jina::execute_action(
+                    resolved.action_name.as_str(),
+                    args_json,
+                    environment_state,
+                    execution_timeout_ms,
+                )
+                .await
+            }
             fathom_env_shell::SHELL_ENVIRONMENT_ID => {
                 fathom_env_shell::execute_action(
                     resolved.action_name.as_str(),
@@ -272,6 +281,10 @@ impl EnvironmentRegistry {
         register_environment(
             &mut environments,
             Arc::new(fathom_env_brave_search::BraveSearchEnvironment),
+        );
+        register_environment(
+            &mut environments,
+            Arc::new(fathom_env_jina::JinaEnvironment),
         );
         register_environment(
             &mut environments,
@@ -461,6 +474,18 @@ mod tests {
             definitions
                 .iter()
                 .any(|definition| definition["name"] == json!("brave_search__web_search"))
+        );
+    }
+
+    #[test]
+    fn jina_read_url_definition_exists() {
+        let registry = EnvironmentRegistry::new();
+        let definitions = registry.openai_action_definitions();
+
+        assert!(
+            definitions
+                .iter()
+                .any(|definition| definition["name"] == json!("jina__read_url"))
         );
     }
 
