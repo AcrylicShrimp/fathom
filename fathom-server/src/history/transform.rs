@@ -3,10 +3,8 @@ use serde_json::json;
 
 use crate::history::preview::build_payload_preview;
 use crate::history::schema::{HistoryActorKind, HistoryEventLine};
+use crate::history::{TASK_FINISHED_EVENT, TASK_PAYLOAD_LOOKUP_ACTION, TASK_STARTED_EVENT};
 use crate::pb;
-use crate::policy::{
-    history_lookup_action, history_task_finished_event, history_task_started_event,
-};
 use crate::session::state::SessionState;
 use crate::util::{refresh_scope_label, task_status_label};
 
@@ -120,7 +118,7 @@ pub(crate) fn task_started_line(state: &SessionState, task: &pb::Task) -> String
 
     HistoryEventLine {
         ts_unix_ms: task.updated_at_unix_ms,
-        event: history_task_started_event().to_string(),
+        event: TASK_STARTED_EVENT.to_string(),
         actor_kind: HistoryActorKind::Task,
         actor_id: task.task_id.clone(),
         profile_ref: active_agent_profile_ref(state),
@@ -130,7 +128,7 @@ pub(crate) fn task_started_line(state: &SessionState, task: &pb::Task) -> String
             "action_name": action_name,
             "status": status,
             "args_preview": args_preview,
-            "lookup_action": history_lookup_action(),
+            "lookup_action": TASK_PAYLOAD_LOOKUP_ACTION,
         }),
     }
     .to_json_line()
@@ -146,7 +144,7 @@ pub(crate) fn task_finished_line(state: &SessionState, task: &pb::Task) -> Strin
 
     HistoryEventLine {
         ts_unix_ms: task.updated_at_unix_ms,
-        event: history_task_finished_event().to_string(),
+        event: TASK_FINISHED_EVENT.to_string(),
         actor_kind: HistoryActorKind::Task,
         actor_id: task.task_id.clone(),
         profile_ref: active_agent_profile_ref(state),
@@ -156,7 +154,7 @@ pub(crate) fn task_finished_line(state: &SessionState, task: &pb::Task) -> Strin
             "action_name": action_name,
             "status": status,
             "result_preview": result_preview,
-            "lookup_action": history_lookup_action(),
+            "lookup_action": TASK_PAYLOAD_LOOKUP_ACTION,
         }),
     }
     .to_json_line()

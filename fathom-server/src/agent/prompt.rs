@@ -1,4 +1,5 @@
 use crate::agent::types::TurnSnapshot;
+use crate::history::HISTORY_FORMAT;
 use crate::pb;
 
 pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option<&str>) -> String {
@@ -48,25 +49,6 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
     lines.push(format!(
         "- time_source: {}",
         snapshot.system_context.time_context.time_source
-    ));
-    lines.push(format!(
-        "path_policy.path_format: {}",
-        snapshot.system_context.path_policy.path_format
-    ));
-    lines.push(format!(
-        "path_policy.base_path_scope: {}",
-        snapshot.system_context.path_policy.base_path_scope
-    ));
-    lines.push(format!(
-        "path_policy.absolute_paths_allowed: {}",
-        snapshot.system_context.path_policy.absolute_paths_allowed
-    ));
-    lines.push(format!(
-        "path_policy.escape_outside_base_path_allowed: {}",
-        snapshot
-            .system_context
-            .path_policy
-            .escape_outside_base_path_allowed
     ));
     lines.push("activated_environments:".to_string());
     if snapshot.system_context.activated_environments.is_empty() {
@@ -139,47 +121,6 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
             ));
         }
     }
-    lines.push("action_policy:".to_string());
-    lines.push(format!(
-        "- known_actions: {}",
-        snapshot
-            .system_context
-            .action_policy
-            .known_actions
-            .join(",")
-    ));
-    lines.push(format!(
-        "- general_actions_trigger_followup_turn: {}",
-        snapshot
-            .system_context
-            .action_policy
-            .general_actions_trigger_followup_turn
-    ));
-    lines.push("history_policy:".to_string());
-    lines.push(format!(
-        "- format: {}",
-        snapshot.system_context.history_policy.format
-    ));
-    lines.push(format!(
-        "- task_started_event: {}",
-        snapshot.system_context.history_policy.task_started_event
-    ));
-    lines.push(format!(
-        "- task_finished_event: {}",
-        snapshot.system_context.history_policy.task_finished_event
-    ));
-    lines.push(format!(
-        "- preview_max_bytes: {}",
-        snapshot.system_context.history_policy.preview_max_bytes
-    ));
-    lines.push(format!(
-        "- preview_max_lines: {}",
-        snapshot.system_context.history_policy.preview_max_lines
-    ));
-    lines.push(format!(
-        "- lookup_action: {}",
-        snapshot.system_context.history_policy.lookup_action
-    ));
     lines.push(String::new());
 
     lines.push("## Agent Profile Copy".to_string());
@@ -213,7 +154,7 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
     lines.push(String::new());
 
     lines.push("## Recent History".to_string());
-    lines.push("History entries are structured JSON lines.".to_string());
+    lines.push(format!("history_format: {HISTORY_FORMAT}"));
     if snapshot.recent_history.is_empty() {
         lines.push("(empty)".to_string());
     } else {
@@ -296,14 +237,12 @@ mod tests {
         ActivatedEnvironmentHint, SessionCompactionSnapshot, SessionIdentityMapSnapshot,
         SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
     };
-    use crate::policy::synthesize_policy_snapshot;
     use crate::util::default_agent_profile;
 
     use super::build_agent_prompt;
 
     #[test]
     fn prompt_contains_current_time_block() {
-        let policy = synthesize_policy_snapshot(true);
         let snapshot = TurnSnapshot {
             session_id: "session-1".to_string(),
             turn_id: 1,
@@ -317,7 +256,6 @@ mod tests {
                     local_utc_offset: "+09:00".to_string(),
                     time_source: "server_clock".to_string(),
                 },
-                path_policy: policy.path_policy,
                 activated_environments: vec![ActivatedEnvironmentHint {
                     id: "filesystem".to_string(),
                     name: "Filesystem".to_string(),
@@ -336,8 +274,6 @@ mod tests {
                     engaged_environment_ids: vec!["filesystem".to_string(), "system".to_string()],
                     in_flight_actions: vec![],
                 },
-                action_policy: policy.action_policy,
-                history_policy: policy.history_policy,
             },
             agent_profile: default_agent_profile("agent-default"),
             participant_profiles: vec![],

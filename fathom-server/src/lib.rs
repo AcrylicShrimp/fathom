@@ -12,7 +12,6 @@ pub mod pb {
 mod agent;
 mod environment;
 mod history;
-mod policy;
 mod runtime;
 mod service;
 mod session;

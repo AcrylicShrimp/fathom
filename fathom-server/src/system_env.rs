@@ -14,10 +14,8 @@ use self::profiles::{parse_profile_kind, parse_profile_view};
 use self::tasks::parse_task_payload_part;
 
 #[derive(Debug, Deserialize)]
-struct GetContextArgs {
-    #[serde(default)]
-    include_actions: bool,
-}
+#[serde(deny_unknown_fields)]
+struct GetContextArgs {}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,14 +72,14 @@ async fn execute_get_context(
     context: &TaskExecutionContext,
     args_json: &str,
 ) -> ActionOutcome {
-    let args = match parse_args::<GetContextArgs>(args_json, "system__get_context") {
-        Ok(args) => args,
+    match parse_args::<GetContextArgs>(args_json, "system__get_context") {
+        Ok(_) => {}
         Err(error) => return failure("system__get_context", error),
-    };
+    }
 
     success(
         "system__get_context",
-        context::build_context_payload(runtime, context, args.include_actions),
+        context::build_context_payload(runtime, context),
     )
 }
 
@@ -255,8 +253,6 @@ fn failure(op: &str, message: String) -> ActionOutcome {
 mod tests {
     use serde_json::Value;
 
-    use crate::environment::EnvironmentRegistry;
-    use crate::policy::synthesize_policy_snapshot;
     use crate::runtime::Runtime;
     use crate::session::task_context::TaskExecutionContext;
 
@@ -274,14 +270,9 @@ mod tests {
             engaged_environment_ids: vec!["filesystem".to_string(), "system".to_string()],
         };
 
-        let outcome = execute_action(
-            &runtime,
-            &context,
-            "get_context",
-            r#"{"include_actions":true}"#,
-        )
-        .await
-        .expect("should dispatch get_context");
+        let outcome = execute_action(&runtime, &context, "get_context", "{}")
+            .await
+            .expect("should dispatch get_context");
         assert!(outcome.succeeded);
 
         let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
@@ -294,7 +285,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_get_context_includes_known_actions_from_registry() {
+    async fn system_get_context_includes_environment_summaries() {
         let runtime = Runtime::new(2, 10);
         let context = TaskExecutionContext {
             session_id: "session-1".to_string(),
@@ -305,30 +296,21 @@ mod tests {
             engaged_environment_ids: vec!["filesystem".to_string(), "system".to_string()],
         };
 
-        let outcome = execute_action(
-            &runtime,
-            &context,
-            "get_context",
-            r#"{"include_actions":true}"#,
-        )
-        .await
-        .expect("should dispatch get_context");
+        let outcome = execute_action(&runtime, &context, "get_context", "{}")
+            .await
+            .expect("should dispatch get_context");
         assert!(outcome.succeeded);
 
         let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
-        let known_actions = payload["data"]["action_policy"]["known_actions"]
+        let environments = payload["data"]["activated_environments"]
             .as_array()
-            .expect("known_actions must be an array")
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+            .expect("activated_environments must be an array");
 
-        assert_eq!(known_actions, EnvironmentRegistry::known_action_ids());
+        assert!(!environments.is_empty());
     }
 
     #[tokio::test]
-    async fn system_get_context_uses_canonical_policy_snapshot() {
+    async fn system_get_context_excludes_policy_fields() {
         let runtime = Runtime::new(2, 10);
         let context = TaskExecutionContext {
             session_id: "session-1".to_string(),
@@ -338,45 +320,18 @@ mod tests {
             participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
             engaged_environment_ids: vec!["filesystem".to_string(), "system".to_string()],
         };
-        let policy = synthesize_policy_snapshot(true);
 
-        let outcome = execute_action(
-            &runtime,
-            &context,
-            "get_context",
-            r#"{"include_actions":true}"#,
-        )
-        .await
-        .expect("should dispatch get_context");
+        let outcome = execute_action(&runtime, &context, "get_context", "{}")
+            .await
+            .expect("should dispatch get_context");
         assert!(outcome.succeeded);
 
         let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
         let data = payload.get("data").expect("data field must exist");
 
-        assert_eq!(
-            data["path_policy"]["path_format"],
-            serde_json::json!(policy.path_policy.path_format)
-        );
-        assert_eq!(
-            data["path_policy"]["base_path_scope"],
-            serde_json::json!(policy.path_policy.base_path_scope)
-        );
-        assert_eq!(
-            data["path_policy"]["absolute_paths_allowed"],
-            serde_json::json!(policy.path_policy.absolute_paths_allowed)
-        );
-        assert_eq!(
-            data["path_policy"]["escape_outside_base_path_allowed"],
-            serde_json::json!(policy.path_policy.escape_outside_base_path_allowed)
-        );
-        assert_eq!(
-            data["history_policy"]["lookup_action"],
-            serde_json::json!(policy.history_policy.lookup_action)
-        );
-        assert_eq!(
-            data["action_policy"]["known_actions"],
-            serde_json::json!(policy.action_policy.known_actions)
-        );
+        assert!(data.get("path_policy").is_none());
+        assert!(data.get("history_policy").is_none());
+        assert!(data.get("action_policy").is_none());
         assert!(data.get("workspace_root").is_none());
         assert!(data["activated_environments"].is_array());
     }

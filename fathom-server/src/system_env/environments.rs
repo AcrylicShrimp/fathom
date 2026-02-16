@@ -78,7 +78,7 @@ fn recipes_for(env_id: &str) -> Vec<Value> {
             json!({
                 "title": "Refresh runtime context",
                 "steps": [
-                    "Call system__get_context with include_actions=true to load current policies and activated environments.",
+                    "Call system__get_context to load current runtime/session context and activated environments.",
                     "Call system__get_time when fresher clock data is required mid-turn."
                 ],
             }),

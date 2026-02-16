@@ -10,6 +10,7 @@ Fathom is a session-oriented agent runtime with a gRPC server and TUI client.
 - Agent intelligence is backed by OpenAI Responses API.
 - Assistant user-facing output supports streaming from server to client.
 - Server synthesizes authoritative time context (UTC + server-local timezone) for agent turns.
+- Model-facing behavior is defined by context synthesis + history transformation.
 
 ## Core Concepts
 
@@ -36,7 +37,7 @@ Trigger variants:
 - `Cron`
 - `RefreshProfile`
 
-Turn cut policy is snapshot-based:
+Turn cut behavior is snapshot-based:
 
 1. At turn start, all currently queued triggers are snapshotted.
 2. New triggers arriving during the turn remain queued for the next turn.
@@ -70,15 +71,15 @@ Tasks are background jobs created by agent actions.
   - `filesystem__read(path)`
   - `filesystem__write(path, content, allow_override)`
   - `filesystem__replace(path, old, new, mode)`
-- Assistant output policy:
+- Assistant output behavior:
   - User-facing messages come from native assistant model output (not a special action).
   - Streaming uses `AssistantStream`; finalized content uses matching `AssistantOutput(stream_id=...)`.
-- History transformation policy:
+- History transformation contract:
   - `task_started` and `task_finished` are recorded as distinct history events.
   - each task history entry includes `canonical_action_id`, `environment_id`, and `action_name`.
   - Task args/results are stored in history as truncated previews with byte/line cutoff metadata and lookup references.
   - Agent can query full payloads with `system__get_task_payload`.
-- Time context policy:
+- Time context contract:
   - Each turn snapshot includes `time_context` (`utc_rfc3339`, `local_rfc3339`, `local_timezone_name`, `local_utc_offset`, `generated_at_unix_ms`).
   - Each turn snapshot includes `activated_environments` (`id`, `name`, `description`).
   - `system__get_context` includes the same `time_context` shape.
@@ -127,7 +128,7 @@ Each session publishes a stream of `SessionEvent`:
 - `delta` text chunk
 - `done` lifecycle marker
 
-Client-side dedup policy:
+Client-side dedup behavior:
 - streamed assistant text is rendered progressively
 - matching finalized `AssistantOutput(stream_id=...)` replaces/finalizes the same visible line
 - duplicate finalized outputs for the same `stream_id` are ignored in conversation view
@@ -144,6 +145,7 @@ Client-side dedup policy:
   - `agent/*`: model orchestration, prompt rendering
     - prompt/system context includes activated environment summaries (`id`, `name`, short description)
     - mutable environment snapshots are not injected directly
+  - `runtime/context_snapshot.rs`: turn-time context synthesis (runtime/session/participants/engaged envs/in-flight actions)
   - `environment/*`: environment registry, environment actors, and built-in environment definitions
     - `environment/registry.rs`: composes environments and canonical action registry
     - `environment/actor.rs`: per-environment child actor runtime with in-order commit
@@ -153,10 +155,11 @@ Client-side dedup policy:
   - `history/*`: structured history line transformation and preview truncation
   - `system_env/*`: runtime/profile/session/task discovery action execution
     - includes environment discovery (`system__describe_environment`) for deeper docs/capabilities/recipes
+    - `system__get_context` returns authoritative runtime/session context snapshots
 - OpenAI-backed `AgentOrchestrator` with:
   - server-defined action registry sourced from `Environment + Action` contracts
   - streaming Responses API integration
-  - retry policy with backoff/jitter and `Retry-After` support
+  - retry strategy with backoff/jitter and `Retry-After` support
 
 ### Environment Contracts
 - `fathom-env`:
@@ -204,7 +207,7 @@ Client-side dedup policy:
 
 ## Current Scope
 This implementation is intentionally in-memory and bootstrap-focused.
-Persistence, authorization/approval policy, and real environment backends can be layered on top of this runtime contract.
+Persistence, authorization/approval controls, and real environment backends can be layered on top of this runtime contract.
 
 ## Environment
 - Required: `OPENAI_API_KEY`

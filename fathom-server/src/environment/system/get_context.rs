@@ -9,12 +9,10 @@ impl Action for GetContextAction {
     fn spec(&self) -> ActionSpec {
         system_spec(
             "get_context",
-            "Get authoritative runtime/session context, activated environments, and policy hints.",
+            "Get authoritative runtime/session context and activated environment summaries.",
             json!({
                 "type": "object",
-                "properties": {
-                    "include_actions": { "type": "boolean" }
-                },
+                "properties": {},
                 "required": [],
                 "additionalProperties": false
             }),
@@ -22,12 +20,7 @@ impl Action for GetContextAction {
     }
 
     fn validate(&self, args: &Value) -> Result<(), String> {
-        let args = args_object(args)?;
-        if let Some(include_actions) = args.get("include_actions")
-            && !include_actions.is_boolean()
-        {
-            return Err("system__get_context.include_actions must be a boolean".to_string());
-        }
+        let _ = args_object(args)?;
         Ok(())
     }
 }

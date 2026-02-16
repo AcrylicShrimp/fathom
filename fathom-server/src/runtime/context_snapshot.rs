@@ -7,7 +7,6 @@ use crate::agent::{
 };
 use crate::environment::EnvironmentRegistry;
 use crate::pb;
-use crate::policy::synthesize_policy_snapshot;
 use crate::session::SessionState;
 
 impl Runtime {
@@ -56,7 +55,6 @@ impl Runtime {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let policy = synthesize_policy_snapshot(true);
         let activated_environment_ids = state
             .engaged_environment_ids
             .iter()
@@ -96,7 +94,6 @@ impl Runtime {
         SystemContextSnapshot {
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
             time_context: self.current_system_time_context(),
-            path_policy: policy.path_policy,
             activated_environments,
             session_identity: SessionIdentityMapSnapshot {
                 session_id: state.session_id.clone(),
@@ -107,8 +104,6 @@ impl Runtime {
                 engaged_environment_ids: state.engaged_environment_ids.iter().cloned().collect(),
                 in_flight_actions,
             },
-            action_policy: policy.action_policy,
-            history_policy: policy.history_policy,
         }
     }
 }

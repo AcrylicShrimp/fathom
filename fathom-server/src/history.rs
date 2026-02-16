@@ -1,3 +1,4 @@
+mod constants;
 mod preview;
 mod schema;
 mod transform;
@@ -6,7 +7,10 @@ use crate::pb;
 use crate::session::state::SessionState;
 use crate::util::now_unix_ms;
 
-pub(crate) use preview::{PREVIEW_MAX_BYTES, PREVIEW_MAX_LINES, build_payload_preview};
+pub(crate) use constants::{
+    HISTORY_FORMAT, TASK_FINISHED_EVENT, TASK_PAYLOAD_LOOKUP_ACTION, TASK_STARTED_EVENT,
+};
+pub(crate) use preview::build_payload_preview;
 
 pub(crate) fn append_trigger_history(state: &mut SessionState, trigger: &pb::Trigger) {
     state.history.push(transform::trigger_line(state, trigger));

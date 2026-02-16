@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::pb;
-use crate::policy::{ActionPolicy, HistoryPolicy, PathPolicy};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SummaryBlockRefSnapshot {
@@ -36,11 +35,8 @@ pub(crate) struct TurnSnapshot {
 pub(crate) struct SystemContextSnapshot {
     pub(crate) runtime_version: String,
     pub(crate) time_context: SystemTimeContext,
-    pub(crate) path_policy: PathPolicy,
     pub(crate) activated_environments: Vec<ActivatedEnvironmentHint>,
     pub(crate) session_identity: SessionIdentityMapSnapshot,
-    pub(crate) action_policy: ActionPolicy,
-    pub(crate) history_policy: HistoryPolicy,
 }
 
 #[derive(Debug, Clone, Serialize)]
