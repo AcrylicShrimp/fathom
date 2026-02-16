@@ -7,11 +7,13 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
         "You are Fathom's session agent.".to_string(),
         "You may emit assistant text and/or action calls.".to_string(),
         "When calling actions, use canonical action ids in the format env__action.".to_string(),
-        "All actions are server-managed background jobs and emit task_done triggers after commit.".to_string(),
-        "Use filesystem__get_base_path/filesystem__list/filesystem__read/filesystem__write/filesystem__replace/filesystem__glob/filesystem__search for base-path-relative file operations.".to_string(),
-        "If you need fresher clock data than this snapshot, call system__get_time.".to_string(),
-        "If you need environment docs, call system__describe_environment.".to_string(),
+        "Use only actions listed under Engaged Environments for this session.".to_string(),
+        "If you need more context, prefer discovery actions listed below.".to_string(),
+        "All actions are server-managed background jobs and emit task_done triggers after commit."
+            .to_string(),
         "Task results arrive as JSON text in task_done.result_message.".to_string(),
+        "Action input schemas are enforced by the runtime; provide exact argument shapes."
+            .to_string(),
         String::new(),
     ];
 
@@ -50,17 +52,6 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
         "- time_source: {}",
         snapshot.system_context.time_context.time_source
     ));
-    lines.push("activated_environments:".to_string());
-    if snapshot.system_context.activated_environments.is_empty() {
-        lines.push("- (none)".to_string());
-    } else {
-        for environment in &snapshot.system_context.activated_environments {
-            lines.push(format!(
-                "- id={} name={} description={}",
-                environment.id, environment.name, environment.description
-            ));
-        }
-    }
     lines.push("session_identity:".to_string());
     lines.push(format!(
         "- session_id: {}",
@@ -119,6 +110,45 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
                 action.submitted_at_unix_ms,
                 action.args_preview
             ));
+        }
+    }
+    lines.push(String::new());
+
+    lines.push("## Engaged Environments and Actions".to_string());
+    if snapshot.system_context.activated_environments.is_empty() {
+        lines.push("(none)".to_string());
+    } else {
+        for environment in &snapshot.system_context.activated_environments {
+            lines.push(format!(
+                "- id={} name={} description={}",
+                environment.id, environment.name, environment.description
+            ));
+            if environment.actions.is_empty() {
+                lines.push("  actions: (none)".to_string());
+            } else {
+                lines.push("  actions:".to_string());
+                for action in &environment.actions {
+                    if action.discovery {
+                        lines.push(format!(
+                            "  - {} (discovery): {}",
+                            action.id, action.description
+                        ));
+                    } else {
+                        lines.push(format!("  - {}: {}", action.id, action.description));
+                    }
+                }
+            }
+            if environment.recipes.is_empty() {
+                lines.push("  recipes: (none)".to_string());
+            } else {
+                lines.push("  recipes:".to_string());
+                for recipe in &environment.recipes {
+                    lines.push(format!("  - {}:", recipe.title));
+                    for step in &recipe.steps {
+                        lines.push(format!("    - {}", step));
+                    }
+                }
+            }
         }
     }
     lines.push(String::new());
@@ -234,8 +264,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::agent::{
-        ActivatedEnvironmentHint, SessionCompactionSnapshot, SessionIdentityMapSnapshot,
-        SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
+        ActivatedEnvironmentActionHint, ActivatedEnvironmentHint, ActivatedEnvironmentRecipeHint,
+        SessionCompactionSnapshot, SessionIdentityMapSnapshot, SystemContextSnapshot,
+        SystemTimeContext, TurnSnapshot,
     };
     use crate::util::default_agent_profile;
 
@@ -256,12 +287,64 @@ mod tests {
                     local_utc_offset: "+09:00".to_string(),
                     time_source: "server_clock".to_string(),
                 },
-                activated_environments: vec![ActivatedEnvironmentHint {
-                    id: "filesystem".to_string(),
-                    name: "Filesystem".to_string(),
-                    description: "Stateful filesystem environment rooted at a base path."
-                        .to_string(),
-                }],
+                activated_environments: vec![
+                    ActivatedEnvironmentHint {
+                        id: "filesystem".to_string(),
+                        name: "Filesystem".to_string(),
+                        description: "Stateful filesystem environment rooted at a base path."
+                            .to_string(),
+                        actions: vec![
+                            ActivatedEnvironmentActionHint {
+                                id: "filesystem__list".to_string(),
+                                name: "list".to_string(),
+                                description:
+                                    "List directory entries for a non-empty relative path."
+                                        .to_string(),
+                                discovery: false,
+                            },
+                            ActivatedEnvironmentActionHint {
+                                id: "filesystem__read".to_string(),
+                                name: "read".to_string(),
+                                description: "Read UTF-8 file content by relative path."
+                                    .to_string(),
+                                discovery: false,
+                            },
+                        ],
+                        recipes: vec![ActivatedEnvironmentRecipeHint {
+                            title: "Find and read a file".to_string(),
+                            steps: vec![
+                                "Call filesystem__get_base_path to confirm scope.".to_string(),
+                                "Call filesystem__list with path '.' or a relative directory."
+                                    .to_string(),
+                            ],
+                        }],
+                    },
+                    ActivatedEnvironmentHint {
+                        id: "system".to_string(),
+                        name: "System".to_string(),
+                        description: "Inspect runtime context and metadata.".to_string(),
+                        actions: vec![
+                            ActivatedEnvironmentActionHint {
+                                id: "system__get_time".to_string(),
+                                name: "get_time".to_string(),
+                                description: "Get current server time context.".to_string(),
+                                discovery: true,
+                            },
+                            ActivatedEnvironmentActionHint {
+                                id: "system__describe_environment".to_string(),
+                                name: "describe_environment".to_string(),
+                                description: "Describe one engaged environment.".to_string(),
+                                discovery: true,
+                            },
+                        ],
+                        recipes: vec![ActivatedEnvironmentRecipeHint {
+                            title: "Refresh runtime context".to_string(),
+                            steps: vec![
+                                "Call system__get_context to load runtime context.".to_string(),
+                            ],
+                        }],
+                    },
+                ],
                 session_identity: SessionIdentityMapSnapshot {
                     session_id: "session-1".to_string(),
                     active_agent_id: "agent-default".to_string(),
@@ -287,7 +370,16 @@ mod tests {
         assert!(prompt.contains("current_time:"));
         assert!(prompt.contains("utc_rfc3339: 2026-02-16T00:00:00.000Z"));
         assert!(prompt.contains("local_timezone_name: Asia/Seoul"));
-        assert!(prompt.contains("call system__get_time"));
-        assert!(prompt.contains("system__describe_environment"));
+        assert!(prompt.contains("## Engaged Environments and Actions"));
+        assert!(prompt.contains("filesystem__list: List directory entries"));
+        assert!(prompt.contains("filesystem__read: Read UTF-8 file content"));
+        assert!(prompt.contains("system__get_time (discovery): Get current server time context."));
+        assert!(prompt.contains(
+            "system__describe_environment (discovery): Describe one engaged environment."
+        ));
+        assert!(prompt.contains("prefer discovery actions listed below"));
+        assert!(prompt.contains("recipes:"));
+        assert!(prompt.contains("Find and read a file:"));
+        assert!(!prompt.contains("shell__run"));
     }
 }

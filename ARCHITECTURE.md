@@ -11,6 +11,7 @@ Fathom is a session-oriented agent runtime with a gRPC server and TUI client.
 - Assistant user-facing output supports streaming from server to client.
 - Server synthesizes authoritative time context (UTC + server-local timezone) for agent turns.
 - Model-facing behavior is defined by context synthesis + history transformation.
+- Environment model currently includes `filesystem`, `shell`, and built-in `system`.
 
 ## Core Concepts
 
@@ -68,9 +69,13 @@ Tasks are background jobs created by agent actions.
 - Implemented filesystem actions execute as real background jobs:
   - `filesystem__get_base_path()`
   - `filesystem__list(path)`
-  - `filesystem__read(path)`
-  - `filesystem__write(path, content, allow_override)`
-  - `filesystem__replace(path, old, new, mode)`
+  - `filesystem__read(path, offset_line?, limit_lines?)`
+  - `filesystem__write(path, content, allow_override, create_parents?)`
+  - `filesystem__replace(path, old, new, mode, expected_replacements?)`
+  - `filesystem__glob(pattern, path?, max_results?, include_hidden?)`
+  - `filesystem__search(pattern, path?, include?, max_results?, case_sensitive?)`
+- Implemented shell action executes as real background job:
+  - `shell__run(command, path?, env?, timeout_ms?)`
 - Assistant output behavior:
   - User-facing messages come from native assistant model output (not a special action).
   - Streaming uses `AssistantStream`; finalized content uses matching `AssistantOutput(stream_id=...)`.
@@ -94,6 +99,14 @@ Filesystem actions use plain relative paths resolved from the filesystem environ
 
 Profile content is not exposed as pseudo-files via filesystem actions. Profile and memory data are accessed through system actions such as `system__list_profiles` and `system__get_profile`.
 Environment state is opaque to the agent by default. Agents inspect environment internals through explicit inspection actions (for example `filesystem__get_base_path` and `system__describe_environment`), not by raw state injection.
+
+### Shell Path Model
+Shell actions use plain relative directory paths resolved from the shell environment base path.
+
+- `shell__run.path` defaults to `.`
+- Absolute paths, URI schemes, and escapes outside base path are rejected
+- Command execution is non-interactive with timeout + bounded stdout/stderr capture
+- Non-zero exit codes produce failed task outcomes
 
 ## Identity and Memory
 
@@ -167,9 +180,13 @@ Client-side dedup behavior:
   - environment metadata includes `id`, `name`, and `description`
   - canonical naming helpers (`env__action`)
 - `envs/fathom-env-fs`:
-  - filesystem environment action instances (`get_base_path`, `list`, `read`, `write`, `replace`)
+  - filesystem environment action instances (`get_base_path`, `list`, `read`, `write`, `replace`, `glob`, `search`)
   - action schemas and validation
   - filesystem execution backend (path parsing, sandboxing, real I/O)
+- `envs/fathom-env-shell`:
+  - shell environment action instance (`run`)
+  - action schema and validation
+  - async command execution backend (cwd/env overrides, timeout, bounded output capture)
 - System actions remain built-in in `fathom-server` because they require privileged server/runtime access.
 
 ### Client (`fathom-client`)

@@ -13,6 +13,12 @@ pub struct EnvironmentSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentRecipe {
+    pub title: String,
+    pub steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentSnapshot {
     pub env_id: String,
     pub schema_version: u32,
@@ -56,6 +62,10 @@ pub trait Environment: Send + Sync + 'static {
     fn initial_state(&self) -> Value;
 
     fn actions(&self) -> Vec<Arc<dyn Action>>;
+
+    fn recipes(&self) -> Vec<EnvironmentRecipe> {
+        Vec::new()
+    }
 
     fn apply_transition(
         &self,

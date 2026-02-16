@@ -46,6 +46,7 @@ pub(crate) struct ActivatedEnvironmentSummary {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) description: String,
+    pub(crate) recipes: Vec<fathom_env::EnvironmentRecipe>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -190,6 +191,14 @@ impl EnvironmentRegistry {
                 args_json,
                 environment_state,
             ),
+            fathom_env_shell::SHELL_ENVIRONMENT_ID => {
+                fathom_env_shell::execute_action(
+                    resolved.action_name.as_str(),
+                    args_json,
+                    environment_state,
+                )
+                .await
+            }
             "system" => {
                 crate::system_env::execute_action(
                     runtime,
@@ -219,6 +228,10 @@ impl EnvironmentRegistry {
         register_environment(
             &mut environments,
             Arc::new(fathom_env_fs::FilesystemEnvironment),
+        );
+        register_environment(
+            &mut environments,
+            Arc::new(fathom_env_shell::ShellEnvironment),
         );
         register_environment(&mut environments, Arc::new(SystemEnvironment));
 
@@ -268,6 +281,7 @@ impl EnvironmentRegistry {
             id: spec.id.to_string(),
             name: spec.name.to_string(),
             description: spec.description.to_string(),
+            recipes: environment.recipes(),
         })
     }
 
@@ -375,5 +389,17 @@ mod tests {
 
         assert!(description.contains("non-empty relative"));
         assert!(description.contains("use `.`"));
+    }
+
+    #[test]
+    fn shell_run_definition_exists() {
+        let registry = EnvironmentRegistry::new();
+        let definitions = registry.openai_action_definitions();
+
+        assert!(
+            definitions
+                .iter()
+                .any(|definition| definition["name"] == json!("shell__run"))
+        );
     }
 }

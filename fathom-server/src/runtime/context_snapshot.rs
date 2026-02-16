@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use super::Runtime;
 use crate::agent::{
-    ActivatedEnvironmentHint, InFlightActionHint, SessionIdentityMapSnapshot,
-    SystemContextSnapshot, TurnSnapshot,
+    ActivatedEnvironmentActionHint, ActivatedEnvironmentHint, ActivatedEnvironmentRecipeHint,
+    InFlightActionHint, SessionIdentityMapSnapshot, SystemContextSnapshot, TurnSnapshot,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::pb;
@@ -60,15 +60,36 @@ impl Runtime {
             .iter()
             .cloned()
             .collect::<Vec<_>>();
-        let activated_environments =
-            EnvironmentRegistry::activated_environment_summaries(&activated_environment_ids)
-                .into_iter()
-                .map(|environment| ActivatedEnvironmentHint {
+        let activated_environments = activated_environment_ids
+            .iter()
+            .filter_map(|environment_id| {
+                let environment = EnvironmentRegistry::environment_summary(environment_id)?;
+                let actions = EnvironmentRegistry::environment_action_summaries(environment_id)?
+                    .into_iter()
+                    .map(|action| ActivatedEnvironmentActionHint {
+                        id: action.id,
+                        name: action.name,
+                        description: action.description,
+                        discovery: action.discovery,
+                    })
+                    .collect::<Vec<_>>();
+                let recipes = environment
+                    .recipes
+                    .into_iter()
+                    .map(|recipe| ActivatedEnvironmentRecipeHint {
+                        title: recipe.title,
+                        steps: recipe.steps,
+                    })
+                    .collect::<Vec<_>>();
+                Some(ActivatedEnvironmentHint {
                     id: environment.id,
                     name: environment.name,
                     description: environment.description,
+                    actions,
+                    recipes,
                 })
-                .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
         let in_flight_actions = state
             .in_flight_actions
             .values()
@@ -143,5 +164,34 @@ mod tests {
         assert!(!time_context.local_timezone_name.trim().is_empty());
         assert!(!time_context.local_utc_offset.trim().is_empty());
         assert_eq!(time_context.time_source, "server_clock");
+    }
+
+    #[test]
+    fn turn_snapshot_includes_engaged_environment_actions() {
+        let runtime = Runtime::new(2, 10);
+        let user_id = "user-a".to_string();
+        let state = SessionState::new(
+            "session-1".to_string(),
+            "agent-a".to_string(),
+            vec![user_id.clone()],
+            default_agent_profile("agent-a"),
+            HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
+            EnvironmentRegistry::default_engaged_environment_ids()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            EnvironmentRegistry::initial_environment_snapshots()
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
+        );
+
+        let snapshot = runtime.build_turn_snapshot(&state, 1, &[]);
+        assert!(!snapshot.system_context.activated_environments.is_empty());
+        assert!(
+            snapshot
+                .system_context
+                .activated_environments
+                .iter()
+                .all(|environment| !environment.actions.is_empty())
+        );
     }
 }

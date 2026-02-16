@@ -44,6 +44,22 @@ pub(crate) struct ActivatedEnvironmentHint {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) description: String,
+    pub(crate) actions: Vec<ActivatedEnvironmentActionHint>,
+    pub(crate) recipes: Vec<ActivatedEnvironmentRecipeHint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ActivatedEnvironmentActionHint {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) discovery: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ActivatedEnvironmentRecipeHint {
+    pub(crate) title: String,
+    pub(crate) steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -10,7 +10,7 @@ mod validate;
 
 use std::sync::Arc;
 
-use fathom_env::{Action, Environment, EnvironmentSpec};
+use fathom_env::{Action, Environment, EnvironmentRecipe, EnvironmentSpec};
 use serde_json::{Value, json};
 
 use fs_get_base_path::FsGetBasePathAction;
@@ -50,6 +50,40 @@ impl Environment for FilesystemEnvironment {
             Arc::new(FsReplaceAction),
             Arc::new(FsGlobAction),
             Arc::new(FsSearchAction),
+        ]
+    }
+
+    fn recipes(&self) -> Vec<EnvironmentRecipe> {
+        vec![
+            EnvironmentRecipe {
+                title: "Locate and inspect files safely".to_string(),
+                steps: vec![
+                    "Use non-empty relative paths only. For root, always use path '.'. Do not use empty path, absolute path, or URI-like prefixes.".to_string(),
+                    "Call filesystem__get_base_path when you need to restate current scope to the user.".to_string(),
+                    "Call filesystem__list on '.' or a relative directory to discover candidates.".to_string(),
+                    "Call filesystem__read on a specific file; use offset_line/limit_lines for large files.".to_string(),
+                    "If read fails with invalid_encoding, report that the target is not UTF-8 text and avoid text actions on it.".to_string(),
+                ],
+            },
+            EnvironmentRecipe {
+                title: "Create or edit UTF-8 text files".to_string(),
+                steps: vec![
+                    "Confirm target path first with filesystem__list to avoid writing the wrong file.".to_string(),
+                    "For full rewrites, call filesystem__write with {path, content, allow_override, create_parents?}.".to_string(),
+                    "For targeted edits, call filesystem__replace with regex pattern and mode first/all.".to_string(),
+                    "Use expected_replacements when correctness matters and fail loudly on mismatch.".to_string(),
+                    "Read the file again after mutation to verify final content.".to_string(),
+                ],
+            },
+            EnvironmentRecipe {
+                title: "Search code and content".to_string(),
+                steps: vec![
+                    "Use filesystem__glob to discover candidate files quickly by path pattern.".to_string(),
+                    "Use filesystem__search with regex to find precise references in file contents.".to_string(),
+                    "Scope search using include globs and max_results to keep responses concise.".to_string(),
+                    "If search hits invalid_encoding, narrow include patterns to known UTF-8 text files.".to_string(),
+                ],
+            },
         ]
     }
 }
