@@ -1,11 +1,13 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
 use crate::agent::{SessionCompactionSnapshot, SummaryBlockRefSnapshot};
+use crate::environment::EnvironmentCommittedAction;
 use crate::pb;
 use crate::util::now_unix_ms;
+use fathom_tooling::EnvironmentSnapshot;
 
 #[derive(Clone)]
 pub(crate) struct SessionRuntime {
@@ -28,11 +30,21 @@ pub(crate) enum SessionCommand {
         task_id: String,
         respond_to: oneshot::Sender<Result<pb::CancelTaskResponse, Status>>,
     },
-    TaskFinished {
-        task_id: String,
-        succeeded: bool,
-        message: String,
+    EnvironmentActionCommitted {
+        committed: EnvironmentCommittedAction,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InFlightActionState {
+    pub(crate) task_id: String,
+    pub(crate) canonical_action_id: String,
+    pub(crate) environment_id: String,
+    pub(crate) action_name: String,
+    pub(crate) env_seq: u64,
+    pub(crate) status: String,
+    pub(crate) submitted_at_unix_ms: i64,
+    pub(crate) args_preview: String,
 }
 
 pub(crate) struct SessionState {
@@ -45,9 +57,10 @@ pub(crate) struct SessionState {
     pub(crate) trigger_queue: VecDeque<pb::Trigger>,
     pub(crate) history: Vec<String>,
     pub(crate) tasks: HashMap<String, pb::Task>,
-    pub(crate) send_message_task_stream_ids: HashMap<String, String>,
-    pub(crate) pending_task_ids: VecDeque<String>,
-    pub(crate) running_task_ids: HashSet<String>,
+    pub(crate) engaged_environment_ids: BTreeSet<String>,
+    pub(crate) environment_snapshots: HashMap<String, EnvironmentSnapshot>,
+    pub(crate) next_environment_seq: HashMap<String, u64>,
+    pub(crate) in_flight_actions: HashMap<String, InFlightActionState>,
     pub(crate) turn_seq: u64,
     pub(crate) turn_in_progress: bool,
     pub(crate) compaction: SessionCompactionSnapshot,
@@ -60,7 +73,14 @@ impl SessionState {
         participant_user_ids: Vec<String>,
         agent_profile_copy: pb::AgentProfile,
         participant_user_profiles_copy: HashMap<String, pb::UserProfile>,
+        engaged_environment_ids: BTreeSet<String>,
+        environment_snapshots: HashMap<String, EnvironmentSnapshot>,
     ) -> Self {
+        let next_environment_seq = engaged_environment_ids
+            .iter()
+            .map(|env_id| (env_id.clone(), 0u64))
+            .collect::<HashMap<_, _>>();
+
         Self {
             session_id,
             created_at_unix_ms: now_unix_ms(),
@@ -71,9 +91,10 @@ impl SessionState {
             trigger_queue: VecDeque::new(),
             history: Vec::new(),
             tasks: HashMap::new(),
-            send_message_task_stream_ids: HashMap::new(),
-            pending_task_ids: VecDeque::new(),
-            running_task_ids: HashSet::new(),
+            engaged_environment_ids,
+            environment_snapshots,
+            next_environment_seq,
+            in_flight_actions: HashMap::new(),
             turn_seq: 0,
             turn_in_progress: false,
             compaction: SessionCompactionSnapshot {
@@ -119,5 +140,14 @@ impl SessionState {
             pending_task_count,
             running_task_count,
         }
+    }
+
+    pub(crate) fn allocate_environment_seq(&mut self, environment_id: &str) -> u64 {
+        let seq = self
+            .next_environment_seq
+            .entry(environment_id.to_string())
+            .or_insert(0);
+        *seq += 1;
+        *seq
     }
 }

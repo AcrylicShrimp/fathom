@@ -1,25 +1,23 @@
 mod openai;
 mod prompt;
 mod retry;
-mod tool_registry;
-mod tools;
 mod types;
 
-pub(crate) use tool_registry::ToolRegistry;
 pub(crate) use types::{
-    AgentTurnOutcome, SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote,
-    SummaryBlockRefSnapshot, SystemContextSnapshot, SystemTimeContext, ToolArgDeltaNote,
-    ToolArgDoneNote, ToolInvocation, TurnSnapshot,
+    ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, AgentTurnOutcome, InFlightActionHint,
+    SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote, SummaryBlockRefSnapshot,
+    SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
 };
 
+use crate::environment::EnvironmentRegistry;
 use openai::OpenAiClient;
-use prompt::build_tool_only_prompt;
+use prompt::build_agent_prompt;
 
 #[derive(Clone)]
 pub(crate) struct AgentOrchestrator {
     openai: Option<OpenAiClient>,
     init_error: Option<String>,
-    tools: ToolRegistry,
+    environment_registry: EnvironmentRegistry,
 }
 
 impl AgentOrchestrator {
@@ -28,29 +26,33 @@ impl AgentOrchestrator {
             Ok(openai) => Self {
                 openai: Some(openai),
                 init_error: None,
-                tools: ToolRegistry::new(),
+                environment_registry: EnvironmentRegistry::new(),
             },
             Err(error) => Self {
                 openai: None,
                 init_error: Some(error),
-                tools: ToolRegistry::new(),
+                environment_registry: EnvironmentRegistry::new(),
             },
         }
     }
 
-    pub(crate) async fn run_turn<FS, FT, FD, FN>(
+    pub(crate) async fn run_turn<FS, FA, FD, FN, FT, FC>(
         &self,
         snapshot: &TurnSnapshot,
         mut on_stream: FS,
-        mut on_tool: FT,
-        mut on_tool_args_delta: FD,
-        mut on_tool_args_done: FN,
+        mut on_action: FA,
+        mut on_action_args_delta: FD,
+        mut on_action_args_done: FN,
+        mut on_assistant_delta: FT,
+        mut on_assistant_done: FC,
     ) -> AgentTurnOutcome
     where
         FS: FnMut(StreamNote),
-        FT: FnMut(ToolInvocation),
-        FD: FnMut(ToolArgDeltaNote),
-        FN: FnMut(ToolArgDoneNote),
+        FA: FnMut(ActionInvocation),
+        FD: FnMut(ActionArgDeltaNote),
+        FN: FnMut(ActionArgDoneNote),
+        FT: FnMut(String),
+        FC: FnMut(String),
     {
         if let Some(error) = &self.init_error {
             return AgentTurnOutcome::failure(
@@ -77,52 +79,66 @@ impl AgentOrchestrator {
                 detail: format!("semantic_attempt={}", semantic_attempt + 1),
             });
 
-            let prompt = build_tool_only_prompt(snapshot, retry_feedback);
+            let prompt = build_agent_prompt(snapshot, retry_feedback);
             let result = openai
-                .stream_tool_calls(
+                .stream_actions(
                     &prompt,
-                    &self.tools,
+                    &self.environment_registry,
                     &mut on_stream,
-                    |tool_invocation| {
-                        on_tool(tool_invocation);
+                    |action_invocation| {
+                        on_action(action_invocation);
                     },
                     |note| {
-                        on_tool_args_delta(note);
+                        on_action_args_delta(note);
                     },
                     |note| {
-                        on_tool_args_done(note);
+                        on_action_args_done(note);
+                    },
+                    |delta| {
+                        on_assistant_delta(delta);
+                    },
+                    |text| {
+                        on_assistant_done(text);
                     },
                 )
                 .await;
 
             match result {
-                Ok(stream_outcome) if stream_outcome.tool_call_count > 0 => {
+                Ok(stream_outcome)
+                    if stream_outcome.action_call_count > 0
+                        || !stream_outcome.assistant_outputs.is_empty() =>
+                {
                     diagnostics.extend(stream_outcome.diagnostics);
                     diagnostics.push(format!(
-                        "tool_calls_dispatched={} on attempt {}",
-                        stream_outcome.tool_call_count,
+                        "action_calls_dispatched={} assistant_outputs={} on attempt {}",
+                        stream_outcome.action_call_count,
+                        stream_outcome.assistant_outputs.len(),
                         semantic_attempt + 1
                     ));
-                    return AgentTurnOutcome::success(stream_outcome.tool_call_count, diagnostics);
+                    return AgentTurnOutcome::success(
+                        stream_outcome.action_call_count,
+                        stream_outcome.assistant_outputs,
+                        diagnostics,
+                    );
                 }
                 Ok(stream_outcome) => {
                     diagnostics.extend(stream_outcome.diagnostics);
                     diagnostics.push(format!(
-                        "no tool call generated on attempt {}",
+                        "no action call or assistant output generated on attempt {}",
                         semantic_attempt + 1
                     ));
 
                     if semantic_attempt == 0 {
                         retry_feedback = Some(
-                            "No valid executable tool call was produced. You MUST emit at least \
-one valid tool call using the provided tool schemas.",
+                            "No valid executable action call or assistant output was produced. \
+You MUST emit at least one valid action call or assistant output.",
                         );
                         continue;
                     }
 
                     return AgentTurnOutcome::failure(
-                        "no_tool_call",
-                        "agent produced no executable tool call after retry",
+                        "no_action_or_output",
+                        "agent produced no executable action call or assistant output after retry",
                         diagnostics,
                     );
                 }

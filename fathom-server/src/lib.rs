@@ -10,6 +10,7 @@ pub mod pb {
 }
 
 mod agent;
+mod environment;
 mod fs;
 mod history;
 mod policy;

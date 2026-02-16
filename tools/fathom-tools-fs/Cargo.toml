@@ -1,0 +1,9 @@
+[package]
+name = "fathom-tools-fs"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+fathom-tooling.workspace = true
+serde_json.workspace = true

@@ -72,7 +72,9 @@ pub(crate) async fn get_profile(
                 ProfileView::Full => json!({ "profile": user_full(profile) }),
             })
         }
-        ProfileKind::All => Err("kind must be `agent` or `user` for sys_get_profile".to_string()),
+        ProfileKind::All => {
+            Err("kind must be `agent` or `user` for system__get_profile".to_string())
+        }
     }
 }
 

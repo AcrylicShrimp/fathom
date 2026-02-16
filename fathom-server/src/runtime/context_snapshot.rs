@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::Runtime;
-use crate::agent::{SessionIdentityMapSnapshot, SystemContextSnapshot, TurnSnapshot};
+use crate::agent::{
+    InFlightActionHint, SessionIdentityMapSnapshot, SystemContextSnapshot, TurnSnapshot,
+};
 use crate::pb;
 use crate::policy::system_policy;
 use crate::session::SessionState;
@@ -53,6 +55,27 @@ impl Runtime {
             .collect::<BTreeMap<_, _>>();
 
         let policy = system_policy();
+        let in_flight_actions = state
+            .in_flight_actions
+            .values()
+            .map(|action| InFlightActionHint {
+                task_id: action.task_id.clone(),
+                canonical_action_id: action.canonical_action_id.clone(),
+                environment_id: action.environment_id.clone(),
+                action_name: action.action_name.clone(),
+                env_seq: action.env_seq,
+                status: action.status.clone(),
+                submitted_at_unix_ms: action.submitted_at_unix_ms,
+                args_preview: action.args_preview.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut in_flight_actions = in_flight_actions;
+        in_flight_actions.sort_by(|a, b| {
+            a.environment_id
+                .cmp(&b.environment_id)
+                .then(a.env_seq.cmp(&b.env_seq))
+                .then(a.task_id.cmp(&b.task_id))
+        });
 
         SystemContextSnapshot {
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -65,8 +88,11 @@ impl Runtime {
                 participant_user_ids: state.participant_user_ids.clone(),
                 active_agent_spec_version: state.agent_profile_copy.spec_version,
                 participant_user_updated_at,
+                engaged_environment_ids: state.engaged_environment_ids.iter().cloned().collect(),
+                in_flight_actions,
             },
-            tool_policy: policy.tool_policy,
+            action_policy: policy.action_policy,
+            environment_policy: policy.environment_policy,
             history_policy: policy.history_policy,
         }
     }
@@ -74,9 +100,10 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
 
     use super::Runtime;
+    use crate::environment::EnvironmentRegistry;
     use crate::session::SessionState;
     use crate::util::{default_agent_profile, default_user_profile};
 
@@ -90,6 +117,12 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
+            EnvironmentRegistry::default_engaged_environment_ids()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            EnvironmentRegistry::initial_environment_snapshots()
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
         );
 
         let snapshot = runtime.build_turn_snapshot(&state, 1, &[]);

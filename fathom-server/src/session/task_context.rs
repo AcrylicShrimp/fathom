@@ -9,6 +9,7 @@ pub(crate) struct TaskExecutionContext {
     pub(crate) participant_user_ids: Vec<String>,
     pub(crate) active_agent_spec_version: u64,
     pub(crate) participant_user_updated_at: BTreeMap<String, i64>,
+    pub(crate) engaged_environment_ids: Vec<String>,
 }
 
 impl TaskExecutionContext {
@@ -32,6 +33,7 @@ impl TaskExecutionContext {
             participant_user_ids: state.participant_user_ids.clone(),
             active_agent_spec_version: state.agent_profile_copy.spec_version,
             participant_user_updated_at,
+            engaged_environment_ids: state.engaged_environment_ids.iter().cloned().collect(),
         }
     }
 }

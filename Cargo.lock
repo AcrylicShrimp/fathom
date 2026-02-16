@@ -659,6 +659,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "fathom-tooling",
+ "fathom-tools-fs",
  "futures-util",
  "prost",
  "reqwest",
@@ -670,6 +672,23 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
+]
+
+[[package]]
+name = "fathom-tooling"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "fathom-tools-fs"
+version = "0.1.0"
+dependencies = [
+ "fathom-tooling",
+ "serde_json",
 ]
 
 [[package]]

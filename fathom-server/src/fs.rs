@@ -44,22 +44,22 @@ struct ReplaceArgs {
     mode: ReplaceMode,
 }
 
-pub(crate) async fn execute_tool(
+pub(crate) async fn execute_action(
     runtime: &Runtime,
-    tool_name: &str,
+    action_name: &str,
     args_json: &str,
 ) -> Option<TaskOutcome> {
-    match tool_name {
-        "fs_list" => Some(execute_list(runtime, args_json).await),
-        "fs_read" => Some(execute_read(runtime, args_json).await),
-        "fs_write" => Some(execute_write(runtime, args_json).await),
-        "fs_replace" => Some(execute_replace(runtime, args_json).await),
+    match action_name {
+        "list" => Some(execute_list(runtime, args_json).await),
+        "read" => Some(execute_read(runtime, args_json).await),
+        "write" => Some(execute_write(runtime, args_json).await),
+        "replace" => Some(execute_replace(runtime, args_json).await),
         _ => None,
     }
 }
 
 async fn execute_list(runtime: &Runtime, args_json: &str) -> TaskOutcome {
-    let args = match parse_args::<ListArgs>(args_json, "fs_list") {
+    let args = match parse_args::<ListArgs>(args_json, "filesystem__list") {
         Ok(args) => args,
         Err(error) => return result::failure("list", None, &error, None),
     };
@@ -72,7 +72,7 @@ async fn execute_list(runtime: &Runtime, args_json: &str) -> TaskOutcome {
 }
 
 async fn execute_read(runtime: &Runtime, args_json: &str) -> TaskOutcome {
-    let args = match parse_args::<ReadArgs>(args_json, "fs_read") {
+    let args = match parse_args::<ReadArgs>(args_json, "filesystem__read") {
         Ok(args) => args,
         Err(error) => return result::failure("read", None, &error, None),
     };
@@ -85,7 +85,7 @@ async fn execute_read(runtime: &Runtime, args_json: &str) -> TaskOutcome {
 }
 
 async fn execute_write(runtime: &Runtime, args_json: &str) -> TaskOutcome {
-    let args = match parse_args::<WriteArgs>(args_json, "fs_write") {
+    let args = match parse_args::<WriteArgs>(args_json, "filesystem__write") {
         Ok(args) => args,
         Err(error) => return result::failure("write", None, &error, None),
     };
@@ -98,7 +98,7 @@ async fn execute_write(runtime: &Runtime, args_json: &str) -> TaskOutcome {
 }
 
 async fn execute_replace(runtime: &Runtime, args_json: &str) -> TaskOutcome {
-    let args = match parse_args::<ReplaceArgs>(args_json, "fs_replace") {
+    let args = match parse_args::<ReplaceArgs>(args_json, "filesystem__replace") {
         Ok(args) => args,
         Err(error) => return result::failure("replace", None, &error, None),
     };
@@ -181,12 +181,12 @@ async fn execute_replace_on_path(
     }
 }
 
-fn parse_args<T>(args_json: &str, tool_name: &str) -> Result<T, FsError>
+fn parse_args<T>(args_json: &str, action_id: &str) -> Result<T, FsError>
 where
     T: for<'de> Deserialize<'de>,
 {
     serde_json::from_str(args_json).map_err(|error| {
-        FsError::invalid_args(format!("failed to parse args for `{tool_name}`: {error}"))
+        FsError::invalid_args(format!("failed to parse args for `{action_id}`: {error}"))
     })
 }
 
@@ -198,23 +198,23 @@ mod tests {
 
     use crate::runtime::Runtime;
 
-    use super::execute_tool;
+    use super::execute_action;
 
     #[tokio::test]
     async fn fs_tools_write_and_read_managed_agent_field() {
         let runtime = Runtime::new(2, 10);
-        let write_outcome = execute_tool(
+        let write_outcome = execute_action(
             &runtime,
-            "fs_write",
+            "write",
             r#"{"path":"managed://agent/agent-a/long_term_memory_md","content":"hello memory","allow_override":true}"#,
         )
         .await
         .expect("fs_write should dispatch");
         assert!(write_outcome.succeeded);
 
-        let read_outcome = execute_tool(
+        let read_outcome = execute_action(
             &runtime,
-            "fs_read",
+            "read",
             r#"{"path":"managed://agent/agent-a/long_term_memory_md"}"#,
         )
         .await
@@ -237,25 +237,25 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temp root");
         let runtime = Runtime::new_with_workspace_root(2, 10, root.clone()).expect("runtime");
 
-        let write_outcome = execute_tool(
+        let write_outcome = execute_action(
             &runtime,
-            "fs_write",
+            "write",
             r#"{"path":"fs://notes.txt","content":"a a a","allow_override":true}"#,
         )
         .await
         .expect("fs_write should dispatch");
         assert!(write_outcome.succeeded);
 
-        let replace_first = execute_tool(
+        let replace_first = execute_action(
             &runtime,
-            "fs_replace",
+            "replace",
             r#"{"path":"fs://notes.txt","old":"a","new":"z","mode":"first"}"#,
         )
         .await
         .expect("fs_replace first should dispatch");
         assert!(replace_first.succeeded);
 
-        let read_after_first = execute_tool(&runtime, "fs_read", r#"{"path":"fs://notes.txt"}"#)
+        let read_after_first = execute_action(&runtime, "read", r#"{"path":"fs://notes.txt"}"#)
             .await
             .expect("fs_read should dispatch");
         let payload_first: Value =
@@ -267,16 +267,16 @@ mod tests {
             "z a a"
         );
 
-        let replace_all = execute_tool(
+        let replace_all = execute_action(
             &runtime,
-            "fs_replace",
+            "replace",
             r#"{"path":"fs://notes.txt","old":"a","new":"x","mode":"all"}"#,
         )
         .await
         .expect("fs_replace all should dispatch");
         assert!(replace_all.succeeded);
 
-        let read_after_all = execute_tool(&runtime, "fs_read", r#"{"path":"fs://notes.txt"}"#)
+        let read_after_all = execute_action(&runtime, "read", r#"{"path":"fs://notes.txt"}"#)
             .await
             .expect("fs_read should dispatch");
         let payload_all: Value =
@@ -295,7 +295,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temp root");
         let runtime = Runtime::new_with_workspace_root(2, 10, root.clone()).expect("runtime");
 
-        let outcome = execute_tool(&runtime, "fs_read", r#"{"path":"fs://../../etc/passwd"}"#)
+        let outcome = execute_action(&runtime, "read", r#"{"path":"fs://../../etc/passwd"}"#)
             .await
             .expect("fs_read should dispatch");
         assert!(!outcome.succeeded);

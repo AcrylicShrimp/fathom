@@ -6,7 +6,7 @@ use crate::pb;
 use crate::session::state::SessionState;
 use crate::util::now_unix_ms;
 
-pub(crate) use preview::{PREVIEW_MAX_BYTES, PREVIEW_MAX_LINES};
+pub(crate) use preview::{PREVIEW_MAX_BYTES, PREVIEW_MAX_LINES, build_payload_preview};
 
 pub(crate) fn append_trigger_history(state: &mut SessionState, trigger: &pb::Trigger) {
     state.history.push(transform::trigger_line(state, trigger));

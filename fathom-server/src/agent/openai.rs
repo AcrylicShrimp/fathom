@@ -6,8 +6,8 @@ use reqwest::header::RETRY_AFTER;
 use serde_json::{Value, json};
 
 use crate::agent::retry::RetryPolicy;
-use crate::agent::tool_registry::ToolRegistry;
-use crate::agent::types::{StreamNote, ToolArgDeltaNote, ToolArgDoneNote, ToolInvocation};
+use crate::agent::types::{ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, StreamNote};
+use crate::environment::EnvironmentRegistry;
 
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-5.2-codex";
@@ -16,7 +16,7 @@ const FALLBACK_REASONING_EFFORT: &str = "high";
 const DEFAULT_TIMEOUT_SECS: u64 = 45;
 
 #[derive(Debug, Clone)]
-struct PartialToolCall {
+struct PartialActionCall {
     call_id: Option<String>,
     name: Option<String>,
     arguments: String,
@@ -24,7 +24,8 @@ struct PartialToolCall {
 
 #[derive(Debug, Clone)]
 pub(crate) struct OpenAiStreamOutcome {
-    pub(crate) tool_call_count: usize,
+    pub(crate) action_call_count: usize,
+    pub(crate) assistant_outputs: Vec<String>,
     pub(crate) diagnostics: Vec<String>,
 }
 
@@ -53,20 +54,25 @@ impl OpenAiClient {
         })
     }
 
-    pub(crate) async fn stream_tool_calls<FS, FT, FD, FN>(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn stream_actions<FS, FA, FD, FN, FT, FC>(
         &self,
         prompt: &str,
-        tool_registry: &ToolRegistry,
+        environment_registry: &EnvironmentRegistry,
         mut on_stream: FS,
-        mut on_tool: FT,
-        mut on_tool_args_delta: FD,
-        mut on_tool_args_done: FN,
+        mut on_action: FA,
+        mut on_action_args_delta: FD,
+        mut on_action_args_done: FN,
+        mut on_assistant_delta: FT,
+        mut on_assistant_done: FC,
     ) -> Result<OpenAiStreamOutcome, String>
     where
         FS: FnMut(StreamNote),
-        FT: FnMut(ToolInvocation),
-        FD: FnMut(ToolArgDeltaNote),
-        FN: FnMut(ToolArgDoneNote),
+        FA: FnMut(ActionInvocation),
+        FD: FnMut(ActionArgDeltaNote),
+        FN: FnMut(ActionArgDoneNote),
+        FT: FnMut(String),
+        FC: FnMut(String),
     {
         let Some(api_key) = self.api_key.as_deref() else {
             return Err("OPENAI_API_KEY is required but not configured".to_string());
@@ -88,8 +94,8 @@ impl OpenAiClient {
                 "stream": true,
                 "input": prompt,
                 "reasoning": { "effort": reasoning_effort },
-                "tools": tool_registry.openai_tool_definitions(),
-                "tool_choice": "required"
+                "tools": environment_registry.openai_action_definitions(),
+                "tool_choice": "auto"
             });
 
             let response = self
@@ -105,11 +111,12 @@ impl OpenAiClient {
                     let result = self
                         .parse_stream(
                             response,
-                            tool_registry,
                             &mut on_stream,
-                            &mut on_tool,
-                            &mut on_tool_args_delta,
-                            &mut on_tool_args_done,
+                            &mut on_action,
+                            &mut on_action_args_delta,
+                            &mut on_action_args_done,
+                            &mut on_assistant_delta,
+                            &mut on_assistant_done,
                         )
                         .await;
                     match result {
@@ -200,27 +207,33 @@ impl OpenAiClient {
         Err(last_error)
     }
 
-    async fn parse_stream<FS, FT, FD, FN>(
+    #[allow(clippy::too_many_arguments)]
+    async fn parse_stream<FS, FA, FD, FN, FT, FC>(
         &self,
         response: reqwest::Response,
-        tool_registry: &ToolRegistry,
         on_stream: &mut FS,
-        on_tool: &mut FT,
-        on_tool_args_delta: &mut FD,
-        on_tool_args_done: &mut FN,
+        on_action: &mut FA,
+        on_action_args_delta: &mut FD,
+        on_action_args_done: &mut FN,
+        on_assistant_delta: &mut FT,
+        on_assistant_done: &mut FC,
     ) -> Result<OpenAiStreamOutcome, String>
     where
         FS: FnMut(StreamNote),
-        FT: FnMut(ToolInvocation),
-        FD: FnMut(ToolArgDeltaNote),
-        FN: FnMut(ToolArgDoneNote),
+        FA: FnMut(ActionInvocation),
+        FD: FnMut(ActionArgDeltaNote),
+        FN: FnMut(ActionArgDoneNote),
+        FT: FnMut(String),
+        FC: FnMut(String),
     {
         let mut stream = response.bytes_stream();
         let mut line_buffer = String::new();
-        let mut partial_calls: HashMap<String, PartialToolCall> = HashMap::new();
+        let mut partial_calls: HashMap<String, PartialActionCall> = HashMap::new();
         let mut dispatched_keys: HashSet<String> = HashSet::new();
-        let mut tool_call_count = 0usize;
+        let mut action_call_count = 0usize;
         let mut diagnostics = Vec::new();
+        let mut active_assistant_output = String::new();
+        let mut assistant_outputs = Vec::new();
 
         while let Some(chunk_result) = stream.next().await {
             let bytes = chunk_result.map_err(|error| format!("stream chunk error: {error}"))?;
@@ -237,8 +250,14 @@ impl OpenAiClient {
 
                 let payload = line[5..].trim();
                 if payload == "[DONE]" {
+                    flush_assistant_output(
+                        &mut active_assistant_output,
+                        &mut assistant_outputs,
+                        on_assistant_done,
+                    );
                     return Ok(OpenAiStreamOutcome {
-                        tool_call_count,
+                        action_call_count,
+                        assistant_outputs,
                         diagnostics,
                     });
                 }
@@ -247,44 +266,59 @@ impl OpenAiClient {
                     .map_err(|error| format!("invalid stream json payload: {error}"))?;
                 handle_stream_event(
                     value,
-                    tool_registry,
                     on_stream,
-                    on_tool,
-                    on_tool_args_delta,
-                    on_tool_args_done,
+                    on_action,
+                    on_action_args_delta,
+                    on_action_args_done,
+                    on_assistant_delta,
+                    on_assistant_done,
                     &mut partial_calls,
                     &mut dispatched_keys,
-                    &mut tool_call_count,
+                    &mut action_call_count,
                     &mut diagnostics,
+                    &mut active_assistant_output,
+                    &mut assistant_outputs,
                 )?;
             }
         }
 
+        flush_assistant_output(
+            &mut active_assistant_output,
+            &mut assistant_outputs,
+            on_assistant_done,
+        );
+
         Ok(OpenAiStreamOutcome {
-            tool_call_count,
+            action_call_count,
+            assistant_outputs,
             diagnostics,
         })
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_stream_event<FS, FT, FD, FN>(
+fn handle_stream_event<FS, FA, FD, FN, FT, FC>(
     value: Value,
-    tool_registry: &ToolRegistry,
     on_stream: &mut FS,
-    on_tool: &mut FT,
-    on_tool_args_delta: &mut FD,
-    on_tool_args_done: &mut FN,
-    partial_calls: &mut HashMap<String, PartialToolCall>,
+    on_action: &mut FA,
+    on_action_args_delta: &mut FD,
+    on_action_args_done: &mut FN,
+    on_assistant_delta: &mut FT,
+    on_assistant_done: &mut FC,
+    partial_calls: &mut HashMap<String, PartialActionCall>,
     dispatched_keys: &mut HashSet<String>,
-    tool_call_count: &mut usize,
+    action_call_count: &mut usize,
     diagnostics: &mut Vec<String>,
+    active_assistant_output: &mut String,
+    assistant_outputs: &mut Vec<String>,
 ) -> Result<(), String>
 where
     FS: FnMut(StreamNote),
-    FT: FnMut(ToolInvocation),
-    FD: FnMut(ToolArgDeltaNote),
-    FN: FnMut(ToolArgDoneNote),
+    FA: FnMut(ActionInvocation),
+    FD: FnMut(ActionArgDeltaNote),
+    FN: FnMut(ActionArgDoneNote),
+    FT: FnMut(String),
+    FC: FnMut(String),
 {
     let event_type = value
         .get("type")
@@ -301,13 +335,51 @@ where
             if let Some(item) = value.get("item") {
                 maybe_finalize_item(
                     item,
-                    tool_registry,
-                    on_tool,
+                    on_action,
                     partial_calls,
                     dispatched_keys,
-                    tool_call_count,
+                    action_call_count,
                     diagnostics,
                 )?;
+                maybe_capture_assistant_from_item(
+                    item,
+                    on_assistant_delta,
+                    on_assistant_done,
+                    active_assistant_output,
+                    assistant_outputs,
+                );
+            }
+        }
+        "response.output_text.delta" => {
+            let delta = value
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !delta.is_empty() {
+                active_assistant_output.push_str(delta);
+                on_assistant_delta(delta.to_string());
+            }
+        }
+        "response.output_text.done" => {
+            let text = value
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if text.is_empty() {
+                flush_assistant_output(
+                    active_assistant_output,
+                    assistant_outputs,
+                    on_assistant_done,
+                );
+            } else {
+                finalize_assistant_output(
+                    text,
+                    on_assistant_delta,
+                    on_assistant_done,
+                    active_assistant_output,
+                    assistant_outputs,
+                );
             }
         }
         "response.function_call_arguments.delta" => {
@@ -316,27 +388,29 @@ where
                 .get("delta")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let partial = partial_calls.entry(key.clone()).or_insert(PartialToolCall {
-                call_id: value
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                name: value
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                arguments: String::new(),
-            });
+            let partial = partial_calls
+                .entry(key.clone())
+                .or_insert(PartialActionCall {
+                    call_id: value
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    name: value
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    arguments: String::new(),
+                });
             if let Some(name) = value.get("name").and_then(Value::as_str) {
                 partial.name = Some(name.to_string());
             }
             partial.arguments.push_str(delta);
 
             if !delta.is_empty() {
-                on_tool_args_delta(ToolArgDeltaNote {
+                on_action_args_delta(ActionArgDeltaNote {
                     call_key: key,
                     call_id: partial.call_id.clone(),
-                    tool_name: partial.name.clone(),
+                    action_id: partial.name.clone(),
                     args_delta: delta.to_string(),
                 });
             }
@@ -348,26 +422,28 @@ where
                 .and_then(Value::as_str)
                 .unwrap_or_default();
 
-            let partial = partial_calls.entry(key.clone()).or_insert(PartialToolCall {
-                call_id: value
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                name: value
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                arguments: String::new(),
-            });
+            let partial = partial_calls
+                .entry(key.clone())
+                .or_insert(PartialActionCall {
+                    call_id: value
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    name: value
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    arguments: String::new(),
+                });
             if let Some(name) = value.get("name").and_then(Value::as_str) {
                 partial.name = Some(name.to_string());
             }
             partial.arguments = arguments.to_string();
 
-            on_tool_args_done(ToolArgDoneNote {
+            on_action_args_done(ActionArgDoneNote {
                 call_key: key.clone(),
                 call_id: partial.call_id.clone(),
-                tool_name: partial.name.clone(),
+                action_id: partial.name.clone(),
                 args_json: partial.arguments.clone(),
             });
 
@@ -377,10 +453,9 @@ where
                     name,
                     partial.arguments.clone(),
                     partial.call_id.clone(),
-                    tool_registry,
-                    on_tool,
+                    on_action,
                     dispatched_keys,
-                    tool_call_count,
+                    action_call_count,
                     diagnostics,
                 )?;
             }
@@ -395,17 +470,16 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn maybe_finalize_item<FT>(
+fn maybe_finalize_item<FA>(
     item: &Value,
-    tool_registry: &ToolRegistry,
-    on_tool: &mut FT,
-    partial_calls: &mut HashMap<String, PartialToolCall>,
+    on_action: &mut FA,
+    partial_calls: &mut HashMap<String, PartialActionCall>,
     dispatched_keys: &mut HashSet<String>,
-    tool_call_count: &mut usize,
+    action_call_count: &mut usize,
     diagnostics: &mut Vec<String>,
 ) -> Result<(), String>
 where
-    FT: FnMut(ToolInvocation),
+    FA: FnMut(ActionInvocation),
 {
     if item.get("type").and_then(Value::as_str) != Some("function_call") {
         return Ok(());
@@ -418,14 +492,16 @@ where
         .unwrap_or("unknown_call")
         .to_string();
 
-    let entry = partial_calls.entry(key.clone()).or_insert(PartialToolCall {
-        call_id: item
-            .get("call_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        name: item.get("name").and_then(Value::as_str).map(str::to_string),
-        arguments: String::new(),
-    });
+    let entry = partial_calls
+        .entry(key.clone())
+        .or_insert(PartialActionCall {
+            call_id: item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            name: item.get("name").and_then(Value::as_str).map(str::to_string),
+            arguments: String::new(),
+        });
 
     if let Some(name) = item.get("name").and_then(Value::as_str) {
         entry.name = Some(name.to_string());
@@ -442,10 +518,9 @@ where
             name,
             entry.arguments.clone(),
             entry.call_id.clone(),
-            tool_registry,
-            on_tool,
+            on_action,
             dispatched_keys,
-            tool_call_count,
+            action_call_count,
             diagnostics,
         )?;
     }
@@ -454,19 +529,18 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn maybe_dispatch_partial<FT>(
+fn maybe_dispatch_partial<FA>(
     key: String,
-    tool_name: String,
+    raw_action_id: String,
     arguments_raw: String,
     call_id: Option<String>,
-    tool_registry: &ToolRegistry,
-    on_tool: &mut FT,
+    on_action: &mut FA,
     dispatched_keys: &mut HashSet<String>,
-    tool_call_count: &mut usize,
+    action_call_count: &mut usize,
     diagnostics: &mut Vec<String>,
 ) -> Result<(), String>
 where
-    FT: FnMut(ToolInvocation),
+    FA: FnMut(ActionInvocation),
 {
     if arguments_raw.trim().is_empty() {
         return Ok(());
@@ -478,30 +552,154 @@ where
     }
 
     let args_value: Value = serde_json::from_str(&arguments_raw).map_err(|error| {
-        format!("invalid arguments JSON for tool `{tool_name}`: {error}; payload={arguments_raw}")
+        format!(
+            "invalid arguments JSON for action `{raw_action_id}`: {error}; payload={arguments_raw}"
+        )
     })?;
-    tool_registry
-        .validate(&tool_name, &args_value)
-        .map_err(|error| format!("tool validation failed: {error}"))?;
+
+    let canonical_action_id = EnvironmentRegistry::validate(&raw_action_id, &args_value)
+        .map_err(|error| format!("action validation failed: {error}"))?;
 
     let args_json = serde_json::to_string(&args_value)
-        .map_err(|error| format!("failed to canonicalize tool args: {error}"))?;
+        .map_err(|error| format!("failed to canonicalize action args: {error}"))?;
 
-    on_tool(ToolInvocation {
-        tool_name: tool_name.clone(),
-        args_json: args_json.clone(),
+    on_action(ActionInvocation {
+        action_id: canonical_action_id.clone(),
+        args_json,
         call_key: key.clone(),
         call_id: call_id.clone(),
     });
 
     diagnostics.push(format!(
-        "dispatched tool_call={} name={tool_name}",
+        "dispatched action_call={} name={canonical_action_id}",
         dispatch_key
     ));
     dispatched_keys.insert(dispatch_key);
-    *tool_call_count += 1;
+    *action_call_count += 1;
 
     Ok(())
+}
+
+fn maybe_capture_assistant_from_item<FT, FC>(
+    item: &Value,
+    on_assistant_delta: &mut FT,
+    on_assistant_done: &mut FC,
+    active_assistant_output: &mut String,
+    assistant_outputs: &mut Vec<String>,
+) where
+    FT: FnMut(String),
+    FC: FnMut(String),
+{
+    if item.get("type").and_then(Value::as_str) != Some("message") {
+        return;
+    }
+
+    let text = extract_message_text(item);
+    if text.trim().is_empty() {
+        return;
+    }
+
+    finalize_assistant_output(
+        text,
+        on_assistant_delta,
+        on_assistant_done,
+        active_assistant_output,
+        assistant_outputs,
+    );
+}
+
+fn extract_message_text(item: &Value) -> String {
+    let Some(contents) = item.get("content").and_then(Value::as_array) else {
+        return String::new();
+    };
+
+    contents
+        .iter()
+        .filter_map(|content| {
+            let is_output_text = content.get("type").and_then(Value::as_str) == Some("output_text");
+            if !is_output_text {
+                return None;
+            }
+            content
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn finalize_assistant_output<FT, FC>(
+    text: String,
+    on_assistant_delta: &mut FT,
+    on_assistant_done: &mut FC,
+    active_assistant_output: &mut String,
+    assistant_outputs: &mut Vec<String>,
+) where
+    FT: FnMut(String),
+    FC: FnMut(String),
+{
+    if text.starts_with(active_assistant_output.as_str()) {
+        let delta = text[active_assistant_output.len()..].to_string();
+        if !delta.is_empty() {
+            on_assistant_delta(delta.clone());
+            active_assistant_output.push_str(&delta);
+        }
+    } else {
+        if !active_assistant_output.is_empty() {
+            push_assistant_output(
+                assistant_outputs,
+                active_assistant_output,
+                on_assistant_done,
+            );
+            active_assistant_output.clear();
+        }
+        if !text.is_empty() {
+            on_assistant_delta(text.clone());
+            active_assistant_output.push_str(&text);
+        }
+    }
+
+    flush_assistant_output(
+        active_assistant_output,
+        assistant_outputs,
+        on_assistant_done,
+    );
+}
+
+fn flush_assistant_output<FC>(
+    active_assistant_output: &mut String,
+    assistant_outputs: &mut Vec<String>,
+    on_assistant_done: &mut FC,
+) where
+    FC: FnMut(String),
+{
+    if active_assistant_output.trim().is_empty() {
+        active_assistant_output.clear();
+        return;
+    }
+
+    push_assistant_output(
+        assistant_outputs,
+        active_assistant_output,
+        on_assistant_done,
+    );
+    active_assistant_output.clear();
+}
+
+fn push_assistant_output<FC>(
+    assistant_outputs: &mut Vec<String>,
+    text: &str,
+    on_assistant_done: &mut FC,
+) where
+    FC: FnMut(String),
+{
+    let output = text.to_string();
+    if assistant_outputs.last().is_some_and(|last| last == &output) {
+        return;
+    }
+    on_assistant_done(output.clone());
+    assistant_outputs.push(output);
 }
 
 fn extract_call_key(value: &Value) -> Option<String> {
@@ -519,18 +717,18 @@ fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
 }
 
 fn should_retry_status(status: u16) -> bool {
-    status == 429 || (500..=599).contains(&status)
+    status == 408 || status == 409 || status == 429 || status >= 500
 }
 
 fn should_retry_transport(error: &reqwest::Error) -> bool {
-    error.is_timeout() || error.is_connect() || error.is_request()
+    error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
 }
 
 fn truncate_for_log(value: &str) -> String {
-    const LIMIT: usize = 400;
-    if value.len() <= LIMIT {
-        value.to_string()
-    } else {
-        format!("{}...", &value[..LIMIT])
+    const MAX: usize = 1024;
+    if value.len() <= MAX {
+        return value.to_string();
     }
+
+    format!("{}… ({} bytes omitted)", &value[..MAX], value.len() - MAX)
 }

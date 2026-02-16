@@ -4,6 +4,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
 use super::{EVENT_BUFFER_SIZE, Runtime, SESSION_CMD_BUFFER_SIZE};
+use crate::environment::EnvironmentRegistry;
 use crate::pb;
 use crate::session::{SessionCommand, SessionRuntime, SessionState, run_session_actor};
 use crate::util::dedup_ids;
@@ -28,12 +29,20 @@ impl Runtime {
         }
 
         let session_id = self.next_session_id();
+        let engaged_environment_ids = EnvironmentRegistry::default_engaged_environment_ids()
+            .into_iter()
+            .collect();
+        let environment_snapshots = EnvironmentRegistry::initial_environment_snapshots()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         let state = SessionState::new(
             session_id.clone(),
             agent_id,
             participant_user_ids,
             agent_profile_copy,
             participant_user_profiles_copy,
+            engaged_environment_ids,
+            environment_snapshots,
         );
         let session_summary = state.to_summary();
 

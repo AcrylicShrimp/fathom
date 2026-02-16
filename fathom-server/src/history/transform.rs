@@ -1,9 +1,12 @@
+use fathom_tooling::parse_action_id;
 use serde_json::json;
 
 use crate::history::preview::build_payload_preview;
 use crate::history::schema::{HistoryActorKind, HistoryEventLine};
 use crate::pb;
-use crate::policy::{history_lookup_tool, history_task_finished_event, history_task_started_event};
+use crate::policy::{
+    history_lookup_action, history_task_finished_event, history_task_started_event,
+};
 use crate::session::state::SessionState;
 use crate::util::{refresh_scope_label, task_status_label};
 
@@ -113,6 +116,7 @@ pub(crate) fn task_started_line(state: &SessionState, task: &pb::Task) -> String
     let status = pb::TaskStatus::try_from(task.status)
         .map(task_status_label)
         .unwrap_or("unknown");
+    let (environment_id, action_name) = parse_task_action_id(&task.tool_name);
 
     HistoryEventLine {
         ts_unix_ms: task.updated_at_unix_ms,
@@ -121,10 +125,12 @@ pub(crate) fn task_started_line(state: &SessionState, task: &pb::Task) -> String
         actor_id: task.task_id.clone(),
         profile_ref: active_agent_profile_ref(state),
         payload: json!({
-            "tool_name": task.tool_name,
+            "canonical_action_id": task.tool_name,
+            "environment_id": environment_id,
+            "action_name": action_name,
             "status": status,
             "args_preview": args_preview,
-            "lookup_tool": history_lookup_tool(),
+            "lookup_action": history_lookup_action(),
         }),
     }
     .to_json_line()
@@ -136,6 +142,7 @@ pub(crate) fn task_finished_line(state: &SessionState, task: &pb::Task) -> Strin
     let status = pb::TaskStatus::try_from(task.status)
         .map(task_status_label)
         .unwrap_or("unknown");
+    let (environment_id, action_name) = parse_task_action_id(&task.tool_name);
 
     HistoryEventLine {
         ts_unix_ms: task.updated_at_unix_ms,
@@ -144,13 +151,19 @@ pub(crate) fn task_finished_line(state: &SessionState, task: &pb::Task) -> Strin
         actor_id: task.task_id.clone(),
         profile_ref: active_agent_profile_ref(state),
         payload: json!({
-            "tool_name": task.tool_name,
+            "canonical_action_id": task.tool_name,
+            "environment_id": environment_id,
+            "action_name": action_name,
             "status": status,
             "result_preview": result_preview,
-            "lookup_tool": history_lookup_tool(),
+            "lookup_action": history_lookup_action(),
         }),
     }
     .to_json_line()
+}
+
+fn parse_task_action_id(action_id: &str) -> (String, String) {
+    parse_action_id(action_id).unwrap_or_else(|| ("unknown".to_string(), action_id.to_string()))
 }
 
 fn active_agent_profile_ref(state: &SessionState) -> String {

@@ -11,13 +11,13 @@ const FINALIZED_STREAM_CACHE_SIZE: usize = 256;
 const LOCAL_USER_PREFIX: &str = "[local] -> ";
 const LOCAL_SEND_FAILED_PREFIX: &str = "[local] send failed: ";
 const INTERNAL_ASSISTANT_PREFIXES: [&str; 7] = [
-    "queued tool `",
-    "dispatched tool_call=",
-    "tool_calls_dispatched=",
-    "no tool call generated on attempt ",
+    "queued action `",
+    "dispatched action_call=",
+    "action_calls_dispatched=",
+    "no action call or assistant output generated on attempt ",
     "openai request failed: ",
     "turn failed [",
-    "agent dispatched ",
+    "agent produced no executable action call or assistant output",
 ];
 
 pub(crate) struct ConversationTab {
@@ -305,14 +305,14 @@ mod tests {
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::AssistantOutput {
-                content: "queued tool `send_message` as task-1 (running)".to_string(),
+                content: "queued action `filesystem__read` as task-1 (running)".to_string(),
                 stream_id: String::new(),
             },
         });
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::AssistantOutput {
-                content: "agent dispatched 1 tool call(s)".to_string(),
+                content: "action_calls_dispatched=1 assistant_outputs=0 on attempt 1".to_string(),
                 stream_id: String::new(),
             },
         });

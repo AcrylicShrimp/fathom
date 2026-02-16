@@ -1,5 +1,11 @@
 [workspace]
-members = ["fathom-server", "fathom-client", "fathom"]
+members = [
+    "fathom-server",
+    "fathom-client",
+    "fathom",
+    "fathom-tooling",
+    "tools/fathom-tools-fs",
+]
 resolver = "3"
 
 [workspace.package]
@@ -12,6 +18,8 @@ anyhow = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
+fathom-tooling = { path = "fathom-tooling" }
+fathom-tools-fs = { path = "tools/fathom-tools-fs" }
 futures-util = "0.3"
 prost = "0.14"
 ratatui = "0.30"

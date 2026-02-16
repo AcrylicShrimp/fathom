@@ -22,7 +22,10 @@ A session is the unit of conversation and orchestration.
   - immutable profile copies (`agent_profile_copy`, `participant_user_profiles_copy`)
   - queued triggers
   - conversation history
-  - task registry and task scheduler state
+  - task registry
+  - engaged environment set (`engaged_environment_ids`)
+  - environment state snapshots (`environment_snapshots`)
+  - in-flight action hints for prompt context
 
 ### Trigger
 Trigger variants:
@@ -43,9 +46,9 @@ Per turn:
 
 1. Consume trigger snapshot.
 2. Build prompt context from profile copies + trigger snapshot + recent history.
-3. Invoke OpenAI Responses API in streaming mode with tool-only policy.
-4. Stream tool-argument deltas (notably `send_message`) into session events.
-5. Dispatch tool calls immediately as background tasks.
+3. Invoke OpenAI Responses API in streaming mode with action calling (`env__action`) and native assistant output.
+4. Stream assistant text deltas into `AssistantStream` events.
+5. Dispatch action calls immediately as background tasks.
 6. Emit session events.
 7. Flush trigger snapshot and assistant outputs into history atomically.
 
@@ -53,35 +56,34 @@ Per turn:
 Tasks are background jobs created by agent actions.
 
 - States: `Pending`, `Running`, `Succeeded`, `Failed`, `Canceled`.
-- Scheduling policy:
-  - Start immediately when worker capacity is available.
-  - Otherwise remain `Pending`.
 - Task completion re-enters the session as `Trigger::TaskDone`.
-- One model tool call maps to one background task.
-- Implemented filesystem tools execute as real background jobs:
-  - `fs_list(path)`
-  - `fs_read(path)`
-  - `fs_write(path, content, allow_override)`
-  - `fs_replace(path, old, new, mode)`
-- Trigger policy:
-  - General tools enqueue `TaskDone` triggers and can drive a follow-up agent turn.
-  - `send_message(content, user_id?)` is a system tool that emits user-facing assistant output but does **not** enqueue `TaskDone` (prevents self-loop chains).
-- Streaming policy for `send_message`:
-  - Server consumes OpenAI function-argument deltas for `send_message`.
-  - Server extracts incremental `content` text and emits `AssistantStream` events.
-  - Deltas are coalesced with a short batch window (~40ms) to reduce event volume.
-  - Final `AssistantOutput` includes `stream_id` to correlate and deduplicate client-side live streams.
+- One model action call maps to one background task.
+- Canonical action ID format: `env__action` (examples: `filesystem__read`, `system__get_time`).
+- Action dispatch model:
+  - Session actor routes each task to the target environment actor.
+  - Environment actor may execute independent actions in parallel.
+  - Commit order is deterministic per environment sequence.
+  - `TaskDone` is emitted after commit finalization (success or failure).
+- Implemented filesystem actions execute as real background jobs:
+  - `filesystem__list(path)`
+  - `filesystem__read(path)`
+  - `filesystem__write(path, content, allow_override)`
+  - `filesystem__replace(path, old, new, mode)`
+- Assistant output policy:
+  - User-facing messages come from native assistant model output (not a special action).
+  - Streaming uses `AssistantStream`; finalized content uses matching `AssistantOutput(stream_id=...)`.
 - History transformation policy:
   - `task_started` and `task_finished` are recorded as distinct history events.
+  - each task history entry includes `canonical_action_id`, `environment_id`, and `action_name`.
   - Task args/results are stored in history as truncated previews with byte/line cutoff metadata and lookup references.
-  - Agent can query full payloads with `sys_get_task_payload`.
+  - Agent can query full payloads with `system__get_task_payload`.
 - Time context policy:
   - Each turn snapshot includes `time_context` (`utc_rfc3339`, `local_rfc3339`, `local_timezone_name`, `local_utc_offset`, `generated_at_unix_ms`).
-  - `sys_get_context` includes the same `time_context` shape.
-  - `sys_get_time` returns refreshed server-clock time when the model needs newer values mid-session.
+  - `system__get_context` includes the same `time_context` shape.
+  - `system__get_time` returns refreshed server-clock time when the model needs newer values mid-session.
 
 ### Filesystem Path Spaces
-Filesystem tools use URI-style paths:
+Filesystem actions use URI-style paths:
 
 - `managed://...` for profile-backed managed files
   - `managed://agent/<agent_id>/<field>`
@@ -137,16 +139,29 @@ Client-side dedup policy:
   - session registry
   - per-session actor loop
 - Layered internal modules:
-  - `agent/*`: model orchestration, prompt rendering, tool schema
-  - `session/*`: deterministic turn actor + task policy
-  - `session/engine/assistant_stream.rs`: `send_message` streaming extraction and batching
+  - `agent/*`: model orchestration, prompt rendering
+  - `environment/*`: environment registry, environment actors, and built-in environment definitions
+    - `environment/registry.rs`: composes environments and canonical action registry
+    - `environment/actor.rs`: per-environment child actor runtime with in-order commit
+    - `environment/system/*`: built-in privileged system environment actions (`system__*`)
+  - `session/*`: deterministic session actor + action-task orchestration
+  - `session/engine/assistant_stream.rs`: native assistant text streaming and batching
   - `history/*`: structured history line transformation and preview truncation
-  - `system_tools/*`: runtime/profile/session/task discovery tools
-  - `fs/*`: managed and real filesystem tools
+  - `system_tools/*`: runtime/profile/session/task discovery action execution
+  - `fs/*`: managed and real filesystem action execution
 - OpenAI-backed `AgentOrchestrator` with:
-  - static tool registry (server-defined tools only)
+  - server-defined action registry sourced from `Environment + Action` contracts
   - streaming Responses API integration
   - retry policy with backoff/jitter and `Retry-After` support
+
+### Environment Contracts
+- `fathom-tooling`:
+  - shared environment/action contracts (`Environment`, `Action`, `ActionSpec`, `ActionCall`, `ActionHost`, `ActionOutcome`)
+  - canonical naming helpers (`env__action`) and legacy alias parsing
+- `tools/fathom-tools-fs`:
+  - filesystem environment action instances (`list`, `read`, `write`, `replace`)
+  - each action owns schema, validation, and execute entrypoint
+- System actions remain built-in in `fathom-server` because they require privileged server/runtime access.
 
 ### Client (`fathom-client`)
 - gRPC client wrapper for runtime API.

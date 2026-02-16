@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc};
 
+use crate::environment::{EnvironmentActorHandle, spawn_environment_actor};
 use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::state::{SessionCommand, SessionState};
 
 use super::events::{enqueue_automatic_heartbeat, enqueue_trigger};
-use super::tasks::{cancel_task, handle_finished_task};
+use super::tasks::{cancel_task, handle_environment_action_committed};
 use super::turn::process_turns;
 
 const AUTO_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30 * 60);
@@ -19,6 +20,28 @@ pub(crate) async fn run_session_actor(
     mut command_rx: mpsc::Receiver<SessionCommand>,
     events_tx: broadcast::Sender<pb::SessionEvent>,
 ) {
+    let environment_handles = state
+        .engaged_environment_ids
+        .iter()
+        .filter_map(|environment_id| {
+            state
+                .environment_snapshots
+                .get(environment_id)
+                .cloned()
+                .map(|snapshot| {
+                    (
+                        environment_id.clone(),
+                        spawn_environment_actor(
+                            runtime.clone(),
+                            environment_id.clone(),
+                            snapshot,
+                            command_tx.clone(),
+                        ),
+                    )
+                })
+        })
+        .collect::<std::collections::HashMap<String, EnvironmentActorHandle>>();
+
     let mut heartbeat_interval = tokio::time::interval(AUTO_HEARTBEAT_INTERVAL);
     heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let _ = heartbeat_interval.tick().await;
@@ -44,7 +67,14 @@ pub(crate) async fn run_session_actor(
                                 .unwrap_or_default(),
                             queue_depth,
                         }));
-                        process_turns(&runtime, &mut state, &command_tx, &events_tx).await;
+                        process_turns(
+                            &runtime,
+                            &mut state,
+                            &command_tx,
+                            &events_tx,
+                            &environment_handles,
+                        )
+                        .await;
                     }
                     SessionCommand::GetSummary { respond_to } => {
                         let _ = respond_to.send(state.to_summary());
@@ -59,30 +89,37 @@ pub(crate) async fn run_session_actor(
                         respond_to,
                     } => {
                         let response =
-                            cancel_task(&runtime, &mut state, &command_tx, &events_tx, &task_id);
+                            cancel_task(&runtime, &mut state, &events_tx, &task_id);
                         let _ = respond_to.send(response);
                     }
-                    SessionCommand::TaskFinished {
-                        task_id,
-                        succeeded,
-                        message,
-                    } => {
-                        handle_finished_task(
+                    SessionCommand::EnvironmentActionCommitted { committed } => {
+                        handle_environment_action_committed(
+                            &runtime,
+                            &mut state,
+                            &events_tx,
+                            committed,
+                        );
+                        process_turns(
                             &runtime,
                             &mut state,
                             &command_tx,
                             &events_tx,
-                            &task_id,
-                            succeeded,
-                            message,
-                        );
-                        process_turns(&runtime, &mut state, &command_tx, &events_tx).await;
+                            &environment_handles,
+                        )
+                        .await;
                     }
                 }
             }
             _ = heartbeat_interval.tick() => {
                 enqueue_automatic_heartbeat(&runtime, &mut state, &events_tx);
-                process_turns(&runtime, &mut state, &command_tx, &events_tx).await;
+                process_turns(
+                    &runtime,
+                    &mut state,
+                    &command_tx,
+                    &events_tx,
+                    &environment_handles,
+                )
+                .await;
             }
         }
     }

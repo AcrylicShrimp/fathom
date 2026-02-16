@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::agent::{StreamNote, ToolArgDeltaNote, ToolArgDoneNote, ToolInvocation};
+use crate::agent::{ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, StreamNote};
+use crate::environment::EnvironmentActorHandle;
 use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::state::{SessionCommand, SessionState};
@@ -12,13 +14,14 @@ use super::assistant_stream::TurnAssistantStreamEmitter;
 use super::events::emit_event;
 use super::history_flush::flush_history;
 use super::profiles::apply_profile_refresh;
-use super::tasks::{queue_task, queued_tool_output};
+use super::tasks::{queue_task, queued_action_output};
 
 pub(super) async fn process_turns(
     runtime: &Runtime,
     state: &mut SessionState,
-    command_tx: &mpsc::Sender<SessionCommand>,
+    _command_tx: &mpsc::Sender<SessionCommand>,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
+    environment_handles: &HashMap<String, EnvironmentActorHandle>,
 ) {
     if state.turn_in_progress {
         return;
@@ -44,6 +47,7 @@ pub(super) async fn process_turns(
         );
 
         let mut assistant_outputs = Vec::new();
+        let mut assistant_stream_ids = Vec::new();
         let mut agent_triggers = Vec::new();
 
         for trigger in &turn_triggers {
@@ -60,6 +64,7 @@ pub(super) async fn process_turns(
                         }),
                     );
                     assistant_outputs.push("profile copies refreshed for this session".to_string());
+                    assistant_stream_ids.push(String::new());
                 }
                 _ => agent_triggers.push(trigger.clone()),
             }
@@ -69,22 +74,24 @@ pub(super) async fn process_turns(
             run_agent_turn(
                 runtime,
                 state,
-                command_tx,
                 events_tx,
+                environment_handles,
                 turn_id,
                 &agent_triggers,
                 &mut assistant_outputs,
+                &mut assistant_stream_ids,
             )
             .await;
         }
 
-        for output in &assistant_outputs {
+        for (index, output) in assistant_outputs.iter().enumerate() {
+            let stream_id = assistant_stream_ids.get(index).cloned().unwrap_or_default();
             emit_event(
                 events_tx,
                 &state.session_id,
                 pb::session_event::Kind::AssistantOutput(pb::AssistantOutputEvent {
                     content: output.clone(),
-                    stream_id: String::new(),
+                    stream_id,
                 }),
             );
         }
@@ -107,71 +114,149 @@ pub(super) async fn process_turns(
 async fn run_agent_turn(
     runtime: &Runtime,
     state: &mut SessionState,
-    command_tx: &mpsc::Sender<SessionCommand>,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
+    environment_handles: &HashMap<String, EnvironmentActorHandle>,
     turn_id: u64,
     agent_triggers: &[pb::Trigger],
     assistant_outputs: &mut Vec<String>,
+    assistant_stream_ids: &mut Vec<String>,
 ) {
     let snapshot = runtime.build_turn_snapshot(state, turn_id, agent_triggers);
     let orchestrator = runtime.agent_orchestrator();
     let session_id = state.session_id.clone();
     let stream_emitter = Arc::new(Mutex::new(TurnAssistantStreamEmitter::new(turn_id)));
+    let streamed_assistant_outputs = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
 
     let outcome = orchestrator
         .run_turn(
             &snapshot,
-            |note: StreamNote| {
+            {
+                let session_id = session_id.clone();
+                move |note: StreamNote| {
+                    emit_event(
+                        events_tx,
+                        &session_id,
+                        pb::session_event::Kind::AgentStream(pb::AgentStreamEvent {
+                            phase: note.phase,
+                            detail: note.detail,
+                            created_at_unix_ms: now_unix_ms(),
+                        }),
+                    );
+                }
+            },
+            |action_invocation: ActionInvocation| {
+                let task = queue_task(
+                    runtime,
+                    state,
+                    events_tx,
+                    environment_handles,
+                    action_invocation.action_id,
+                    action_invocation.args_json,
+                );
+
                 emit_event(
                     events_tx,
                     &session_id,
                     pb::session_event::Kind::AgentStream(pb::AgentStreamEvent {
-                        phase: note.phase,
-                        detail: note.detail,
+                        phase: "action.queued".to_string(),
+                        detail: queued_action_output(&task, action_invocation.call_id.as_deref()),
                         created_at_unix_ms: now_unix_ms(),
                     }),
                 );
             },
-            |tool_invocation: ToolInvocation| {
-                let stream_id = stream_emitter
-                    .lock()
-                    .expect("stream emitter lock poisoned")
-                    .stream_id_for_invocation(
-                        &tool_invocation.tool_name,
-                        &tool_invocation.call_key,
-                        tool_invocation.call_id.as_deref(),
-                    );
-                let task = queue_task(
-                    runtime,
-                    state,
-                    command_tx,
-                    events_tx,
-                    tool_invocation.tool_name,
-                    tool_invocation.args_json,
-                    stream_id,
-                );
-
-                assistant_outputs.push(queued_tool_output(
-                    &task,
-                    tool_invocation.call_id.as_deref(),
-                ));
+            {
+                let session_id = session_id.clone();
+                let stream_emitter = stream_emitter.clone();
+                move |note: ActionArgDeltaNote| {
+                    stream_emitter
+                        .lock()
+                        .expect("stream emitter lock poisoned")
+                        .on_action_args_delta(&note, |kind| {
+                            emit_event(events_tx, &session_id, kind)
+                        });
+                }
             },
-            |note: ToolArgDeltaNote| {
-                stream_emitter
-                    .lock()
-                    .expect("stream emitter lock poisoned")
-                    .on_tool_args_delta(&note, |kind| emit_event(events_tx, &session_id, kind));
+            {
+                let session_id = session_id.clone();
+                let stream_emitter = stream_emitter.clone();
+                move |note: ActionArgDoneNote| {
+                    stream_emitter
+                        .lock()
+                        .expect("stream emitter lock poisoned")
+                        .on_action_args_done(&note, |kind| {
+                            emit_event(events_tx, &session_id, kind)
+                        });
+                }
             },
-            |note: ToolArgDoneNote| {
-                stream_emitter
-                    .lock()
-                    .expect("stream emitter lock poisoned")
-                    .on_tool_args_done(&note, |kind| emit_event(events_tx, &session_id, kind));
+            {
+                let session_id = session_id.clone();
+                let stream_emitter = stream_emitter.clone();
+                move |delta: String| {
+                    stream_emitter
+                        .lock()
+                        .expect("stream emitter lock poisoned")
+                        .on_assistant_text_delta(&delta, |kind| {
+                            emit_event(events_tx, &session_id, kind)
+                        });
+                }
+            },
+            {
+                let session_id = session_id.clone();
+                let stream_emitter = stream_emitter.clone();
+                let streamed_assistant_outputs = streamed_assistant_outputs.clone();
+                move |text: String| {
+                    let stream_id = stream_emitter
+                        .lock()
+                        .expect("stream emitter lock poisoned")
+                        .stream_id();
+                    let content = stream_emitter
+                        .lock()
+                        .expect("stream emitter lock poisoned")
+                        .on_assistant_text_done(Some(&text), |kind| {
+                            emit_event(events_tx, &session_id, kind)
+                        });
+                    streamed_assistant_outputs
+                        .lock()
+                        .expect("streamed assistant outputs lock poisoned")
+                        .push((stream_id, content));
+                }
             },
         )
         .await;
 
-    assistant_outputs.extend(outcome.diagnostics.clone());
+    let streamed_outputs = {
+        let mut lock = streamed_assistant_outputs
+            .lock()
+            .expect("streamed assistant outputs lock poisoned");
+        std::mem::take(&mut *lock)
+    };
+    for (stream_id, output) in streamed_outputs {
+        assistant_outputs.push(output);
+        assistant_stream_ids.push(stream_id);
+    }
+
+    for output in outcome.assistant_outputs {
+        if output.trim().is_empty() {
+            continue;
+        }
+        if assistant_outputs.last().is_some_and(|last| last == &output) {
+            continue;
+        }
+        assistant_outputs.push(output);
+        assistant_stream_ids.push(String::new());
+    }
+
+    for diagnostic in outcome.diagnostics {
+        emit_event(
+            events_tx,
+            &state.session_id,
+            pb::session_event::Kind::AgentStream(pb::AgentStreamEvent {
+                phase: "agent.diagnostic".to_string(),
+                detail: diagnostic,
+                created_at_unix_ms: now_unix_ms(),
+            }),
+        );
+    }
 
     if outcome.failed {
         emit_event(
@@ -187,11 +272,6 @@ async fn run_agent_turn(
             "turn failed [{}]: {}",
             outcome.failure_code, outcome.failure_message
         ));
-        return;
+        assistant_stream_ids.push(String::new());
     }
-
-    assistant_outputs.push(format!(
-        "agent dispatched {} tool call(s)",
-        outcome.tool_call_count
-    ));
 }
