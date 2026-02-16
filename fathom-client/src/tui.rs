@@ -10,25 +10,95 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::style::{Modifier, Style};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use tokio::sync::mpsc;
 
+use crate::commands::{
+    CommandSpec, SlashExecution, completion_items, completion_query, execute_slash_command,
+};
 use crate::runtime::{
-    ClientSession, attach_session_events, enqueue_heartbeat, enqueue_user_message,
-    setup_default_session, wait_for_server,
+    ClientSession, attach_session_events, enqueue_user_message, setup_default_session,
+    wait_for_server,
 };
 use crate::tabs::{ConversationTab, EventsTab, Tab};
 use crate::view::{EventRecord, session_event_to_record};
+
+const MAX_COMPLETION_ROWS: usize = 8;
 
 enum AppEvent {
     Record(EventRecord),
     Status(String),
 }
 
+#[derive(Default)]
+struct SlashCompletionState {
+    query: String,
+    items: Vec<CommandSpec>,
+    selected_index: usize,
+}
+
+impl SlashCompletionState {
+    fn refresh_from_input(&mut self, input: &str) {
+        let Some(query) = completion_query(input) else {
+            self.close();
+            return;
+        };
+
+        let normalized = query.to_ascii_lowercase();
+        if self.query != normalized {
+            self.selected_index = 0;
+        }
+
+        self.query = normalized.clone();
+        self.items = completion_items(normalized.as_str());
+        if self.items.is_empty() {
+            self.close();
+            return;
+        }
+
+        if self.selected_index >= self.items.len() {
+            self.selected_index = self.items.len().saturating_sub(1);
+        }
+    }
+
+    fn is_visible(&self) -> bool {
+        !self.items.is_empty()
+    }
+
+    fn close(&mut self) {
+        self.query.clear();
+        self.items.clear();
+        self.selected_index = 0;
+    }
+
+    fn select_prev(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selected_index = self.selected_index.saturating_sub(1);
+    }
+
+    fn select_next(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selected_index = self
+            .selected_index
+            .saturating_add(1)
+            .min(self.items.len().saturating_sub(1));
+    }
+
+    fn selected(&self) -> Option<CommandSpec> {
+        self.items.get(self.selected_index).copied()
+    }
+}
+
 struct App {
     session: ClientSession,
     input: String,
     status: String,
+    completion: SlashCompletionState,
     tabs: Vec<Box<dyn Tab>>,
     active_tab_index: usize,
 }
@@ -39,6 +109,7 @@ impl App {
             session,
             input: String::new(),
             status: "connected".to_string(),
+            completion: SlashCompletionState::default(),
             tabs: vec![Box::new(ConversationTab::new()), Box::new(EventsTab::new())],
             active_tab_index: 0,
         }
@@ -75,6 +146,35 @@ impl App {
             })
             .collect::<Vec<_>>()
             .join(" | ")
+    }
+
+    fn refresh_completion(&mut self) {
+        self.completion.refresh_from_input(self.input.as_str());
+    }
+
+    fn completion_is_visible(&self) -> bool {
+        self.completion.is_visible()
+    }
+
+    fn completion_prev(&mut self) {
+        self.completion.select_prev();
+    }
+
+    fn completion_next(&mut self) {
+        self.completion.select_next();
+    }
+
+    fn close_completion(&mut self) {
+        self.completion.close();
+    }
+
+    fn accept_completion(&mut self) -> bool {
+        let Some(selected) = self.completion.selected() else {
+            return false;
+        };
+        self.input = format!("/{} ", selected.name);
+        self.refresh_completion();
+        true
     }
 }
 
@@ -176,8 +276,12 @@ async fn run_loop(
             );
             frame.render_widget(input_panel, rows[1]);
 
+            if app.completion_is_visible() {
+                render_completion_popup(frame, rows[0], &app.completion);
+            }
+
             let footer = format!(
-                "Tabs: {} | Keys: Shift+Tab switch | Enter send | q quit (empty input) | Ctrl+C quit | Esc clear | /hb | ↑/↓ line | PgUp/PgDn page | Home/End",
+                "Tabs: {} | Keys: Shift+Tab switch | Enter send | /heartbeat | / opens commands | ↑/↓ scroll or select | Tab/Enter accept command | Esc close command/clear | Ctrl+C quit",
                 app.tab_label_row()
             );
             frame.render_widget(Paragraph::new(footer), rows[2]);
@@ -203,8 +307,33 @@ async fn run_loop(
 
         let page_size = viewport_height.max(1);
 
+        if app.completion_is_visible() {
+            match key.code {
+                KeyCode::Up => {
+                    app.completion_prev();
+                    continue;
+                }
+                KeyCode::Down => {
+                    app.completion_next();
+                    continue;
+                }
+                KeyCode::Enter => {
+                    let _ = app.accept_completion();
+                    continue;
+                }
+                KeyCode::Tab if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    let _ = app.accept_completion();
+                    continue;
+                }
+                KeyCode::Esc => {
+                    app.close_completion();
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
-            KeyCode::Char('q') if app.input.trim().is_empty() => return Ok(()),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
             KeyCode::BackTab => app.switch_tab(),
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => app.switch_tab(),
@@ -224,35 +353,25 @@ async fn run_loop(
             KeyCode::Enter => {
                 let text = app.input.trim().to_string();
                 app.input.clear();
+                app.refresh_completion();
                 if text.is_empty() {
                     continue;
                 }
 
-                if text == "/q" {
-                    return Ok(());
-                }
-
-                if text == "/heartbeat" || text == "/hb" {
-                    app.status = "queueing heartbeat...".to_string();
+                if text.starts_with('/') {
+                    app.status = "running command...".to_string();
                     let server = server.to_string();
-                    let session_id = app.session.session_id.clone();
+                    let session = app.session.clone();
                     let event_tx = event_tx.clone();
                     tokio::spawn(async move {
-                        match enqueue_heartbeat(&server, &session_id).await {
-                            Ok(trigger_id) => {
-                                let _ = event_tx.send(AppEvent::Status(format!(
-                                    "heartbeat queued ({trigger_id})"
-                                )));
-                                let _ = event_tx.send(AppEvent::Record(EventRecord::local(
-                                    format!("[local] heartbeat queued id={trigger_id}"),
-                                )));
-                            }
-                            Err(error) => {
-                                let _ = event_tx
-                                    .send(AppEvent::Status(format!("heartbeat failed: {error}")));
-                                let _ = event_tx.send(AppEvent::Record(EventRecord::local(
-                                    format!("[local] heartbeat failed: {error}"),
-                                )));
+                        match execute_slash_command(&text, &server, &session).await {
+                            SlashExecution::NotSlashInput => {}
+                            SlashExecution::Handled { status, local_log } => {
+                                let _ = event_tx.send(AppEvent::Status(status));
+                                if let Some(local_log) = local_log {
+                                    let _ = event_tx
+                                        .send(AppEvent::Record(EventRecord::local(local_log)));
+                                }
                             }
                         }
                     });
@@ -285,16 +404,78 @@ async fn run_loop(
             }
             KeyCode::Backspace => {
                 app.input.pop();
+                app.refresh_completion();
             }
             KeyCode::Char(ch) => {
                 app.input.push(ch);
+                app.refresh_completion();
             }
             KeyCode::Esc => {
                 app.input.clear();
+                app.refresh_completion();
             }
             _ => {}
         }
     }
+}
+
+fn render_completion_popup(
+    frame: &mut ratatui::Frame<'_>,
+    history_area: Rect,
+    completion: &SlashCompletionState,
+) {
+    if completion.items.is_empty() {
+        return;
+    }
+
+    let visible_rows = completion.items.len().min(MAX_COMPLETION_ROWS);
+    let selected = completion
+        .selected_index
+        .min(completion.items.len().saturating_sub(1));
+    let start_index = selected.saturating_sub(visible_rows.saturating_sub(1));
+    let end_index = start_index
+        .saturating_add(visible_rows)
+        .min(completion.items.len());
+
+    let visible_items = &completion.items[start_index..end_index];
+    let lines = visible_items
+        .iter()
+        .map(|spec| format!("/{} - {}", spec.name, spec.description))
+        .collect::<Vec<_>>();
+    let max_content_width = lines
+        .iter()
+        .map(|line| line.chars().count() as u16)
+        .max()
+        .unwrap_or(24);
+
+    let available_width = history_area.width.saturating_sub(2).max(1);
+    let width = max_content_width
+        .saturating_add(4)
+        .max(24)
+        .min(available_width);
+    let height = (visible_items.len() as u16)
+        .saturating_add(2)
+        .min(history_area.height.max(1));
+
+    let popup = Rect::new(
+        history_area.x.saturating_add(1),
+        history_area
+            .y
+            .saturating_add(history_area.height.saturating_sub(height)),
+        width,
+        height,
+    );
+
+    frame.render_widget(Clear, popup);
+    let items = lines.into_iter().map(ListItem::new).collect::<Vec<_>>();
+    let list = List::new(items)
+        .block(Block::default().title("Commands").borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default();
+    state.select(Some(selected.saturating_sub(start_index)));
+    frame.render_stateful_widget(list, popup, &mut state);
 }
 
 fn main_layout(area: Rect) -> [Rect; 3] {
@@ -307,4 +488,45 @@ fn main_layout(area: Rect) -> [Rect; 3] {
         ])
         .split(area);
     [rows[0], rows[1], rows[2]]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{App, SlashCompletionState};
+    use crate::runtime::ClientSession;
+
+    fn test_session() -> ClientSession {
+        ClientSession {
+            session_id: "session-test".to_string(),
+            agent_id: "agent-default".to_string(),
+            user_id: "user-default".to_string(),
+        }
+    }
+
+    #[test]
+    fn completion_opens_for_slash_prefix() {
+        let mut completion = SlashCompletionState::default();
+        completion.refresh_from_input("/");
+        assert!(completion.is_visible());
+        assert_eq!(completion.items[0].name, "heartbeat");
+
+        completion.refresh_from_input("/he");
+        assert!(completion.is_visible());
+        assert_eq!(completion.items[0].name, "heartbeat");
+
+        completion.refresh_from_input("/zzz");
+        assert!(!completion.is_visible());
+    }
+
+    #[test]
+    fn completion_accept_inserts_command_with_trailing_space() {
+        let mut app = App::new(test_session());
+        app.input = "/".to_string();
+        app.refresh_completion();
+        assert!(app.completion_is_visible());
+
+        assert!(app.accept_completion());
+        assert_eq!(app.input, "/heartbeat ");
+        assert!(!app.completion_is_visible());
+    }
 }

@@ -1,3 +1,4 @@
+mod commands;
 mod runtime;
 mod tabs;
 mod tui;

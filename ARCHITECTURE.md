@@ -158,6 +158,14 @@ Client-side dedup policy:
   - transforms all inbound events into one canonical internal `EventRecord`
   - routes the same `EventRecord` stream to all tab implementations
   - merges network stream events and async enqueue completion/status updates through one internal app event channel
+  - provides local slash-command execution modules
+    - each command lives in a dedicated local module under `fathom-client/src/commands/*`
+    - current command inventory is intentionally small (`/heartbeat` only)
+  - provides slash-command autocomplete popup in input flow
+    - typing `/` with empty input opens a vertical `command - description` list
+    - prefix typing (e.g. `/he`) live-filters command candidates
+    - `Up/Down` navigates candidate list; `Enter`/`Tab` inserts selected command text (with trailing space) without immediate execution
+    - command runs only after a subsequent submit (`Enter`)
 - Tab architecture:
   - `Conversation` tab:
     - chat-oriented projection only (user + assistant conversation lines)
