@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 fathom-env.workspace = true
+fathom-env-brave-search.workspace = true
 fathom-env-fs.workspace = true
 fathom-env-shell.workspace = true
 futures-util.workspace = true

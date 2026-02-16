@@ -11,7 +11,7 @@ Fathom is a session-oriented agent runtime with a gRPC server and TUI client.
 - Assistant user-facing output supports streaming from server to client.
 - Server synthesizes authoritative time context (UTC + server-local timezone) for agent turns.
 - Model-facing behavior is defined by context synthesis + history transformation.
-- Environment model currently includes `filesystem`, `shell`, and built-in `system`.
+- Environment model currently includes `filesystem`, `brave_search`, `shell`, and built-in `system`.
 
 ## Core Concepts
 
@@ -88,6 +88,8 @@ Tasks are background jobs created by agent actions.
   - `filesystem__search(pattern, path?, include?, max_results?, case_sensitive?)`
 - Implemented shell action executes as real background job:
   - `shell__run(command, path?, env?)`
+- Implemented Brave Search action executes as real background job:
+  - `brave_search__web_search(query, count?)`
 - Assistant output behavior:
   - User-facing messages come from native assistant model output (not a special action).
   - Streaming uses `AssistantStream`; finalized content uses matching `AssistantOutput(stream_id=...)`.
@@ -196,6 +198,10 @@ Client-side dedup behavior:
   - filesystem environment action instances (`get_base_path`, `list`, `read`, `write`, `replace`, `glob`, `search`)
   - action schemas and validation
   - filesystem execution backend (path parsing, sandboxing, real I/O)
+- `envs/fathom-env-brave-search`:
+  - Brave Search environment action instance (`web_search`)
+  - action schema and validation
+  - API execution backend (server-side credential auth, compact result mapping, structured provider/network failures)
 - `envs/fathom-env-shell`:
   - shell environment action instance (`run`)
   - action schema and validation
@@ -241,4 +247,5 @@ Persistence, authorization/approval controls, and real environment backends can 
 
 ## Environment
 - Required: `OPENAI_API_KEY`
+- Optional per feature: `BRAVE_API_KEY` (required when agent uses `brave_search__web_search`)
 - For local development, use `direnv` or equivalent shell environment loader.

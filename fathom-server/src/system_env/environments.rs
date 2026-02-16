@@ -40,6 +40,7 @@ fn intended_for(env_id: &str) -> &'static str {
         "filesystem" => {
             "Working with files and directories under the session's filesystem base_path."
         }
+        "brave_search" => "Searching the public web via Brave Search API.",
         "shell" => "Executing non-interactive shell commands under the session's shell base_path.",
         "system" => "Inspecting runtime/session context, profiles, and task payloads.",
         _ => "General environment-specific operations.",
@@ -56,6 +57,12 @@ fn capabilities_for(env_id: &str) -> Vec<&'static str> {
             "Expose current base_path through inspection action",
             "Enforce non-empty relative path arguments (use `.` to target root)",
             "Return invalid_encoding when read/replace/search targets non-UTF-8 text",
+        ],
+        "brave_search" => vec![
+            "Run web searches against Brave Search API using server-side credentials",
+            "Return compact ranked metadata (title, url, description, optional age/source)",
+            "Bound result count and enforce strict JSON argument validation",
+            "Expose provider/network failures as structured task errors",
         ],
         "shell" => vec![
             "Run non-interactive shell commands under base_path-relative working directories",

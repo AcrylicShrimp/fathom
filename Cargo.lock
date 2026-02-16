@@ -663,6 +663,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fathom-env-brave-search"
+version = "0.1.0"
+dependencies = [
+ "fathom-env",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fathom-env-fs"
 version = "0.1.0"
 dependencies = [
@@ -690,6 +700,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "fathom-env",
+ "fathom-env-brave-search",
  "fathom-env-fs",
  "fathom-env-shell",
  "futures-util",

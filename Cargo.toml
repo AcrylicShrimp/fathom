@@ -6,6 +6,7 @@ members = [
     "fathom-env",
     "envs/fathom-env-fs",
     "envs/fathom-env-shell",
+    "envs/fathom-env-brave-search",
 ]
 resolver = "3"
 
@@ -20,6 +21,7 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
 fathom-env = { path = "fathom-env" }
+fathom-env-brave-search = { path = "envs/fathom-env-brave-search" }
 fathom-env-fs = { path = "envs/fathom-env-fs" }
 fathom-env-shell = { path = "envs/fathom-env-shell" }
 futures-util = "0.3"
