@@ -21,7 +21,7 @@ use crate::runtime::{
     ClientSession, attach_session_events, enqueue_user_message, setup_default_session,
     wait_for_server,
 };
-use crate::tabs::{ConversationTab, EventsTab, Tab};
+use crate::tabs::{ConversationTab, FullEventsTab, Tab, ToolsEventsTab};
 use crate::view::{EventRecord, session_event_to_record};
 
 const MAX_COMPLETION_ROWS: usize = 8;
@@ -110,7 +110,11 @@ impl App {
             input: String::new(),
             status: "connected".to_string(),
             completion: SlashCompletionState::default(),
-            tabs: vec![Box::new(ConversationTab::new()), Box::new(EventsTab::new())],
+            tabs: vec![
+                Box::new(ConversationTab::new()),
+                Box::new(ToolsEventsTab::new()),
+                Box::new(FullEventsTab::new()),
+            ],
             active_tab_index: 0,
         }
     }

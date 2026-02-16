@@ -5,11 +5,11 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::tabs::{LineBuffer, Tab};
 use crate::view::{EventRecord, SessionEventRecordKind, render_event_record};
 
-pub(crate) struct EventsTab {
+pub(crate) struct ToolsEventsTab {
     lines: LineBuffer,
 }
 
-impl EventsTab {
+impl ToolsEventsTab {
     pub(crate) fn new() -> Self {
         Self {
             lines: LineBuffer::new(),
@@ -17,23 +17,41 @@ impl EventsTab {
     }
 
     fn should_render(event: &EventRecord) -> bool {
-        !matches!(
+        matches!(
             event,
             EventRecord::Session {
-                kind: SessionEventRecordKind::AssistantStream { .. },
+                kind: SessionEventRecordKind::AgentStream { phase, .. },
+                ..
+            } if phase == "action.queued"
+        ) || matches!(
+            event,
+            EventRecord::Session {
+                kind: SessionEventRecordKind::TaskStateChanged { .. },
                 ..
             }
-        ) && !matches!(
+        ) || matches!(
             event,
             EventRecord::Session {
                 kind: SessionEventRecordKind::AgentStream { phase, detail },
                 ..
-            } if phase == "openai.stream.event" && detail.ends_with(".delta")
+            } if phase == "agent.diagnostic" && is_action_validation_error(detail)
+        ) || matches!(
+            event,
+            EventRecord::Session {
+                kind: SessionEventRecordKind::TurnFailure { .. },
+                ..
+            }
         )
     }
 }
 
-impl Tab for EventsTab {
+fn is_action_validation_error(detail: &str) -> bool {
+    detail.contains("validation failed")
+        || detail.contains("invalid arguments JSON for action")
+        || detail.contains("unknown action `")
+}
+
+impl Tab for ToolsEventsTab {
     fn on_event(&mut self, event: &EventRecord) {
         if Self::should_render(event) {
             let _ = self.lines.push_line(render_event_record(event));
@@ -49,7 +67,7 @@ impl Tab for EventsTab {
         let panel = Paragraph::new(self.lines.rendered_text(self.viewport_width(area)))
             .block(
                 Block::default()
-                    .title(format!("events [{}] ({mode})", session_id))
+                    .title(format!("events:tools [{}] ({mode})", session_id))
                     .borders(Borders::ALL),
             )
             .scroll((self.lines.scroll_value(), 0));
@@ -88,29 +106,39 @@ impl Tab for EventsTab {
 
 #[cfg(test)]
 mod tests {
-    use super::EventsTab;
+    use super::ToolsEventsTab;
     use crate::tabs::Tab;
     use crate::view::{EventRecord, SessionEventRecordKind};
 
     #[test]
-    fn filters_assistant_stream_delta_events() {
-        let mut tab = EventsTab::new();
+    fn keeps_tool_trigger_and_result_events() {
+        let mut tab = ToolsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::AssistantStream {
-                stream_id: "t1:c1".to_string(),
-                delta: "hel".to_string(),
-                done: false,
-                user_id: String::new(),
+            kind: SessionEventRecordKind::AgentStream {
+                phase: "action.queued".to_string(),
+                detail: "queued action `filesystem__list` as task-1 (running)".to_string(),
             },
         });
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::AssistantStream {
-                stream_id: "t1:c1".to_string(),
-                delta: String::new(),
-                done: true,
-                user_id: String::new(),
+            kind: SessionEventRecordKind::TaskStateChanged {
+                task_id: "task-1".to_string(),
+                status: "succeeded".to_string(),
+            },
+        });
+
+        assert_eq!(tab.lines.line_count(), 2);
+    }
+
+    #[test]
+    fn filters_openai_stream_events() {
+        let mut tab = ToolsEventsTab::new();
+        tab.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::AgentStream {
+                phase: "openai.stream.event".to_string(),
+                detail: "response.completed".to_string(),
             },
         });
 
@@ -118,8 +146,24 @@ mod tests {
     }
 
     #[test]
-    fn keeps_non_stream_events() {
-        let mut tab = EventsTab::new();
+    fn keeps_validation_failure_diagnostics() {
+        let mut tab = ToolsEventsTab::new();
+        tab.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::AgentStream {
+                phase: "agent.diagnostic".to_string(),
+                detail:
+                    "openai request failed: action `filesystem__list` validation failed: missing path"
+                        .to_string(),
+            },
+        });
+
+        assert_eq!(tab.lines.line_count(), 1);
+    }
+
+    #[test]
+    fn filters_non_tool_lifecycle_events() {
+        let mut tab = ToolsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::TurnStarted {
@@ -128,32 +172,21 @@ mod tests {
             },
         });
 
-        assert_eq!(tab.lines.line_count(), 1);
-        assert_eq!(tab.lines.text(), "[s1] turn 1 started (1 trigger(s))");
+        assert_eq!(tab.lines.line_count(), 0);
     }
 
     #[test]
-    fn filters_openai_stream_delta_agent_events() {
-        let mut tab = EventsTab::new();
+    fn keeps_turn_failure_for_tool_error_context() {
+        let mut tab = ToolsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::AgentStream {
-                phase: "openai.stream.event".to_string(),
-                detail: "response.output_text.delta".to_string(),
-            },
-        });
-        tab.on_event(&EventRecord::Session {
-            session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::AgentStream {
-                phase: "openai.stream.event".to_string(),
-                detail: "response.output_text.done".to_string(),
+            kind: SessionEventRecordKind::TurnFailure {
+                turn_id: 2,
+                reason_code: "openai_error".to_string(),
+                message: "action validation failed".to_string(),
             },
         });
 
         assert_eq!(tab.lines.line_count(), 1);
-        assert_eq!(
-            tab.lines.text(),
-            "[s1] agent stream [openai.stream.event] response.output_text.done"
-        );
     }
 }

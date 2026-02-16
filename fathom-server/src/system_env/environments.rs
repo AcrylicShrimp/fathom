@@ -42,6 +42,7 @@ fn capabilities_for(env_id: &str) -> Vec<&'static str> {
             "List directories and inspect file content",
             "Apply text replacement in file content",
             "Expose current base_path through inspection action",
+            "Enforce non-empty relative path arguments (use `.` to target root)",
         ],
         "system" => vec![
             "Query canonical runtime/session context",
@@ -61,6 +62,7 @@ fn recipes_for(env_id: &str) -> Vec<Value> {
                 "title": "Find and read a file",
                 "steps": [
                     "Call filesystem__get_base_path to confirm scope.",
+                    "Use non-empty relative paths only. For the root directory, use path '.'. Do not use empty path, absolute paths, or URI schemes.",
                     "Call filesystem__list with path '.' or a relative directory.",
                     "Call filesystem__read with a relative file path from the listing."
                 ],
@@ -68,6 +70,7 @@ fn recipes_for(env_id: &str) -> Vec<Value> {
             json!({
                 "title": "Create or update file content",
                 "steps": [
+                    "Start by calling filesystem__list with path '.' or a relative directory to confirm target paths.",
                     "Call filesystem__write with {path, content, allow_override}.",
                     "Call filesystem__read to verify the final content.",
                     "If you need targeted edits, call filesystem__replace with mode first/all."

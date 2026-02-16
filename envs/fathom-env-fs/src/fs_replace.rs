@@ -13,7 +13,7 @@ impl Action for FsReplaceAction {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
             action_name: "replace",
-            description: "Replace text in a base-path-relative file path.",
+            description: "Replace text in a base-path-relative file path. Requires non-empty relative `path`, non-empty `old`, string `new`, and `mode` in {`first`,`all`}.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

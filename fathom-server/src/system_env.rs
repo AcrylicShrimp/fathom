@@ -394,6 +394,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn system_describe_environment_includes_filesystem_path_rules() {
+        let runtime = Runtime::new(2, 10);
+        let context = TaskExecutionContext {
+            session_id: "session-1".to_string(),
+            active_agent_id: "agent-1".to_string(),
+            participant_user_ids: vec!["user-1".to_string()],
+            active_agent_spec_version: 1,
+            participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
+            engaged_environment_ids: vec!["filesystem".to_string(), "system".to_string()],
+        };
+
+        let outcome = execute_action(
+            &runtime,
+            &context,
+            "describe_environment",
+            r#"{"env_id":"filesystem"}"#,
+        )
+        .await
+        .expect("should dispatch describe_environment");
+        assert!(outcome.succeeded);
+
+        let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+        let capabilities = payload["data"]["capabilities"]
+            .as_array()
+            .expect("capabilities must be an array");
+        assert!(capabilities.iter().any(|capability| {
+            capability
+                .as_str()
+                .is_some_and(|value| value.contains("use `.` to target root"))
+        }));
+
+        let recipes = payload["data"]["recipes"]
+            .as_array()
+            .expect("recipes must be an array");
+        let flattened_steps = recipes
+            .iter()
+            .filter_map(|recipe| recipe["steps"].as_array())
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(
+            flattened_steps
+                .iter()
+                .any(|step| step.contains("Do not use empty path"))
+        );
+        assert!(flattened_steps.iter().any(|step| step.contains("path '.'")));
+    }
+
+    #[tokio::test]
     async fn system_get_time_returns_canonical_time_context() {
         let runtime = Runtime::new(2, 10);
         let context = TaskExecutionContext {

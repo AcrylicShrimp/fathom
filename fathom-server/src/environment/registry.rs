@@ -359,4 +359,21 @@ mod tests {
                 .any(|summary| summary.id == "system" && !summary.description.is_empty())
         );
     }
+
+    #[test]
+    fn filesystem_list_definition_includes_root_path_guidance() {
+        let registry = EnvironmentRegistry::new();
+        let definitions = registry.openai_action_definitions();
+
+        let list_definition = definitions
+            .iter()
+            .find(|definition| definition["name"] == json!("filesystem__list"))
+            .expect("filesystem__list definition should exist");
+        let description = list_definition["description"]
+            .as_str()
+            .expect("description should be a string");
+
+        assert!(description.contains("non-empty relative"));
+        assert!(description.contains("use `.`"));
+    }
 }

@@ -27,7 +27,7 @@ impl Environment for FilesystemEnvironment {
         EnvironmentSpec {
             id: FILESYSTEM_ENVIRONMENT_ID,
             name: "Filesystem",
-            description: "Stateful filesystem environment rooted at a base path.",
+            description: "Stateful filesystem environment rooted at a base path. All action paths must be non-empty relative paths under base_path; enforcement is strict at action validation.",
         }
     }
 

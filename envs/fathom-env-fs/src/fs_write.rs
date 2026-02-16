@@ -11,7 +11,7 @@ impl Action for FsWriteAction {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
             action_name: "write",
-            description: "Write text content to a base-path-relative file path.",
+            description: "Write text content to a base-path-relative file path. Requires non-empty relative `path`, string `content`, and explicit boolean `allow_override`.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

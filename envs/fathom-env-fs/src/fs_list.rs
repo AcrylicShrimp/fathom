@@ -11,7 +11,7 @@ impl Action for FsListAction {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
             action_name: "list",
-            description: "List files/directories at a base-path-relative location.",
+            description: "List files/directories at a base-path-relative location. `path` must be a non-empty relative string; use `.` when listing the environment root.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

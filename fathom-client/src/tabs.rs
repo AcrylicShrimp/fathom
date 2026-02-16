@@ -1,8 +1,10 @@
 mod conversation;
-mod events;
+mod events_full;
+mod events_tools;
 
 pub(crate) use conversation::ConversationTab;
-pub(crate) use events::EventsTab;
+pub(crate) use events_full::FullEventsTab;
+pub(crate) use events_tools::ToolsEventsTab;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

@@ -11,7 +11,7 @@ impl Action for FsReadAction {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
             action_name: "read",
-            description: "Read text content from a base-path-relative file path.",
+            description: "Read text content from a base-path-relative file path. `path` must be a non-empty relative file path (prefer paths discovered via filesystem__list).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
