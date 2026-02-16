@@ -24,14 +24,6 @@ pub(crate) fn parameters_for(tool_name: &str) -> Option<Value> {
             "required": ["scope", "user_id"],
             "additionalProperties": false
         })),
-        "schedule_heartbeat" => Some(json!({
-            "type": "object",
-            "properties": {
-                "delay_ms": { "type": "integer", "minimum": 0 }
-            },
-            "required": ["delay_ms"],
-            "additionalProperties": false
-        })),
         "send_message" => Some(json!({
             "type": "object",
             "properties": {

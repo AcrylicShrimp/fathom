@@ -2,7 +2,6 @@
 pub(crate) enum ToolCategory {
     Memory,
     Profile,
-    Scheduling,
     Messaging,
     FileSystem,
     SystemDiscovery,
@@ -15,7 +14,7 @@ pub(crate) struct ToolCatalogEntry {
     pub(crate) category: ToolCategory,
 }
 
-const TOOL_CATALOG: [ToolCatalogEntry; 14] = [
+const TOOL_CATALOG: [ToolCatalogEntry; 13] = [
     ToolCatalogEntry {
         name: "memory_append",
         description: "Append a durable note to agent or user long-term memory.",
@@ -25,11 +24,6 @@ const TOOL_CATALOG: [ToolCatalogEntry; 14] = [
         name: "refresh_profile",
         description: "Refresh the session-local immutable profile copy for agent/user/all.",
         category: ToolCategory::Profile,
-    },
-    ToolCatalogEntry {
-        name: "schedule_heartbeat",
-        description: "Schedule a heartbeat-style background job for the current session.",
-        category: ToolCategory::Scheduling,
     },
     ToolCatalogEntry {
         name: "send_message",

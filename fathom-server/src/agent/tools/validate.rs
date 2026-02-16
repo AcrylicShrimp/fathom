@@ -27,17 +27,6 @@ pub(crate) fn validate_tool_args(tool_name: &str, args: &Value) -> Result<(), St
             }
             Ok(())
         }
-        "schedule_heartbeat" => {
-            let delay = require_i64(
-                args_obj,
-                "delay_ms",
-                "schedule_heartbeat.delay_ms must be an integer",
-            )?;
-            if delay < 0 {
-                return Err("schedule_heartbeat.delay_ms must be >= 0".to_string());
-            }
-            Ok(())
-        }
         "send_message" => {
             require_non_empty_string(args_obj, "content")?;
             require_optional_string(args_obj, "user_id", "send_message.user_id must be a string")?;
@@ -157,12 +146,6 @@ fn require_optional_string(
 fn require_bool(args: &ArgsObject, key: &str, error_message: &str) -> Result<bool, String> {
     args.get(key)
         .and_then(Value::as_bool)
-        .ok_or_else(|| error_message.to_string())
-}
-
-fn require_i64(args: &ArgsObject, key: &str, error_message: &str) -> Result<i64, String> {
-    args.get(key)
-        .and_then(Value::as_i64)
         .ok_or_else(|| error_message.to_string())
 }
 
