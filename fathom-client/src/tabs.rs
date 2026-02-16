@@ -6,12 +6,29 @@ pub(crate) use conversation::ConversationTab;
 pub(crate) use events_full::FullEventsTab;
 pub(crate) use events_tools::ToolsEventsTab;
 
+use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::view::EventRecord;
 
 const MAX_LINES_PER_TAB: usize = 10_000;
+
+#[derive(Debug, Clone)]
+pub(crate) struct TaskDetail {
+    pub(crate) session_id: String,
+    pub(crate) task_id: String,
+    pub(crate) action_id: String,
+    pub(crate) status: String,
+    pub(crate) args_json: String,
+    pub(crate) result_message: String,
+}
+
+pub(crate) enum TabKeyResult {
+    Ignored,
+    Handled,
+    OpenTaskDetail(TaskDetail),
+}
 
 pub(crate) trait Tab {
     fn on_event(&mut self, event: &EventRecord);
@@ -23,6 +40,15 @@ pub(crate) trait Tab {
     fn scroll_down(&mut self, amount: u16, viewport_height: u16, viewport_width: u16);
     fn scroll_to_top(&mut self);
     fn scroll_to_bottom(&mut self, viewport_height: u16, viewport_width: u16);
+    fn handle_key(
+        &mut self,
+        _key: &KeyEvent,
+        _input_is_empty: bool,
+        _viewport_height: u16,
+        _viewport_width: u16,
+    ) -> TabKeyResult {
+        TabKeyResult::Ignored
+    }
 }
 
 pub(super) struct PushOutcome {
@@ -140,6 +166,47 @@ impl LineBuffer {
     pub(super) fn scroll_to_bottom(&mut self, viewport_height: u16, viewport_width: u16) {
         self.scroll = self.max_scroll(viewport_height, viewport_width);
         self.follow = true;
+    }
+
+    pub(super) fn ensure_line_visible(
+        &mut self,
+        line_index: usize,
+        viewport_height: u16,
+        viewport_width: u16,
+    ) {
+        if viewport_height == 0 || line_index >= self.lines.len() {
+            return;
+        }
+
+        let width = usize::from(viewport_width.max(1));
+        let mut visual_start = 0usize;
+        let mut visual_end = 0usize;
+        let mut visual_cursor = 0usize;
+
+        for (index, line) in self.lines.iter().enumerate() {
+            let wraps = line.chars().count().max(1).div_ceil(width);
+            if index == line_index {
+                visual_start = visual_cursor;
+                visual_end = visual_cursor + wraps.saturating_sub(1);
+                break;
+            }
+            visual_cursor = visual_cursor.saturating_add(wraps);
+        }
+
+        let viewport_start = self.scroll as usize;
+        let viewport_end = viewport_start + viewport_height.saturating_sub(1) as usize;
+        let mut updated = None;
+        if visual_start < viewport_start {
+            updated = Some(visual_start);
+        } else if visual_end > viewport_end {
+            updated = Some(visual_end + 1 - viewport_height as usize);
+        }
+
+        if let Some(new_scroll) = updated {
+            let max_scroll = self.max_scroll(viewport_height, viewport_width) as usize;
+            self.scroll = new_scroll.min(max_scroll) as u16;
+            self.follow = false;
+        }
     }
 }
 

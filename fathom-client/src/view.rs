@@ -1,6 +1,9 @@
 use crate::pb;
 use crate::util::{refresh_scope_label, task_status_label};
 
+const TASK_ARGS_PREVIEW_MAX_CHARS: usize = 140;
+const TASK_RESULT_PREVIEW_MAX_CHARS: usize = 160;
+
 #[derive(Debug, Clone)]
 pub(crate) enum EventRecord {
     Local {
@@ -39,7 +42,12 @@ pub(crate) enum SessionEventRecordKind {
     },
     TaskStateChanged {
         task_id: String,
+        action_id: String,
         status: String,
+        args_json: String,
+        args_preview: String,
+        result_message: String,
+        result_preview: String,
     },
     ProfileRefreshed {
         scope: String,
@@ -102,19 +110,35 @@ pub(crate) fn session_event_to_record(event: &pb::SessionEvent) -> EventRecord {
             user_id: data.user_id.clone(),
         },
         pb::session_event::Kind::TaskStateChanged(data) => {
+            let task = data.task.as_ref();
+            let task_id = task
+                .map(|task| task.task_id.clone())
+                .unwrap_or_else(|| "?".to_string());
+            let action_id = task
+                .map(|task| task.action_id.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "?".to_string());
+            let args_json = task
+                .map(|task| task.args_json.clone())
+                .unwrap_or_else(|| "{}".to_string());
+            let result_message = task
+                .map(|task| task.result_message.clone())
+                .unwrap_or_default();
             SessionEventRecordKind::TaskStateChanged {
-                task_id: data
-                    .task
-                    .as_ref()
-                    .map(|task| task.task_id.clone())
-                    .unwrap_or_else(|| "?".to_string()),
-                status: data
-                    .task
-                    .as_ref()
+                task_id,
+                action_id,
+                status: task
                     .and_then(|task| pb::TaskStatus::try_from(task.status).ok())
                     .map(task_status_label)
                     .unwrap_or("unknown")
                     .to_string(),
+                args_preview: summarize_for_preview(&args_json, TASK_ARGS_PREVIEW_MAX_CHARS),
+                args_json,
+                result_preview: summarize_for_preview(
+                    &result_message,
+                    TASK_RESULT_PREVIEW_MAX_CHARS,
+                ),
+                result_message,
             }
         }
         pb::session_event::Kind::ProfileRefreshed(data) => {
@@ -195,8 +219,21 @@ pub(crate) fn render_event_record(record: &EventRecord) -> String {
                         "{prefix} assistant_stream id={stream_id} done={done}{user_suffix}{preview}"
                     )
                 }
-                SessionEventRecordKind::TaskStateChanged { task_id, status } => {
-                    format!("{prefix} task {task_id} -> {status}")
+                SessionEventRecordKind::TaskStateChanged {
+                    task_id,
+                    action_id,
+                    status,
+                    args_preview,
+                    result_preview,
+                    ..
+                } => {
+                    let mut line = format!(
+                        "{prefix} task {task_id} {action_id} -> {status} args={args_preview}"
+                    );
+                    if (status == "failed" || status == "canceled") && !result_preview.is_empty() {
+                        line.push_str(&format!(" result={result_preview}"));
+                    }
+                    line
                 }
                 SessionEventRecordKind::ProfileRefreshed {
                     scope,
@@ -220,5 +257,103 @@ pub(crate) fn render_event_record(record: &EventRecord) -> String {
                 SessionEventRecordKind::Unknown => format!("{prefix} event without payload"),
             }
         }
+    }
+}
+
+fn summarize_for_preview(source: &str, max_chars: usize) -> String {
+    let normalized = normalize_json_if_possible(source);
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return "(empty)".to_string();
+    }
+
+    let escaped = trimmed.replace('\n', "\\n");
+    let char_count = escaped.chars().count();
+    if char_count <= max_chars {
+        return escaped;
+    }
+
+    let mut prefix = String::new();
+    for ch in escaped.chars().take(max_chars) {
+        prefix.push(ch);
+    }
+    let omitted = char_count.saturating_sub(max_chars);
+    format!("{prefix}... ({omitted} chars omitted)")
+}
+
+fn normalize_json_if_possible(source: &str) -> String {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    match serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|value| serde_json::to_string(&value).ok())
+    {
+        Some(normalized) => normalized,
+        None => trimmed.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::pb;
+
+    use super::{render_event_record, session_event_to_record};
+
+    #[test]
+    fn task_event_render_includes_action_and_args_preview() {
+        let event = pb::SessionEvent {
+            session_id: "s1".to_string(),
+            created_at_unix_ms: 0,
+            kind: Some(pb::session_event::Kind::TaskStateChanged(
+                pb::TaskStateChangedEvent {
+                    task: Some(pb::Task {
+                        task_id: "task-1".to_string(),
+                        session_id: "s1".to_string(),
+                        action_id: "filesystem__list".to_string(),
+                        args_json: r#"{"path":"."}"#.to_string(),
+                        status: pb::TaskStatus::Running as i32,
+                        result_message: String::new(),
+                        created_at_unix_ms: 0,
+                        updated_at_unix_ms: 0,
+                    }),
+                },
+            )),
+        };
+        let record = session_event_to_record(&event);
+        let line = render_event_record(&record);
+
+        assert!(line.contains("task-1 filesystem__list -> running"));
+        assert!(line.contains(r#"args={"path":"."}"#));
+    }
+
+    #[test]
+    fn task_event_render_includes_failed_result_preview() {
+        let event = pb::SessionEvent {
+            session_id: "s1".to_string(),
+            created_at_unix_ms: 0,
+            kind: Some(pb::session_event::Kind::TaskStateChanged(
+                pb::TaskStateChangedEvent {
+                    task: Some(pb::Task {
+                        task_id: "task-2".to_string(),
+                        session_id: "s1".to_string(),
+                        action_id: "filesystem__read".to_string(),
+                        args_json: r#"{"path":"notes.txt"}"#.to_string(),
+                        status: pb::TaskStatus::Failed as i32,
+                        result_message: "not found\nthis file does not exist in the workspace"
+                            .to_string(),
+                        created_at_unix_ms: 0,
+                        updated_at_unix_ms: 0,
+                    }),
+                },
+            )),
+        };
+        let record = session_event_to_record(&event);
+        let line = render_event_record(&record);
+
+        assert!(line.contains("-> failed"));
+        assert!(line.contains("result=not found\\nthis file does not exist"));
     }
 }

@@ -645,6 +645,7 @@ dependencies = [
  "crossterm",
  "prost",
  "ratatui",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tonic",

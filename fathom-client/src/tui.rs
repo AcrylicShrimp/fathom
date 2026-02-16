@@ -21,7 +21,7 @@ use crate::runtime::{
     ClientSession, attach_session_events, enqueue_user_message, setup_default_session,
     wait_for_server,
 };
-use crate::tabs::{ConversationTab, FullEventsTab, Tab, ToolsEventsTab};
+use crate::tabs::{ConversationTab, FullEventsTab, Tab, TabKeyResult, TaskDetail, ToolsEventsTab};
 use crate::view::{EventRecord, session_event_to_record};
 
 const MAX_COMPLETION_ROWS: usize = 8;
@@ -29,6 +29,12 @@ const MAX_COMPLETION_ROWS: usize = 8;
 enum AppEvent {
     Record(EventRecord),
     Status(String),
+}
+
+#[derive(Clone)]
+struct TaskDetailModal {
+    detail: TaskDetail,
+    scroll: u16,
 }
 
 #[derive(Default)]
@@ -99,6 +105,7 @@ struct App {
     input: String,
     status: String,
     completion: SlashCompletionState,
+    task_detail: Option<TaskDetailModal>,
     tabs: Vec<Box<dyn Tab>>,
     active_tab_index: usize,
 }
@@ -110,6 +117,7 @@ impl App {
             input: String::new(),
             status: "connected".to_string(),
             completion: SlashCompletionState::default(),
+            task_detail: None,
             tabs: vec![
                 Box::new(ConversationTab::new()),
                 Box::new(ToolsEventsTab::new()),
@@ -166,11 +174,27 @@ impl App {
         true
     }
 
+    fn open_task_detail(&mut self, detail: TaskDetail) {
+        self.task_detail = Some(TaskDetailModal { detail, scroll: 0 });
+    }
+
+    fn close_task_detail(&mut self) {
+        self.task_detail = None;
+    }
+
+    fn task_detail(&self) -> Option<&TaskDetailModal> {
+        self.task_detail.as_ref()
+    }
+
+    fn task_detail_mut(&mut self) -> Option<&mut TaskDetailModal> {
+        self.task_detail.as_mut()
+    }
+
     fn footer_text(&self) -> &'static str {
         if self.completion_is_visible() {
             "Commands: ↑/↓ select | Tab/Enter accept | Esc close"
         } else {
-            "Keys: Shift+Tab switch | Enter send | / opens commands | ↑/↓ scroll | Esc clear input | Ctrl+C quit"
+            "Keys: Shift+Tab switch | Enter send | Ctrl+Enter task detail (tools) | / opens commands | ↑/↓ scroll/select | Esc clear input | Ctrl+C quit"
         }
     }
 }
@@ -263,6 +287,11 @@ async fn run_loop(
         let viewport_width = app.active_tab().viewport_width(rows[0]);
         app.active_tab_mut()
             .sync_scroll(viewport_height, viewport_width);
+        if let Some(detail) = app.task_detail_mut() {
+            let popup = task_detail_popup_area(terminal_area);
+            let max_scroll = task_detail_max_scroll(detail, popup);
+            detail.scroll = detail.scroll.min(max_scroll);
+        }
 
         terminal.draw(|frame| {
             let footer_height = wrapped_line_count(app.footer_text(), frame.area().width);
@@ -281,17 +310,23 @@ async fn run_loop(
                 render_completion_popup(frame, rows[0], &app.completion);
             }
 
+            if let Some(detail) = app.task_detail() {
+                render_task_detail_popup(frame, frame.area(), detail);
+            }
+
             frame.render_widget(
                 Paragraph::new(app.footer_text()).wrap(Wrap { trim: false }),
                 rows[2],
             );
 
-            let x = rows[1]
-                .x
-                .saturating_add(1)
-                .saturating_add(app.input.chars().count() as u16);
-            let y = rows[1].y.saturating_add(1);
-            frame.set_cursor_position((x, y));
+            if app.task_detail().is_none() {
+                let x = rows[1]
+                    .x
+                    .saturating_add(1)
+                    .saturating_add(app.input.chars().count() as u16);
+                let y = rows[1].y.saturating_add(1);
+                frame.set_cursor_position((x, y));
+            }
         })?;
 
         if !event::poll(Duration::from_millis(60))? {
@@ -306,6 +341,46 @@ async fn run_loop(
         }
 
         let page_size = viewport_height.max(1);
+
+        if app.task_detail().is_some() {
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                return Ok(());
+            }
+
+            let mut close_modal = false;
+            if let Some(detail) = app.task_detail_mut() {
+                let popup = task_detail_popup_area(terminal_area);
+                let max_scroll = task_detail_max_scroll(detail, popup);
+                match key.code {
+                    KeyCode::Esc => {
+                        close_modal = true;
+                    }
+                    KeyCode::Up => {
+                        detail.scroll = detail.scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        detail.scroll = detail.scroll.saturating_add(1).min(max_scroll);
+                    }
+                    KeyCode::PageUp => {
+                        detail.scroll = detail.scroll.saturating_sub(page_size);
+                    }
+                    KeyCode::PageDown => {
+                        detail.scroll = detail.scroll.saturating_add(page_size).min(max_scroll);
+                    }
+                    KeyCode::Home => {
+                        detail.scroll = 0;
+                    }
+                    KeyCode::End => {
+                        detail.scroll = max_scroll;
+                    }
+                    _ => {}
+                }
+            }
+            if close_modal {
+                app.close_task_detail();
+            }
+            continue;
+        }
 
         if app.completion_is_visible() {
             match key.code {
@@ -333,6 +408,19 @@ async fn run_loop(
             }
         }
 
+        let input_is_empty = app.input.trim().is_empty();
+        match app
+            .active_tab_mut()
+            .handle_key(&key, input_is_empty, viewport_height, viewport_width)
+        {
+            TabKeyResult::Handled => continue,
+            TabKeyResult::OpenTaskDetail(detail) => {
+                app.open_task_detail(detail);
+                continue;
+            }
+            TabKeyResult::Ignored => {}
+        }
+
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
             KeyCode::BackTab => app.switch_tab(),
@@ -350,7 +438,7 @@ async fn run_loop(
             KeyCode::End => app
                 .active_tab_mut()
                 .scroll_to_bottom(viewport_height, viewport_width),
-            KeyCode::Enter => {
+            KeyCode::Enter if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let text = app.input.trim().to_string();
                 app.input.clear();
                 app.refresh_completion();
@@ -476,6 +564,85 @@ fn render_completion_popup(
     let mut state = ListState::default();
     state.select(Some(selected.saturating_sub(start_index)));
     frame.render_stateful_widget(list, popup, &mut state);
+}
+
+fn render_task_detail_popup(frame: &mut ratatui::Frame<'_>, area: Rect, detail: &TaskDetailModal) {
+    let popup = task_detail_popup_area(area);
+    frame.render_widget(Clear, popup);
+
+    let body = task_detail_body(detail);
+    let panel = Paragraph::new(body)
+        .block(
+            Block::default()
+                .title(format!(
+                    "Task Detail [{}] {}",
+                    detail.detail.task_id, detail.detail.action_id
+                ))
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((detail.scroll, 0));
+    frame.render_widget(panel, popup);
+}
+
+fn task_detail_popup_area(area: Rect) -> Rect {
+    let width = area.width.saturating_mul(4).saturating_div(5).max(40);
+    let height = area.height.saturating_mul(4).saturating_div(5).max(12);
+    let width = width.min(area.width.max(1));
+    let height = height.min(area.height.max(1));
+    let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);
+    let y = area
+        .y
+        .saturating_add(area.height.saturating_sub(height) / 2);
+    Rect::new(x, y, width, height)
+}
+
+fn task_detail_max_scroll(detail: &TaskDetailModal, popup: Rect) -> u16 {
+    let content = task_detail_body(detail);
+    let content_width = popup.width.saturating_sub(2).max(1);
+    let content_height = popup.height.saturating_sub(2).max(1);
+    wrapped_line_count(&content, content_width).saturating_sub(content_height)
+}
+
+fn task_detail_body(detail: &TaskDetailModal) -> String {
+    let args = pretty_json_or_raw(&detail.detail.args_json);
+    let result = if detail.detail.result_message.trim().is_empty() {
+        "(empty)".to_string()
+    } else {
+        pretty_json_or_raw(&detail.detail.result_message)
+    };
+
+    format!(
+        "session_id: {}\n\
+task_id: {}\n\
+action_id: {}\n\
+status: {}\n\
+\n\
+args_json:\n{}\n\
+\n\
+result_message:\n{}",
+        detail.detail.session_id,
+        detail.detail.task_id,
+        detail.detail.action_id,
+        detail.detail.status,
+        args,
+        result
+    )
+}
+
+fn pretty_json_or_raw(source: &str) -> String {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return "(empty)".to_string();
+    }
+
+    match serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+    {
+        Some(pretty) => pretty,
+        None => trimmed.to_string(),
+    }
 }
 
 fn main_layout(area: Rect, footer_height: u16) -> [Rect; 3] {

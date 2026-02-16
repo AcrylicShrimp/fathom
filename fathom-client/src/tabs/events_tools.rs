@@ -1,18 +1,29 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::tabs::{LineBuffer, Tab};
+use crate::tabs::{LineBuffer, Tab, TabKeyResult, TaskDetail};
 use crate::view::{EventRecord, SessionEventRecordKind, render_event_record};
 
 pub(crate) struct ToolsEventsTab {
     lines: LineBuffer,
+    task_lines: Vec<TaskLine>,
+    selected_task_line: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct TaskLine {
+    line_index: usize,
+    detail: TaskDetail,
 }
 
 impl ToolsEventsTab {
     pub(crate) fn new() -> Self {
         Self {
             lines: LineBuffer::new(),
+            task_lines: Vec::new(),
+            selected_task_line: None,
         }
     }
 
@@ -43,6 +54,104 @@ impl ToolsEventsTab {
             }
         )
     }
+
+    fn extract_task_detail(event: &EventRecord) -> Option<TaskDetail> {
+        let EventRecord::Session { session_id, kind } = event else {
+            return None;
+        };
+
+        let SessionEventRecordKind::TaskStateChanged {
+            task_id,
+            action_id,
+            status,
+            args_json,
+            result_message,
+            ..
+        } = kind
+        else {
+            return None;
+        };
+
+        Some(TaskDetail {
+            session_id: session_id.clone(),
+            task_id: task_id.clone(),
+            action_id: action_id.clone(),
+            status: status.clone(),
+            args_json: args_json.clone(),
+            result_message: result_message.clone(),
+        })
+    }
+
+    fn rebase_task_lines(&mut self, dropped_prefix: usize) {
+        if dropped_prefix == 0 {
+            return;
+        }
+
+        let selected_line_index = self
+            .selected_task_line
+            .and_then(|index| self.task_lines.get(index))
+            .map(|line| line.line_index);
+
+        let mut rebased = Vec::with_capacity(self.task_lines.len());
+        for mut line in self.task_lines.drain(..) {
+            if line.line_index < dropped_prefix {
+                continue;
+            }
+            line.line_index -= dropped_prefix;
+            rebased.push(line);
+        }
+
+        self.selected_task_line = selected_line_index.and_then(|line_index| {
+            rebased
+                .iter()
+                .position(|line| line.line_index == line_index)
+        });
+        self.task_lines = rebased;
+    }
+
+    fn selected_task_detail(&self) -> Option<TaskDetail> {
+        self.selected_task_line
+            .and_then(|index| self.task_lines.get(index))
+            .map(|line| line.detail.clone())
+    }
+
+    fn select_prev(&mut self, viewport_height: u16, viewport_width: u16) -> bool {
+        if self.task_lines.is_empty() {
+            return false;
+        }
+        let current = self
+            .selected_task_line
+            .unwrap_or(self.task_lines.len().saturating_sub(1));
+        let next = current.saturating_sub(1);
+        self.selected_task_line = Some(next);
+        self.ensure_selected_visible(viewport_height, viewport_width);
+        true
+    }
+
+    fn select_next(&mut self, viewport_height: u16, viewport_width: u16) -> bool {
+        if self.task_lines.is_empty() {
+            return false;
+        }
+        let current = self.selected_task_line.unwrap_or(0);
+        let next = current
+            .saturating_add(1)
+            .min(self.task_lines.len().saturating_sub(1));
+        self.selected_task_line = Some(next);
+        self.ensure_selected_visible(viewport_height, viewport_width);
+        true
+    }
+
+    fn ensure_selected_visible(&mut self, viewport_height: u16, viewport_width: u16) {
+        let Some(line_index) = self
+            .selected_task_line
+            .and_then(|selected| self.task_lines.get(selected))
+            .map(|line| line.line_index)
+        else {
+            return;
+        };
+        self.lines
+            .ensure_line_visible(line_index, viewport_height, viewport_width);
+    }
 }
 
 fn is_action_validation_error(detail: &str) -> bool {
@@ -54,7 +163,19 @@ fn is_action_validation_error(detail: &str) -> bool {
 impl Tab for ToolsEventsTab {
     fn on_event(&mut self, event: &EventRecord) {
         if Self::should_render(event) {
-            let _ = self.lines.push_line(render_event_record(event));
+            let was_following = self.lines.is_following();
+            let outcome = self.lines.push_line(render_event_record(event));
+            self.rebase_task_lines(outcome.dropped_prefix);
+
+            if let Some(detail) = Self::extract_task_detail(event) {
+                self.task_lines.push(TaskLine {
+                    line_index: outcome.index,
+                    detail,
+                });
+                if self.selected_task_line.is_none() || was_following {
+                    self.selected_task_line = Some(self.task_lines.len().saturating_sub(1));
+                }
+            }
         }
     }
 
@@ -64,10 +185,20 @@ impl Tab for ToolsEventsTab {
         } else {
             "scroll"
         };
+        let selected = self
+            .selected_task_line
+            .and_then(|index| self.task_lines.get(index))
+            .map(|line| {
+                format!(
+                    " selected={} {}",
+                    line.detail.task_id, line.detail.action_id
+                )
+            })
+            .unwrap_or_default();
         let panel = Paragraph::new(self.lines.rendered_text(self.viewport_width(area)))
             .block(
                 Block::default()
-                    .title(format!("events:tools [{}] ({mode})", session_id))
+                    .title(format!("events:tools [{}] ({mode}){selected}", session_id))
                     .borders(Borders::ALL),
             )
             .scroll((self.lines.scroll_value(), 0));
@@ -102,12 +233,47 @@ impl Tab for ToolsEventsTab {
     fn scroll_to_bottom(&mut self, viewport_height: u16, viewport_width: u16) {
         self.lines.scroll_to_bottom(viewport_height, viewport_width);
     }
+
+    fn handle_key(
+        &mut self,
+        key: &KeyEvent,
+        _input_is_empty: bool,
+        viewport_height: u16,
+        viewport_width: u16,
+    ) -> TabKeyResult {
+        match key.code {
+            KeyCode::Up => {
+                if self.select_prev(viewport_height, viewport_width) {
+                    TabKeyResult::Handled
+                } else {
+                    TabKeyResult::Ignored
+                }
+            }
+            KeyCode::Down => {
+                if self.select_next(viewport_height, viewport_width) {
+                    TabKeyResult::Handled
+                } else {
+                    TabKeyResult::Ignored
+                }
+            }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(detail) = self.selected_task_detail() {
+                    TabKeyResult::OpenTaskDetail(detail)
+                } else {
+                    TabKeyResult::Handled
+                }
+            }
+            _ => TabKeyResult::Ignored,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::ToolsEventsTab;
-    use crate::tabs::Tab;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::tabs::{Tab, TabKeyResult};
     use crate::view::{EventRecord, SessionEventRecordKind};
 
     #[test]
@@ -124,7 +290,12 @@ mod tests {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::TaskStateChanged {
                 task_id: "task-1".to_string(),
+                action_id: "filesystem__list".to_string(),
                 status: "succeeded".to_string(),
+                args_json: r#"{"path":"."}"#.to_string(),
+                args_preview: r#"{"path":"."}"#.to_string(),
+                result_message: String::new(),
+                result_preview: String::new(),
             },
         });
 
@@ -188,5 +359,26 @@ mod tests {
         });
 
         assert_eq!(tab.lines.line_count(), 1);
+    }
+
+    #[test]
+    fn opens_task_detail_with_ctrl_enter() {
+        let mut tab = ToolsEventsTab::new();
+        tab.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::TaskStateChanged {
+                task_id: "task-1".to_string(),
+                action_id: "filesystem__read".to_string(),
+                status: "failed".to_string(),
+                args_json: r#"{"path":"notes.txt"}"#.to_string(),
+                args_preview: r#"{"path":"notes.txt"}"#.to_string(),
+                result_message: "not found".to_string(),
+                result_preview: "not found".to_string(),
+            },
+        });
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+        let result = tab.handle_key(&key, true, 10, 80);
+        assert!(matches!(result, TabKeyResult::OpenTaskDetail(_)));
     }
 }
