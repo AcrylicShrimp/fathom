@@ -1,26 +1,23 @@
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::runtime::Runtime;
-
 use super::ReplaceMode;
 use super::error::FsError;
-use super::path::RealPath;
+use super::path::{ParsedPath, resolve_target_path};
 
-pub(crate) fn list(runtime: &Runtime, path: &RealPath) -> Result<Value, FsError> {
-    let target = resolve_real_path(runtime, &path.rel_path)?;
+pub(crate) fn list(path: &ParsedPath, environment_state: &Value) -> Result<Value, FsError> {
+    let (base_path, target) = resolve_target_path(environment_state, &path.rel_path)?;
     let metadata = fs::metadata(&target).map_err(map_io_error)?;
     if !metadata.is_dir() {
         return Err(FsError::not_directory(format!(
             "`{}` is not a directory",
-            path.normalized_uri()
+            path.normalized_path()
         )));
     }
 
-    let root = runtime.workspace_root();
     let mut entries = Vec::new();
     for entry in fs::read_dir(&target).map_err(map_io_error)? {
         let entry = entry.map_err(map_io_error)?;
@@ -35,11 +32,11 @@ pub(crate) fn list(runtime: &Runtime, path: &RealPath) -> Result<Value, FsError>
         };
 
         let rel_path = entry_path
-            .strip_prefix(root)
-            .map_err(|_| FsError::permission_denied("path escaped workspace root"))?;
-        let rel_uri = path_for_uri(rel_path);
+            .strip_prefix(&base_path)
+            .map_err(|_| FsError::permission_denied("path escaped filesystem base path"))?;
+        let rel_string = path_for_output(rel_path);
         let mut entry_json = json!({
-            "path": format!("fs://{rel_uri}"),
+            "path": rel_string,
             "name": entry.file_name().to_string_lossy(),
             "kind": kind,
         });
@@ -69,13 +66,13 @@ pub(crate) fn list(runtime: &Runtime, path: &RealPath) -> Result<Value, FsError>
     Ok(json!({ "entries": entries }))
 }
 
-pub(crate) fn read(runtime: &Runtime, path: &RealPath) -> Result<Value, FsError> {
-    let target = resolve_real_path(runtime, &path.rel_path)?;
+pub(crate) fn read(path: &ParsedPath, environment_state: &Value) -> Result<Value, FsError> {
+    let (_base_path, target) = resolve_target_path(environment_state, &path.rel_path)?;
     let metadata = fs::metadata(&target).map_err(map_io_error)?;
     if !metadata.is_file() {
         return Err(FsError::not_file(format!(
             "`{}` is not a file",
-            path.normalized_uri()
+            path.normalized_path()
         )));
     }
 
@@ -87,12 +84,12 @@ pub(crate) fn read(runtime: &Runtime, path: &RealPath) -> Result<Value, FsError>
 }
 
 pub(crate) fn write(
-    runtime: &Runtime,
-    path: &RealPath,
+    path: &ParsedPath,
     content: &str,
     allow_override: bool,
+    environment_state: &Value,
 ) -> Result<Value, FsError> {
-    let target = resolve_real_path(runtime, &path.rel_path)?;
+    let (_base_path, target) = resolve_target_path(environment_state, &path.rel_path)?;
 
     let existed = target.exists();
     if existed {
@@ -100,13 +97,13 @@ pub(crate) fn write(
         if !metadata.is_file() {
             return Err(FsError::not_file(format!(
                 "`{}` is not a file",
-                path.normalized_uri()
+                path.normalized_path()
             )));
         }
         if !allow_override {
             return Err(FsError::already_exists(format!(
                 "`{}` already exists",
-                path.normalized_uri()
+                path.normalized_path()
             )));
         }
     }
@@ -124,22 +121,22 @@ pub(crate) fn write(
 }
 
 pub(crate) fn replace(
-    runtime: &Runtime,
-    path: &RealPath,
+    path: &ParsedPath,
     old: &str,
     new: &str,
     mode: ReplaceMode,
+    environment_state: &Value,
 ) -> Result<Value, FsError> {
     if old.is_empty() {
         return Err(FsError::invalid_args("replace.old must be non-empty"));
     }
 
-    let target = resolve_real_path(runtime, &path.rel_path)?;
+    let (_base_path, target) = resolve_target_path(environment_state, &path.rel_path)?;
     let metadata = fs::metadata(&target).map_err(map_io_error)?;
     if !metadata.is_file() {
         return Err(FsError::not_file(format!(
             "`{}` is not a file",
-            path.normalized_uri()
+            path.normalized_path()
         )));
     }
 
@@ -173,34 +170,6 @@ pub(crate) fn replace(
     }))
 }
 
-fn resolve_real_path(runtime: &Runtime, rel_path: &Path) -> Result<PathBuf, FsError> {
-    let workspace_root = runtime.workspace_root();
-    let target = workspace_root.join(rel_path);
-    ensure_path_stays_within_workspace(workspace_root, &target)?;
-    Ok(target)
-}
-
-fn ensure_path_stays_within_workspace(workspace_root: &Path, target: &Path) -> Result<(), FsError> {
-    let mut probe = target.to_path_buf();
-    while !probe.exists() {
-        if !probe.pop() {
-            return Err(FsError::permission_denied(
-                "unable to resolve path within workspace root",
-            ));
-        }
-    }
-
-    let canonical_workspace = fs::canonicalize(workspace_root).map_err(map_io_error)?;
-    let canonical_probe = fs::canonicalize(&probe).map_err(map_io_error)?;
-    if !canonical_probe.starts_with(&canonical_workspace) {
-        return Err(FsError::permission_denied(
-            "path escapes configured workspace root",
-        ));
-    }
-
-    Ok(())
-}
-
 fn map_io_error(error: io::Error) -> FsError {
     match error.kind() {
         io::ErrorKind::NotFound => FsError::not_found(error.to_string()),
@@ -212,7 +181,7 @@ fn map_io_error(error: io::Error) -> FsError {
     }
 }
 
-fn path_for_uri(path: &Path) -> String {
+fn path_for_output(path: &Path) -> String {
     let value = path.to_string_lossy().replace('\\', "/");
     if value.is_empty() {
         ".".to_string()

@@ -1,13 +1,14 @@
 mod context;
+mod environments;
 mod profiles;
 mod tasks;
 
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::fs::TaskOutcome;
 use crate::runtime::Runtime;
 use crate::session::task_context::TaskExecutionContext;
+use fathom_env::ActionOutcome;
 
 use self::profiles::{parse_profile_kind, parse_profile_view};
 use self::tasks::parse_task_payload_part;
@@ -35,6 +36,12 @@ struct GetProfileArgs {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DescribeEnvironmentArgs {
+    env_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct GetTaskPayloadArgs {
     task_id: String,
     part: String,
@@ -49,11 +56,12 @@ pub(crate) async fn execute_action(
     context: &TaskExecutionContext,
     action_name: &str,
     args_json: &str,
-) -> Option<TaskOutcome> {
+) -> Option<ActionOutcome> {
     match action_name {
         "get_context" => Some(execute_get_context(runtime, context, args_json).await),
         "get_time" => Some(execute_get_time(runtime, args_json)),
         "list_profiles" => Some(execute_list_profiles(runtime, args_json).await),
+        "describe_environment" => Some(execute_describe_environment(context, args_json)),
         "get_session_identity_map" => Some(execute_get_session_identity_map(context)),
         "get_profile" => Some(execute_get_profile(runtime, args_json).await),
         "get_task_payload" => Some(execute_get_task_payload(runtime, context, args_json).await),
@@ -65,7 +73,7 @@ async fn execute_get_context(
     runtime: &Runtime,
     context: &TaskExecutionContext,
     args_json: &str,
-) -> TaskOutcome {
+) -> ActionOutcome {
     let args = match parse_args::<GetContextArgs>(args_json, "system__get_context") {
         Ok(args) => args,
         Err(error) => return failure("system__get_context", error),
@@ -77,14 +85,14 @@ async fn execute_get_context(
     )
 }
 
-fn execute_get_time(runtime: &Runtime, args_json: &str) -> TaskOutcome {
+fn execute_get_time(runtime: &Runtime, args_json: &str) -> ActionOutcome {
     if let Err(error) = parse_args::<GetTimeArgs>(args_json, "system__get_time") {
         return failure("system__get_time", error);
     }
     success("system__get_time", context::build_time_payload(runtime))
 }
 
-async fn execute_list_profiles(runtime: &Runtime, args_json: &str) -> TaskOutcome {
+async fn execute_list_profiles(runtime: &Runtime, args_json: &str) -> ActionOutcome {
     let args = match parse_args::<ListProfilesArgs>(args_json, "system__list_profiles") {
         Ok(args) => args,
         Err(error) => return failure("system__list_profiles", error),
@@ -101,7 +109,40 @@ async fn execute_list_profiles(runtime: &Runtime, args_json: &str) -> TaskOutcom
     )
 }
 
-fn execute_get_session_identity_map(context: &TaskExecutionContext) -> TaskOutcome {
+fn execute_describe_environment(context: &TaskExecutionContext, args_json: &str) -> ActionOutcome {
+    let args =
+        match parse_args::<DescribeEnvironmentArgs>(args_json, "system__describe_environment") {
+            Ok(args) => args,
+            Err(error) => return failure("system__describe_environment", error),
+        };
+    let env_id = args.env_id.trim();
+    if env_id.is_empty() {
+        return failure(
+            "system__describe_environment",
+            "env_id must be non-empty".to_string(),
+        );
+    }
+    if !context
+        .engaged_environment_ids
+        .iter()
+        .any(|id| id == env_id)
+    {
+        return failure(
+            "system__describe_environment",
+            format!("environment `{env_id}` is not activated in this session"),
+        );
+    }
+
+    match environments::describe_environment(env_id) {
+        Some(payload) => success("system__describe_environment", payload),
+        None => failure(
+            "system__describe_environment",
+            format!("unknown environment `{env_id}`"),
+        ),
+    }
+}
+
+fn execute_get_session_identity_map(context: &TaskExecutionContext) -> ActionOutcome {
     success(
         "system__get_session_identity_map",
         json!({
@@ -115,7 +156,7 @@ fn execute_get_session_identity_map(context: &TaskExecutionContext) -> TaskOutco
     )
 }
 
-async fn execute_get_profile(runtime: &Runtime, args_json: &str) -> TaskOutcome {
+async fn execute_get_profile(runtime: &Runtime, args_json: &str) -> ActionOutcome {
     let args = match parse_args::<GetProfileArgs>(args_json, "system__get_profile") {
         Ok(args) => args,
         Err(error) => return failure("system__get_profile", error),
@@ -143,7 +184,7 @@ async fn execute_get_task_payload(
     runtime: &Runtime,
     context: &TaskExecutionContext,
     args_json: &str,
-) -> TaskOutcome {
+) -> ActionOutcome {
     let args = match parse_args::<GetTaskPayloadArgs>(args_json, "system__get_task_payload") {
         Ok(args) => args,
         Err(error) => return failure("system__get_task_payload", error),
@@ -183,8 +224,8 @@ where
         .map_err(|error| format!("failed to parse args for `{action_id}`: {error}"))
 }
 
-fn success(op: &str, data: serde_json::Value) -> TaskOutcome {
-    TaskOutcome {
+fn success(op: &str, data: serde_json::Value) -> ActionOutcome {
+    ActionOutcome {
         succeeded: true,
         message: json!({
             "ok": true,
@@ -192,11 +233,12 @@ fn success(op: &str, data: serde_json::Value) -> TaskOutcome {
             "data": data,
         })
         .to_string(),
+        state_patch: None,
     }
 }
 
-fn failure(op: &str, message: String) -> TaskOutcome {
-    TaskOutcome {
+fn failure(op: &str, message: String) -> ActionOutcome {
+    ActionOutcome {
         succeeded: false,
         message: json!({
             "ok": false,
@@ -205,6 +247,7 @@ fn failure(op: &str, message: String) -> TaskOutcome {
             "message": message,
         })
         .to_string(),
+        state_patch: None,
     }
 }
 
@@ -213,7 +256,7 @@ mod tests {
     use serde_json::Value;
 
     use crate::environment::EnvironmentRegistry;
-    use crate::policy::system_policy;
+    use crate::policy::synthesize_policy_snapshot;
     use crate::runtime::Runtime;
     use crate::session::task_context::TaskExecutionContext;
 
@@ -295,7 +338,7 @@ mod tests {
             participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
             engaged_environment_ids: vec!["filesystem".to_string(), "system".to_string()],
         };
-        let policy = system_policy();
+        let policy = synthesize_policy_snapshot(true);
 
         let outcome = execute_action(
             &runtime,
@@ -311,12 +354,20 @@ mod tests {
         let data = payload.get("data").expect("data field must exist");
 
         assert_eq!(
-            data["path_policy"]["managed_uri_patterns"],
-            serde_json::json!(policy.path_policy.managed_uri_patterns)
+            data["path_policy"]["path_format"],
+            serde_json::json!(policy.path_policy.path_format)
         );
         assert_eq!(
-            data["path_policy"]["fs_uri_policy"],
-            serde_json::json!(policy.path_policy.fs_uri_policy)
+            data["path_policy"]["base_path_scope"],
+            serde_json::json!(policy.path_policy.base_path_scope)
+        );
+        assert_eq!(
+            data["path_policy"]["absolute_paths_allowed"],
+            serde_json::json!(policy.path_policy.absolute_paths_allowed)
+        );
+        assert_eq!(
+            data["path_policy"]["escape_outside_base_path_allowed"],
+            serde_json::json!(policy.path_policy.escape_outside_base_path_allowed)
         );
         assert_eq!(
             data["history_policy"]["lookup_action"],
@@ -325,6 +376,65 @@ mod tests {
         assert_eq!(
             data["action_policy"]["known_actions"],
             serde_json::json!(policy.action_policy.known_actions)
+        );
+        assert!(data.get("workspace_root").is_none());
+        assert!(data["activated_environments"].is_array());
+    }
+
+    #[tokio::test]
+    async fn system_describe_environment_requires_activation() {
+        let runtime = Runtime::new(2, 10);
+        let context = TaskExecutionContext {
+            session_id: "session-1".to_string(),
+            active_agent_id: "agent-1".to_string(),
+            participant_user_ids: vec!["user-1".to_string()],
+            active_agent_spec_version: 1,
+            participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
+            engaged_environment_ids: vec!["system".to_string()],
+        };
+
+        let outcome = execute_action(
+            &runtime,
+            &context,
+            "describe_environment",
+            r#"{"env_id":"filesystem"}"#,
+        )
+        .await
+        .expect("should dispatch describe_environment");
+        assert!(!outcome.succeeded);
+    }
+
+    #[tokio::test]
+    async fn system_describe_environment_returns_action_inventory() {
+        let runtime = Runtime::new(2, 10);
+        let context = TaskExecutionContext {
+            session_id: "session-1".to_string(),
+            active_agent_id: "agent-1".to_string(),
+            participant_user_ids: vec!["user-1".to_string()],
+            active_agent_spec_version: 1,
+            participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
+            engaged_environment_ids: vec!["filesystem".to_string(), "system".to_string()],
+        };
+
+        let outcome = execute_action(
+            &runtime,
+            &context,
+            "describe_environment",
+            r#"{"env_id":"filesystem"}"#,
+        )
+        .await
+        .expect("should dispatch describe_environment");
+        assert!(outcome.succeeded);
+
+        let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+        assert_eq!(payload["data"]["id"], serde_json::json!("filesystem"));
+        let actions = payload["data"]["actions"]
+            .as_array()
+            .expect("actions must be an array");
+        assert!(
+            actions
+                .iter()
+                .any(|action| { action["id"] == serde_json::json!("filesystem__get_base_path") })
         );
     }
 

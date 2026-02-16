@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use serde_json::json;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
@@ -32,9 +33,21 @@ impl Runtime {
         let engaged_environment_ids = EnvironmentRegistry::default_engaged_environment_ids()
             .into_iter()
             .collect();
-        let environment_snapshots = EnvironmentRegistry::initial_environment_snapshots()
+        let mut environment_snapshots = EnvironmentRegistry::initial_environment_snapshots()
             .into_iter()
             .collect::<HashMap<_, _>>();
+        if let Some(snapshot) =
+            environment_snapshots.get_mut(fathom_env_fs::FILESYSTEM_ENVIRONMENT_ID)
+        {
+            let base_path = self.workspace_root().display().to_string();
+            if let Some(state) = snapshot.state_json.as_object_mut() {
+                state.insert("base_path".to_string(), json!(base_path));
+            } else {
+                snapshot.state_json = json!({
+                    "base_path": base_path
+                });
+            }
+        }
         let state = SessionState::new(
             session_id.clone(),
             agent_id,

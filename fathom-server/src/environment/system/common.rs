@@ -1,4 +1,4 @@
-use fathom_env::{ActionCall, ActionFuture, ActionSpec};
+use fathom_env::ActionSpec;
 use serde_json::Value;
 
 pub(super) const SYSTEM_ENVIRONMENT_ID: &str = "system";
@@ -17,11 +17,6 @@ pub(super) fn system_spec(
         input_schema,
         discovery: true,
     }
-}
-
-pub(super) fn execute_system<'a>(call: ActionCall<'a>, action_name: &'a str) -> ActionFuture<'a> {
-    call.host
-        .execute_environment_action(SYSTEM_ENVIRONMENT_ID, action_name, call.args_json)
 }
 
 pub(super) fn args_object(args: &Value) -> Result<&ArgsObject, String> {

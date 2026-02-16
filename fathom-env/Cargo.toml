@@ -5,6 +5,5 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true

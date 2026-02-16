@@ -6,4 +6,5 @@ version.workspace = true
 
 [dependencies]
 fathom-env.workspace = true
+serde.workspace = true
 serde_json.workspace = true

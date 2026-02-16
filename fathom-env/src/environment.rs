@@ -8,6 +8,7 @@ use crate::Action;
 #[derive(Debug, Clone)]
 pub struct EnvironmentSpec {
     pub id: &'static str,
+    pub name: &'static str,
     pub description: &'static str,
 }
 

@@ -1,7 +1,7 @@
-use fathom_env::{Action, ActionCall, ActionFuture, ActionSpec};
+use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
-use super::common::{args_object, execute_system, require_non_empty_string, system_spec};
+use super::common::{args_object, require_non_empty_string, system_spec};
 
 pub(super) struct GetProfileAction;
 
@@ -39,9 +39,5 @@ impl Action for GetProfileAction {
         }
 
         Ok(())
-    }
-
-    fn execute<'a>(&'a self, call: ActionCall<'a>) -> ActionFuture<'a> {
-        execute_system(call, "get_profile")
     }
 }

@@ -1,8 +1,8 @@
-use fathom_env::{Action, ActionCall, ActionFuture, ActionSpec};
+use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::FILESYSTEM_ENVIRONMENT_ID;
-use crate::validate::{args_object, require_boolean, require_managed_or_fs_path, require_string};
+use crate::validate::{args_object, require_boolean, require_relative_path, require_string};
 
 pub struct FsWriteAction;
 
@@ -11,7 +11,7 @@ impl Action for FsWriteAction {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
             action_name: "write",
-            description: "Write text content to a managed:// or fs:// file path.",
+            description: "Write text content to a base-path-relative file path.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -28,14 +28,9 @@ impl Action for FsWriteAction {
 
     fn validate(&self, args: &Value) -> Result<(), String> {
         let args = args_object(args)?;
-        require_managed_or_fs_path(args, "path")?;
+        require_relative_path(args, "path")?;
         require_string(args, "content")?;
         require_boolean(args, "allow_override")?;
         Ok(())
-    }
-
-    fn execute<'a>(&'a self, call: ActionCall<'a>) -> ActionFuture<'a> {
-        call.host
-            .execute_environment_action(FILESYSTEM_ENVIRONMENT_ID, "write", call.args_json)
     }
 }

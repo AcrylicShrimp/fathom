@@ -1,15 +1,10 @@
+use fathom_env::ActionOutcome;
 use serde_json::{Value, json};
 
 use super::error::FsError;
 
-#[derive(Debug, Clone)]
-pub(crate) struct TaskOutcome {
-    pub(crate) succeeded: bool,
-    pub(crate) message: String,
-}
-
-pub(crate) fn success(op: &'static str, path: &str, target: &str, data: Value) -> TaskOutcome {
-    TaskOutcome {
+pub(crate) fn success(op: &'static str, path: &str, target: &str, data: Value) -> ActionOutcome {
+    ActionOutcome {
         succeeded: true,
         message: json!({
             "ok": true,
@@ -19,6 +14,7 @@ pub(crate) fn success(op: &'static str, path: &str, target: &str, data: Value) -
             "data": data,
         })
         .to_string(),
+        state_patch: None,
     }
 }
 
@@ -27,7 +23,7 @@ pub(crate) fn failure(
     path: Option<&str>,
     error: &FsError,
     target: Option<&str>,
-) -> TaskOutcome {
+) -> ActionOutcome {
     let mut payload = json!({
         "ok": false,
         "op": op,
@@ -42,8 +38,9 @@ pub(crate) fn failure(
         payload["target"] = json!(target);
     }
 
-    TaskOutcome {
+    ActionOutcome {
         succeeded: false,
         message: payload.to_string(),
+        state_patch: None,
     }
 }

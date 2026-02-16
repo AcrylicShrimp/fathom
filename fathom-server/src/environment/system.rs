@@ -1,4 +1,5 @@
 mod common;
+mod describe_environment;
 mod get_context;
 mod get_profile;
 mod get_session_identity_map;
@@ -12,6 +13,7 @@ use fathom_env::{Action, Environment, EnvironmentSpec};
 use serde_json::Value;
 
 use common::SYSTEM_ENVIRONMENT_ID;
+use describe_environment::DescribeEnvironmentAction;
 use get_context::GetContextAction;
 use get_profile::GetProfileAction;
 use get_session_identity_map::GetSessionIdentityMapAction;
@@ -25,6 +27,7 @@ impl Environment for SystemEnvironment {
     fn spec(&self) -> EnvironmentSpec {
         EnvironmentSpec {
             id: SYSTEM_ENVIRONMENT_ID,
+            name: "System",
             description: "Privileged runtime and identity inspection environment.",
         }
     }
@@ -35,6 +38,7 @@ impl Environment for SystemEnvironment {
 
     fn actions(&self) -> Vec<Arc<dyn Action>> {
         vec![
+            Arc::new(DescribeEnvironmentAction),
             Arc::new(GetContextAction),
             Arc::new(GetTimeAction),
             Arc::new(ListProfilesAction),

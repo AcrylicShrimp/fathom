@@ -2,11 +2,10 @@ use crate::environment::EnvironmentRegistry;
 use crate::history::{PREVIEW_MAX_BYTES, PREVIEW_MAX_LINES};
 use serde::Serialize;
 
-pub(crate) const MANAGED_URI_PATTERNS: [&str; 2] = [
-    "managed://agent/<agent_id>/<field>",
-    "managed://user/<user_id>/<field>",
-];
-pub(crate) const FS_URI_POLICY: &str = "workspace-relative only";
+pub(crate) const PATH_FORMAT: &str = "relative";
+pub(crate) const BASE_PATH_SCOPE: &str = "filesystem environment base_path state";
+pub(crate) const ABSOLUTE_PATHS_ALLOWED: bool = false;
+pub(crate) const ESCAPE_OUTSIDE_BASE_PATH_ALLOWED: bool = false;
 
 pub(crate) const GENERAL_ACTIONS_TRIGGER_FOLLOWUP_TURN: bool = true;
 
@@ -17,8 +16,10 @@ pub(crate) const HISTORY_LOOKUP_ACTION: &str = "system__get_task_payload";
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PathPolicy {
-    pub(crate) managed_uri_patterns: Vec<String>,
-    pub(crate) fs_uri_policy: String,
+    pub(crate) path_format: String,
+    pub(crate) base_path_scope: String,
+    pub(crate) absolute_paths_allowed: bool,
+    pub(crate) escape_outside_base_path_allowed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,37 +38,35 @@ pub(crate) struct HistoryPolicy {
     pub(crate) lookup_action: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct EnvironmentPolicy {
-    pub(crate) default_engaged_environments: Vec<String>,
-}
-
 #[derive(Debug, Clone)]
-pub(crate) struct SystemPolicy {
+pub(crate) struct PolicySnapshot {
     pub(crate) path_policy: PathPolicy,
     pub(crate) action_policy: ActionPolicy,
-    pub(crate) environment_policy: EnvironmentPolicy,
     pub(crate) history_policy: HistoryPolicy,
 }
 
-pub(crate) fn path_policy() -> PathPolicy {
+fn path_policy() -> PathPolicy {
     PathPolicy {
-        managed_uri_patterns: MANAGED_URI_PATTERNS
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
-        fs_uri_policy: FS_URI_POLICY.to_string(),
+        path_format: PATH_FORMAT.to_string(),
+        base_path_scope: BASE_PATH_SCOPE.to_string(),
+        absolute_paths_allowed: ABSOLUTE_PATHS_ALLOWED,
+        escape_outside_base_path_allowed: ESCAPE_OUTSIDE_BASE_PATH_ALLOWED,
     }
 }
 
-pub(crate) fn action_policy() -> ActionPolicy {
+fn action_policy(include_actions: bool) -> ActionPolicy {
+    let known_actions = if include_actions {
+        EnvironmentRegistry::known_action_ids()
+    } else {
+        Vec::new()
+    };
     ActionPolicy {
-        known_actions: EnvironmentRegistry::known_action_ids(),
+        known_actions,
         general_actions_trigger_followup_turn: GENERAL_ACTIONS_TRIGGER_FOLLOWUP_TURN,
     }
 }
 
-pub(crate) fn history_policy() -> HistoryPolicy {
+fn history_policy() -> HistoryPolicy {
     HistoryPolicy {
         format: HISTORY_FORMAT.to_string(),
         task_started_event: HISTORY_TASK_STARTED_EVENT.to_string(),
@@ -78,17 +77,10 @@ pub(crate) fn history_policy() -> HistoryPolicy {
     }
 }
 
-pub(crate) fn environment_policy() -> EnvironmentPolicy {
-    EnvironmentPolicy {
-        default_engaged_environments: EnvironmentRegistry::default_engaged_environment_ids(),
-    }
-}
-
-pub(crate) fn system_policy() -> SystemPolicy {
-    SystemPolicy {
+pub(crate) fn synthesize_policy_snapshot(include_actions: bool) -> PolicySnapshot {
+    PolicySnapshot {
         path_policy: path_policy(),
-        action_policy: action_policy(),
-        environment_policy: environment_policy(),
+        action_policy: action_policy(include_actions),
         history_policy: history_policy(),
     }
 }

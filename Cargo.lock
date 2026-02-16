@@ -657,7 +657,6 @@ dependencies = [
 name = "fathom-env"
 version = "0.1.0"
 dependencies = [
- "futures-util",
  "serde",
  "serde_json",
 ]
@@ -667,6 +666,7 @@ name = "fathom-env-fs"
 version = "0.1.0"
 dependencies = [
  "fathom-env",
+ "serde",
  "serde_json",
 ]
 

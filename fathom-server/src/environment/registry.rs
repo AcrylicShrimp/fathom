@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
@@ -8,11 +9,10 @@ use crate::session::task_context::TaskExecutionContext;
 use crate::util::now_unix_ms;
 
 use fathom_env::{
-    Action, ActionCall, ActionOutcome, Environment, EnvironmentSnapshot, FinalizedAction,
-    TransitionResult, canonical_action_id, parse_action_id,
+    Action, ActionOutcome, Environment, EnvironmentSnapshot, FinalizedAction, TransitionResult,
+    canonical_action_id, parse_action_id,
 };
 
-use super::host::ServerActionHost;
 use super::system::SystemEnvironment;
 
 #[derive(Clone)]
@@ -21,7 +21,6 @@ pub(crate) struct ResolvedAction {
     pub(crate) environment_id: String,
     pub(crate) action_name: String,
     pub(crate) environment: Arc<dyn Environment>,
-    pub(crate) action: Arc<dyn Action>,
 }
 
 #[derive(Clone)]
@@ -40,6 +39,22 @@ struct RegisteredAction {
     action_name: &'static str,
     environment: Arc<dyn Environment>,
     action: Arc<dyn Action>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ActivatedEnvironmentSummary {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct EnvironmentActionSummary {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) discovery: bool,
+    pub(crate) input_schema: Value,
 }
 
 impl EnvironmentRegistry {
@@ -97,6 +112,26 @@ impl EnvironmentRegistry {
             .collect()
     }
 
+    pub(crate) fn activated_environment_summaries(
+        environment_ids: &[String],
+    ) -> Vec<ActivatedEnvironmentSummary> {
+        let registry = default_registry();
+        environment_ids
+            .iter()
+            .filter_map(|environment_id| registry.lookup_environment_summary(environment_id))
+            .collect()
+    }
+
+    pub(crate) fn environment_summary(env_id: &str) -> Option<ActivatedEnvironmentSummary> {
+        default_registry().lookup_environment_summary(env_id)
+    }
+
+    pub(crate) fn environment_action_summaries(
+        env_id: &str,
+    ) -> Option<Vec<EnvironmentActionSummary>> {
+        default_registry().lookup_environment_action_summaries(env_id)
+    }
+
     pub(crate) fn initial_environment_snapshots() -> BTreeMap<String, EnvironmentSnapshot> {
         let now = now_unix_ms();
         default_registry()
@@ -149,17 +184,23 @@ impl EnvironmentRegistry {
         args_json: &str,
         environment_state: &Value,
     ) -> Option<ActionOutcome> {
-        let args_value = serde_json::from_str::<Value>(args_json).unwrap_or(Value::Null);
-        let host = ServerActionHost::new(runtime, context);
-        resolved
-            .action
-            .execute(ActionCall {
-                host: &host,
+        match resolved.environment_id.as_str() {
+            fathom_env_fs::FILESYSTEM_ENVIRONMENT_ID => fathom_env_fs::execute_action(
+                resolved.action_name.as_str(),
                 args_json,
-                args: &args_value,
                 environment_state,
-            })
-            .await
+            ),
+            "system" => {
+                crate::system_env::execute_action(
+                    runtime,
+                    context,
+                    resolved.action_name.as_str(),
+                    args_json,
+                )
+                .await
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn apply_transition(
@@ -217,8 +258,45 @@ impl EnvironmentRegistry {
             environment_id: entry.environment_id.to_string(),
             action_name: entry.action_name.to_string(),
             environment: entry.environment.clone(),
-            action: entry.action.clone(),
         })
+    }
+
+    fn lookup_environment_summary(&self, env_id: &str) -> Option<ActivatedEnvironmentSummary> {
+        let environment = self.inner.environments.get(env_id)?;
+        let spec = environment.spec();
+        Some(ActivatedEnvironmentSummary {
+            id: spec.id.to_string(),
+            name: spec.name.to_string(),
+            description: spec.description.to_string(),
+        })
+    }
+
+    fn lookup_environment_action_summaries(
+        &self,
+        env_id: &str,
+    ) -> Option<Vec<EnvironmentActionSummary>> {
+        if !self.inner.environments.contains_key(env_id) {
+            return None;
+        }
+
+        let actions = self
+            .inner
+            .actions
+            .values()
+            .filter(|entry| entry.environment_id == env_id)
+            .map(|entry| {
+                let spec = entry.action.spec();
+                EnvironmentActionSummary {
+                    id: entry.canonical_action_id.clone(),
+                    name: spec.action_name.to_string(),
+                    description: spec.description.to_string(),
+                    discovery: spec.discovery,
+                    input_schema: spec.input_schema,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        Some(actions)
     }
 }
 
@@ -255,13 +333,30 @@ mod tests {
     }
 
     #[test]
-    fn validates_filesystem_path_prefix() {
+    fn validates_filesystem_relative_path() {
         let invalid =
-            EnvironmentRegistry::validate("filesystem__read", &json!({"path":"./no-scheme.txt"}));
+            EnvironmentRegistry::validate("filesystem__read", &json!({"path":"fs://notes.txt"}));
         assert!(invalid.is_err());
 
-        let valid =
-            EnvironmentRegistry::validate("filesystem__read", &json!({"path":"fs://notes.txt"}));
+        let valid = EnvironmentRegistry::validate("filesystem__read", &json!({"path":"notes.txt"}));
         assert!(valid.is_ok());
+    }
+
+    #[test]
+    fn activated_environment_summaries_include_name_and_description() {
+        let summaries = EnvironmentRegistry::activated_environment_summaries(&[
+            "filesystem".to_string(),
+            "system".to_string(),
+        ]);
+        assert!(
+            summaries
+                .iter()
+                .any(|summary| summary.id == "filesystem" && !summary.name.is_empty())
+        );
+        assert!(
+            summaries
+                .iter()
+                .any(|summary| summary.id == "system" && !summary.description.is_empty())
+        );
     }
 }

@@ -7,8 +7,9 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
         "You may emit assistant text and/or action calls.".to_string(),
         "When calling actions, use canonical action ids in the format env__action.".to_string(),
         "All actions are server-managed background jobs and emit task_done triggers after commit.".to_string(),
-        "Use filesystem__list/filesystem__read/filesystem__write/filesystem__replace for file operations.".to_string(),
+        "Use filesystem__get_base_path/filesystem__list/filesystem__read/filesystem__write/filesystem__replace for base-path-relative file operations.".to_string(),
         "If you need fresher clock data than this snapshot, call system__get_time.".to_string(),
+        "If you need environment docs, call system__describe_environment.".to_string(),
         "Task results arrive as JSON text in task_done.result_message.".to_string(),
         String::new(),
     ];
@@ -22,10 +23,6 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
     lines.push(format!(
         "runtime_version: {}",
         snapshot.system_context.runtime_version
-    ));
-    lines.push(format!(
-        "workspace_root: {}",
-        snapshot.system_context.workspace_root
     ));
     lines.push("current_time:".to_string());
     lines.push(format!(
@@ -52,14 +49,36 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
         "- time_source: {}",
         snapshot.system_context.time_context.time_source
     ));
-    lines.push("path_policy.managed_uri_patterns:".to_string());
-    for pattern in &snapshot.system_context.path_policy.managed_uri_patterns {
-        lines.push(format!("- {pattern}"));
-    }
     lines.push(format!(
-        "path_policy.fs_uri_policy: {}",
-        snapshot.system_context.path_policy.fs_uri_policy
+        "path_policy.path_format: {}",
+        snapshot.system_context.path_policy.path_format
     ));
+    lines.push(format!(
+        "path_policy.base_path_scope: {}",
+        snapshot.system_context.path_policy.base_path_scope
+    ));
+    lines.push(format!(
+        "path_policy.absolute_paths_allowed: {}",
+        snapshot.system_context.path_policy.absolute_paths_allowed
+    ));
+    lines.push(format!(
+        "path_policy.escape_outside_base_path_allowed: {}",
+        snapshot
+            .system_context
+            .path_policy
+            .escape_outside_base_path_allowed
+    ));
+    lines.push("activated_environments:".to_string());
+    if snapshot.system_context.activated_environments.is_empty() {
+        lines.push("- (none)".to_string());
+    } else {
+        for environment in &snapshot.system_context.activated_environments {
+            lines.push(format!(
+                "- id={} name={} description={}",
+                environment.id, environment.name, environment.description
+            ));
+        }
+    }
     lines.push("session_identity:".to_string());
     lines.push(format!(
         "- session_id: {}",
@@ -120,15 +139,6 @@ pub(crate) fn build_agent_prompt(snapshot: &TurnSnapshot, retry_feedback: Option
             ));
         }
     }
-    lines.push("environment_policy:".to_string());
-    lines.push(format!(
-        "- default_engaged_environments: {}",
-        snapshot
-            .system_context
-            .environment_policy
-            .default_engaged_environments
-            .join(",")
-    ));
     lines.push("action_policy:".to_string());
     lines.push(format!(
         "- known_actions: {}",
@@ -283,23 +293,22 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::agent::{
-        SessionCompactionSnapshot, SessionIdentityMapSnapshot, SystemContextSnapshot,
-        SystemTimeContext, TurnSnapshot,
+        ActivatedEnvironmentHint, SessionCompactionSnapshot, SessionIdentityMapSnapshot,
+        SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
     };
-    use crate::policy::system_policy;
+    use crate::policy::synthesize_policy_snapshot;
     use crate::util::default_agent_profile;
 
     use super::build_agent_prompt;
 
     #[test]
     fn prompt_contains_current_time_block() {
-        let policy = system_policy();
+        let policy = synthesize_policy_snapshot(true);
         let snapshot = TurnSnapshot {
             session_id: "session-1".to_string(),
             turn_id: 1,
             system_context: SystemContextSnapshot {
                 runtime_version: "0.1.0".to_string(),
-                workspace_root: "/workspace".to_string(),
                 time_context: SystemTimeContext {
                     generated_at_unix_ms: 1_765_000_000_000,
                     utc_rfc3339: "2026-02-16T00:00:00.000Z".to_string(),
@@ -309,6 +318,12 @@ mod tests {
                     time_source: "server_clock".to_string(),
                 },
                 path_policy: policy.path_policy,
+                activated_environments: vec![ActivatedEnvironmentHint {
+                    id: "filesystem".to_string(),
+                    name: "Filesystem".to_string(),
+                    description: "Stateful filesystem environment rooted at a base path."
+                        .to_string(),
+                }],
                 session_identity: SessionIdentityMapSnapshot {
                     session_id: "session-1".to_string(),
                     active_agent_id: "agent-default".to_string(),
@@ -322,7 +337,6 @@ mod tests {
                     in_flight_actions: vec![],
                 },
                 action_policy: policy.action_policy,
-                environment_policy: policy.environment_policy,
                 history_policy: policy.history_policy,
             },
             agent_profile: default_agent_profile("agent-default"),
@@ -338,5 +352,6 @@ mod tests {
         assert!(prompt.contains("utc_rfc3339: 2026-02-16T00:00:00.000Z"));
         assert!(prompt.contains("local_timezone_name: Asia/Seoul"));
         assert!(prompt.contains("call system__get_time"));
+        assert!(prompt.contains("system__describe_environment"));
     }
 }

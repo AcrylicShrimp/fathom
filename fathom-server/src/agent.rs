@@ -4,9 +4,9 @@ mod retry;
 mod types;
 
 pub(crate) use types::{
-    ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, AgentTurnOutcome, InFlightActionHint,
-    SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote, SummaryBlockRefSnapshot,
-    SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
+    ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, ActivatedEnvironmentHint,
+    AgentTurnOutcome, InFlightActionHint, SessionCompactionSnapshot, SessionIdentityMapSnapshot,
+    StreamNote, SummaryBlockRefSnapshot, SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
 };
 
 use crate::environment::EnvironmentRegistry;

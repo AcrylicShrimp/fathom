@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde_json::Value;
 
 pub type ArgsObject = serde_json::Map<String, Value>;
@@ -27,13 +29,20 @@ pub fn require_boolean(args: &ArgsObject, key: &str) -> Result<bool, String> {
         .ok_or_else(|| format!("missing or invalid boolean field `{key}`"))
 }
 
-pub fn require_managed_or_fs_path(args: &ArgsObject, key: &str) -> Result<(), String> {
+pub fn require_relative_path(args: &ArgsObject, key: &str) -> Result<(), String> {
     let value = require_non_empty_string(args, key)?;
-    if value.starts_with("managed://") || value.starts_with("fs://") {
-        return Ok(());
+
+    if value.contains("://") {
+        return Err(format!(
+            "`{key}` must be a relative filesystem path without URI scheme (received `{value}`)"
+        ));
     }
 
-    Err(format!(
-        "`{key}` must start with managed:// or fs:// (received `{value}`)"
-    ))
+    if value.starts_with('/') || value.starts_with('\\') || Path::new(value).is_absolute() {
+        return Err(format!(
+            "`{key}` must be relative to the filesystem base path (received `{value}`)"
+        ));
+    }
+
+    Ok(())
 }

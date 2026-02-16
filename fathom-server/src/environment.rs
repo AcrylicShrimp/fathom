@@ -1,5 +1,4 @@
 mod actor;
-mod host;
 mod registry;
 mod system;
 

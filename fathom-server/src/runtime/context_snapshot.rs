@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 
 use super::Runtime;
 use crate::agent::{
-    InFlightActionHint, SessionIdentityMapSnapshot, SystemContextSnapshot, TurnSnapshot,
+    ActivatedEnvironmentHint, InFlightActionHint, SessionIdentityMapSnapshot,
+    SystemContextSnapshot, TurnSnapshot,
 };
+use crate::environment::EnvironmentRegistry;
 use crate::pb;
-use crate::policy::system_policy;
+use crate::policy::synthesize_policy_snapshot;
 use crate::session::SessionState;
 
 impl Runtime {
@@ -54,7 +56,21 @@ impl Runtime {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let policy = system_policy();
+        let policy = synthesize_policy_snapshot(true);
+        let activated_environment_ids = state
+            .engaged_environment_ids
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let activated_environments =
+            EnvironmentRegistry::activated_environment_summaries(&activated_environment_ids)
+                .into_iter()
+                .map(|environment| ActivatedEnvironmentHint {
+                    id: environment.id,
+                    name: environment.name,
+                    description: environment.description,
+                })
+                .collect::<Vec<_>>();
         let in_flight_actions = state
             .in_flight_actions
             .values()
@@ -79,9 +95,9 @@ impl Runtime {
 
         SystemContextSnapshot {
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
-            workspace_root: self.workspace_root().display().to_string(),
             time_context: self.current_system_time_context(),
             path_policy: policy.path_policy,
+            activated_environments,
             session_identity: SessionIdentityMapSnapshot {
                 session_id: state.session_id.clone(),
                 active_agent_id: state.agent_id.clone(),
@@ -92,7 +108,6 @@ impl Runtime {
                 in_flight_actions,
             },
             action_policy: policy.action_policy,
-            environment_policy: policy.environment_policy,
             history_policy: policy.history_policy,
         }
     }

@@ -2,31 +2,31 @@ use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::FILESYSTEM_ENVIRONMENT_ID;
-use crate::validate::{args_object, require_relative_path};
+use crate::validate::args_object;
 
-pub struct FsReadAction;
+pub struct FsGetBasePathAction;
 
-impl Action for FsReadAction {
+impl Action for FsGetBasePathAction {
     fn spec(&self) -> ActionSpec {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
-            action_name: "read",
-            description: "Read text content from a base-path-relative file path.",
+            action_name: "get_base_path",
+            description: "Return the current filesystem environment base path.",
             input_schema: json!({
                 "type": "object",
-                "properties": {
-                    "path": { "type": "string" }
-                },
-                "required": ["path"],
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
             }),
-            discovery: false,
+            discovery: true,
         }
     }
 
     fn validate(&self, args: &Value) -> Result<(), String> {
         let args = args_object(args)?;
-        require_relative_path(args, "path")?;
+        if !args.is_empty() {
+            return Err("filesystem__get_base_path does not accept arguments".to_string());
+        }
         Ok(())
     }
 }

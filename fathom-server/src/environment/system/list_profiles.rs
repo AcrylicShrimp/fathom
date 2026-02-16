@@ -1,7 +1,7 @@
-use fathom_env::{Action, ActionCall, ActionFuture, ActionSpec};
+use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
-use super::common::{args_object, execute_system, require_non_empty_string, system_spec};
+use super::common::{args_object, require_non_empty_string, system_spec};
 
 pub(super) struct ListProfilesAction;
 
@@ -28,9 +28,5 @@ impl Action for ListProfilesAction {
             return Err("system__list_profiles.kind must be `agent`, `user`, or `all`".to_string());
         }
         Ok(())
-    }
-
-    fn execute<'a>(&'a self, call: ActionCall<'a>) -> ActionFuture<'a> {
-        execute_system(call, "list_profiles")
     }
 }

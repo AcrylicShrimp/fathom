@@ -1,9 +1,9 @@
-use fathom_env::{Action, ActionCall, ActionFuture, ActionSpec};
+use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::FILESYSTEM_ENVIRONMENT_ID;
 use crate::validate::{
-    args_object, require_managed_or_fs_path, require_non_empty_string, require_string,
+    args_object, require_non_empty_string, require_relative_path, require_string,
 };
 
 pub struct FsReplaceAction;
@@ -13,7 +13,7 @@ impl Action for FsReplaceAction {
         ActionSpec {
             environment_id: FILESYSTEM_ENVIRONMENT_ID,
             action_name: "replace",
-            description: "Replace text in a managed:// or fs:// file path.",
+            description: "Replace text in a base-path-relative file path.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -31,7 +31,7 @@ impl Action for FsReplaceAction {
 
     fn validate(&self, args: &Value) -> Result<(), String> {
         let args = args_object(args)?;
-        require_managed_or_fs_path(args, "path")?;
+        require_relative_path(args, "path")?;
         require_non_empty_string(args, "old")?;
         require_string(args, "new")?;
         let mode = require_non_empty_string(args, "mode")?;
@@ -39,10 +39,5 @@ impl Action for FsReplaceAction {
             return Err("filesystem__replace.mode must be `first` or `all`".to_string());
         }
         Ok(())
-    }
-
-    fn execute<'a>(&'a self, call: ActionCall<'a>) -> ActionFuture<'a> {
-        call.host
-            .execute_environment_action(FILESYSTEM_ENVIRONMENT_ID, "replace", call.args_json)
     }
 }

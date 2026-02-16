@@ -1,8 +1,4 @@
-use crate::{ActionCall, ActionOutcome};
-use futures_util::future::BoxFuture;
 use serde_json::Value;
-
-pub type ActionFuture<'a> = BoxFuture<'a, Option<ActionOutcome>>;
 
 #[derive(Debug, Clone)]
 pub struct ActionSpec {
@@ -23,6 +19,4 @@ pub trait Action: Send + Sync {
     fn spec(&self) -> ActionSpec;
 
     fn validate(&self, args: &Value) -> Result<(), String>;
-
-    fn execute<'a>(&'a self, call: ActionCall<'a>) -> ActionFuture<'a>;
 }

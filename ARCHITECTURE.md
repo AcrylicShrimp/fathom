@@ -65,6 +65,7 @@ Tasks are background jobs created by agent actions.
   - Commit order is deterministic per environment sequence.
   - `TaskDone` is emitted after commit finalization (success or failure).
 - Implemented filesystem actions execute as real background jobs:
+  - `filesystem__get_base_path()`
   - `filesystem__list(path)`
   - `filesystem__read(path)`
   - `filesystem__write(path, content, allow_override)`
@@ -79,28 +80,29 @@ Tasks are background jobs created by agent actions.
   - Agent can query full payloads with `system__get_task_payload`.
 - Time context policy:
   - Each turn snapshot includes `time_context` (`utc_rfc3339`, `local_rfc3339`, `local_timezone_name`, `local_utc_offset`, `generated_at_unix_ms`).
+  - Each turn snapshot includes `activated_environments` (`id`, `name`, `description`).
   - `system__get_context` includes the same `time_context` shape.
   - `system__get_time` returns refreshed server-clock time when the model needs newer values mid-session.
+  - `system__describe_environment(env_id)` returns detailed environment docs for activated environments.
 
-### Filesystem Path Spaces
-Filesystem actions use URI-style paths:
+### Filesystem Path Model
+Filesystem actions use plain relative paths resolved from the filesystem environment base path.
 
-- `managed://...` for profile-backed managed files
-  - `managed://agent/<agent_id>/<field>`
-  - `managed://user/<user_id>/<field>`
-- `fs://...` for real workspace files (workspace-relative only)
+- Examples: `notes/today.md`, `src/main.rs`, `.`
+- Rejected: absolute paths, URI schemes (`://`), and paths that escape base path (`../../...`)
 
-Managed files are mapped to profile fields (agent/user profile content and memory). Real filesystem paths are sandboxed to the configured workspace root.
+Profile content is not exposed as pseudo-files via filesystem actions. Profile and memory data are accessed through system actions such as `system__list_profiles` and `system__get_profile`.
+Environment state is opaque to the agent by default. Agents inspect environment internals through explicit inspection actions (for example `filesystem__get_base_path` and `system__describe_environment`), not by raw state injection.
 
 ## Identity and Memory
 
 Profiles are canonical global entities:
 
 - `AgentProfile`
-  - includes managed content fields for `AGENTS.md`, `SOUL.md`, `IDENTITY.md`
+  - includes profile content fields for `AGENTS.md`, `SOUL.md`, `IDENTITY.md`
   - includes long-term agent memory
 - `UserProfile`
-  - includes managed content field for `USER.md`
+  - includes profile content field for `USER.md`
   - includes long-term user memory and preferences
 
 Sessions hold immutable copies of these profiles for deterministic replay.
@@ -140,6 +142,8 @@ Client-side dedup policy:
   - per-session actor loop
 - Layered internal modules:
   - `agent/*`: model orchestration, prompt rendering
+    - prompt/system context includes activated environment summaries (`id`, `name`, short description)
+    - mutable environment snapshots are not injected directly
   - `environment/*`: environment registry, environment actors, and built-in environment definitions
     - `environment/registry.rs`: composes environments and canonical action registry
     - `environment/actor.rs`: per-environment child actor runtime with in-order commit
@@ -148,7 +152,7 @@ Client-side dedup policy:
   - `session/engine/assistant_stream.rs`: native assistant text streaming and batching
   - `history/*`: structured history line transformation and preview truncation
   - `system_env/*`: runtime/profile/session/task discovery action execution
-  - `fs/*`: managed and real filesystem action execution
+    - includes environment discovery (`system__describe_environment`) for deeper docs/capabilities/recipes
 - OpenAI-backed `AgentOrchestrator` with:
   - server-defined action registry sourced from `Environment + Action` contracts
   - streaming Responses API integration
@@ -156,11 +160,13 @@ Client-side dedup policy:
 
 ### Environment Contracts
 - `fathom-env`:
-  - shared environment/action contracts (`Environment`, `Action`, `ActionSpec`, `ActionCall`, `ActionHost`, `ActionOutcome`)
+  - shared environment/action contracts (`Environment`, `Action`, `ActionSpec`, `ActionOutcome`)
+  - environment metadata includes `id`, `name`, and `description`
   - canonical naming helpers (`env__action`)
 - `envs/fathom-env-fs`:
-  - filesystem environment action instances (`list`, `read`, `write`, `replace`)
-  - each action owns schema, validation, and execute entrypoint
+  - filesystem environment action instances (`get_base_path`, `list`, `read`, `write`, `replace`)
+  - action schemas and validation
+  - filesystem execution backend (path parsing, sandboxing, real I/O)
 - System actions remain built-in in `fathom-server` because they require privileged server/runtime access.
 
 ### Client (`fathom-client`)

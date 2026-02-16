@@ -1,7 +1,7 @@
-use fathom_env::{Action, ActionCall, ActionFuture, ActionSpec};
+use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
-use super::common::{args_object, execute_system, system_spec};
+use super::common::{args_object, system_spec};
 
 pub(super) struct GetSessionIdentityMapAction;
 
@@ -22,9 +22,5 @@ impl Action for GetSessionIdentityMapAction {
     fn validate(&self, args: &Value) -> Result<(), String> {
         let _ = args_object(args)?;
         Ok(())
-    }
-
-    fn execute<'a>(&'a self, call: ActionCall<'a>) -> ActionFuture<'a> {
-        execute_system(call, "get_session_identity_map")
     }
 }
