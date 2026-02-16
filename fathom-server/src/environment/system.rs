@@ -8,7 +8,7 @@ mod list_profiles;
 
 use std::sync::Arc;
 
-use fathom_tooling::{Action, Environment, EnvironmentSpec};
+use fathom_env::{Action, Environment, EnvironmentSpec};
 use serde_json::Value;
 
 use common::SYSTEM_ENVIRONMENT_ID;

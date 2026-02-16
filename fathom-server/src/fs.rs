@@ -201,7 +201,7 @@ mod tests {
     use super::execute_action;
 
     #[tokio::test]
-    async fn fs_tools_write_and_read_managed_agent_field() {
+    async fn fs_env_write_and_read_managed_agent_field() {
         let runtime = Runtime::new(2, 10);
         let write_outcome = execute_action(
             &runtime,
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fs_tools_replace_supports_mode_switch() {
+    async fn fs_env_replace_supports_mode_switch() {
         let root = unique_temp_dir("fathom-fs-replace");
         std::fs::create_dir_all(&root).expect("create temp root");
         let runtime = Runtime::new_with_workspace_root(2, 10, root.clone()).expect("runtime");
@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fs_tools_reject_workspace_escape() {
+    async fn fs_env_reject_workspace_escape() {
         let root = unique_temp_dir("fathom-fs-escape");
         std::fs::create_dir_all(&root).expect("create temp root");
         let runtime = Runtime::new_with_workspace_root(2, 10, root.clone()).expect("runtime");

@@ -4,7 +4,7 @@ use crate::fs::TaskOutcome;
 use crate::runtime::Runtime;
 use crate::session::task_context::TaskExecutionContext;
 
-use fathom_tooling::{ActionHost, ActionOutcome};
+use fathom_env::{ActionHost, ActionOutcome};
 
 pub(super) struct ServerActionHost<'a> {
     runtime: &'a Runtime,
@@ -30,7 +30,7 @@ impl ActionHost for ServerActionHost<'_> {
                     crate::fs::execute_action(self.runtime, action_name, args_json).await
                 }
                 "system" => {
-                    crate::system_tools::execute_action(
+                    crate::system_env::execute_action(
                         self.runtime,
                         self.context,
                         action_name,

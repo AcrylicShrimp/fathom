@@ -1,9 +1,10 @@
 [package]
-name = "fathom-tools-fs"
+name = "fathom-env"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
-fathom-tooling.workspace = true
+futures-util.workspace = true
+serde.workspace = true
 serde_json.workspace = true

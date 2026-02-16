@@ -6,7 +6,7 @@ mod validate;
 
 use std::sync::Arc;
 
-use fathom_tooling::{Action, Environment, EnvironmentSpec};
+use fathom_env::{Action, Environment, EnvironmentSpec};
 use serde_json::{Value, json};
 
 use fs_list::FsListAction;

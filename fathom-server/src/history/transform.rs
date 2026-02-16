@@ -1,4 +1,4 @@
-use fathom_tooling::parse_action_id;
+use fathom_env::parse_action_id;
 use serde_json::json;
 
 use crate::history::preview::build_payload_preview;
@@ -116,7 +116,7 @@ pub(crate) fn task_started_line(state: &SessionState, task: &pb::Task) -> String
     let status = pb::TaskStatus::try_from(task.status)
         .map(task_status_label)
         .unwrap_or("unknown");
-    let (environment_id, action_name) = parse_task_action_id(&task.tool_name);
+    let (environment_id, action_name) = parse_task_action_id(&task.action_id);
 
     HistoryEventLine {
         ts_unix_ms: task.updated_at_unix_ms,
@@ -125,7 +125,7 @@ pub(crate) fn task_started_line(state: &SessionState, task: &pb::Task) -> String
         actor_id: task.task_id.clone(),
         profile_ref: active_agent_profile_ref(state),
         payload: json!({
-            "canonical_action_id": task.tool_name,
+            "canonical_action_id": task.action_id,
             "environment_id": environment_id,
             "action_name": action_name,
             "status": status,
@@ -142,7 +142,7 @@ pub(crate) fn task_finished_line(state: &SessionState, task: &pb::Task) -> Strin
     let status = pb::TaskStatus::try_from(task.status)
         .map(task_status_label)
         .unwrap_or("unknown");
-    let (environment_id, action_name) = parse_task_action_id(&task.tool_name);
+    let (environment_id, action_name) = parse_task_action_id(&task.action_id);
 
     HistoryEventLine {
         ts_unix_ms: task.updated_at_unix_ms,
@@ -151,7 +151,7 @@ pub(crate) fn task_finished_line(state: &SessionState, task: &pb::Task) -> Strin
         actor_id: task.task_id.clone(),
         profile_ref: active_agent_profile_ref(state),
         payload: json!({
-            "canonical_action_id": task.tool_name,
+            "canonical_action_id": task.action_id,
             "environment_id": environment_id,
             "action_name": action_name,
             "status": status,

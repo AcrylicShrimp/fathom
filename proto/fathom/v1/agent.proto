@@ -57,7 +57,7 @@ message UserProfile {
 message Task {
   string task_id = 1;
   string session_id = 2;
-  string tool_name = 3;
+  string action_id = 3;
   string args_json = 4;
   TaskStatus status = 5;
   string result_message = 6;

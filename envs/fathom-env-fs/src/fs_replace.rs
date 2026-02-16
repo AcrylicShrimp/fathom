@@ -1,4 +1,4 @@
-use fathom_tooling::{Action, ActionCall, ActionFuture, ActionSpec};
+use fathom_env::{Action, ActionCall, ActionFuture, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::FILESYSTEM_ENVIRONMENT_ID;

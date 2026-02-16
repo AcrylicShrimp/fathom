@@ -9,7 +9,5 @@ pub use environment::{
     Environment, EnvironmentSnapshot, EnvironmentSpec, FinalizedAction, TransitionResult,
 };
 pub use host::{ActionCall, ActionHost};
-pub use naming::{
-    LegacyActionAlias, canonical_action_id, parse_action_id, parse_action_id_with_aliases,
-};
+pub use naming::{canonical_action_id, parse_action_id};
 pub use outcome::ActionOutcome;

@@ -147,7 +147,7 @@ Client-side dedup policy:
   - `session/*`: deterministic session actor + action-task orchestration
   - `session/engine/assistant_stream.rs`: native assistant text streaming and batching
   - `history/*`: structured history line transformation and preview truncation
-  - `system_tools/*`: runtime/profile/session/task discovery action execution
+  - `system_env/*`: runtime/profile/session/task discovery action execution
   - `fs/*`: managed and real filesystem action execution
 - OpenAI-backed `AgentOrchestrator` with:
   - server-defined action registry sourced from `Environment + Action` contracts
@@ -155,10 +155,10 @@ Client-side dedup policy:
   - retry policy with backoff/jitter and `Retry-After` support
 
 ### Environment Contracts
-- `fathom-tooling`:
+- `fathom-env`:
   - shared environment/action contracts (`Environment`, `Action`, `ActionSpec`, `ActionCall`, `ActionHost`, `ActionOutcome`)
-  - canonical naming helpers (`env__action`) and legacy alias parsing
-- `tools/fathom-tools-fs`:
+  - canonical naming helpers (`env__action`)
+- `envs/fathom-env-fs`:
   - filesystem environment action instances (`list`, `read`, `write`, `replace`)
   - each action owns schema, validation, and execute entrypoint
 - System actions remain built-in in `fathom-server` because they require privileged server/runtime access.
@@ -198,7 +198,7 @@ Client-side dedup policy:
 
 ## Current Scope
 This implementation is intentionally in-memory and bootstrap-focused.
-Persistence, authorization/approval policy, and real tool backends can be layered on top of this runtime contract.
+Persistence, authorization/approval policy, and real environment backends can be layered on top of this runtime contract.
 
 ## Environment
 - Required: `OPENAI_API_KEY`

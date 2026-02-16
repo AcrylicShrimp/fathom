@@ -7,7 +7,7 @@ use crate::agent::{SessionCompactionSnapshot, SummaryBlockRefSnapshot};
 use crate::environment::EnvironmentCommittedAction;
 use crate::pb;
 use crate::util::now_unix_ms;
-use fathom_tooling::EnvironmentSnapshot;
+use fathom_env::EnvironmentSnapshot;
 
 #[derive(Clone)]
 pub(crate) struct SessionRuntime {

@@ -7,8 +7,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-fathom-tooling.workspace = true
-fathom-tools-fs.workspace = true
+fathom-env.workspace = true
+fathom-env-fs.workspace = true
 futures-util.workspace = true
 prost.workspace = true
 reqwest.workspace = true

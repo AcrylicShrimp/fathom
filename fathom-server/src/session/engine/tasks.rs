@@ -33,7 +33,7 @@ pub(super) fn queue_task(
     let mut task = pb::Task {
         task_id: task_id.clone(),
         session_id: state.session_id.clone(),
-        tool_name: action_id.clone(),
+        action_id: action_id.clone(),
         args_json: args_json.clone(),
         status: pb::TaskStatus::Running as i32,
         result_message: String::new(),
@@ -240,6 +240,6 @@ pub(super) fn queued_action_output(task: &pb::Task, call_id: Option<&str>) -> St
 
     format!(
         "queued action `{}` as {} ({status}){}",
-        task.tool_name, task.task_id, call_suffix
+        task.action_id, task.task_id, call_suffix
     )
 }

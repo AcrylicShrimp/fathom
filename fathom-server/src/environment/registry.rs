@@ -7,9 +7,9 @@ use crate::runtime::Runtime;
 use crate::session::task_context::TaskExecutionContext;
 use crate::util::now_unix_ms;
 
-use fathom_tooling::{
+use fathom_env::{
     Action, ActionCall, ActionOutcome, Environment, EnvironmentSnapshot, FinalizedAction,
-    LegacyActionAlias, TransitionResult, canonical_action_id, parse_action_id_with_aliases,
+    TransitionResult, canonical_action_id, parse_action_id,
 };
 
 use super::host::ServerActionHost;
@@ -41,59 +41,6 @@ struct RegisteredAction {
     environment: Arc<dyn Environment>,
     action: Arc<dyn Action>,
 }
-
-const LEGACY_ALIASES: [LegacyActionAlias; 10] = [
-    LegacyActionAlias {
-        alias: "fs_list",
-        environment_id: "filesystem",
-        action_name: "list",
-    },
-    LegacyActionAlias {
-        alias: "fs_read",
-        environment_id: "filesystem",
-        action_name: "read",
-    },
-    LegacyActionAlias {
-        alias: "fs_write",
-        environment_id: "filesystem",
-        action_name: "write",
-    },
-    LegacyActionAlias {
-        alias: "fs_replace",
-        environment_id: "filesystem",
-        action_name: "replace",
-    },
-    LegacyActionAlias {
-        alias: "sys_get_context",
-        environment_id: "system",
-        action_name: "get_context",
-    },
-    LegacyActionAlias {
-        alias: "sys_get_time",
-        environment_id: "system",
-        action_name: "get_time",
-    },
-    LegacyActionAlias {
-        alias: "sys_list_profiles",
-        environment_id: "system",
-        action_name: "list_profiles",
-    },
-    LegacyActionAlias {
-        alias: "sys_get_session_identity_map",
-        environment_id: "system",
-        action_name: "get_session_identity_map",
-    },
-    LegacyActionAlias {
-        alias: "sys_get_profile",
-        environment_id: "system",
-        action_name: "get_profile",
-    },
-    LegacyActionAlias {
-        alias: "sys_get_task_payload",
-        environment_id: "system",
-        action_name: "get_task_payload",
-    },
-];
 
 impl EnvironmentRegistry {
     pub(crate) fn new() -> Self {
@@ -172,8 +119,7 @@ impl EnvironmentRegistry {
     }
 
     pub(crate) fn canonicalize_action_id(action_id: &str) -> Option<String> {
-        let (environment_id, action_name) =
-            parse_action_id_with_aliases(action_id, &LEGACY_ALIASES)?;
+        let (environment_id, action_name) = parse_action_id(action_id)?;
         Some(canonical_action_id(&environment_id, &action_name))
     }
 
@@ -231,7 +177,7 @@ impl EnvironmentRegistry {
 
         register_environment(
             &mut environments,
-            Arc::new(fathom_tools_fs::FilesystemEnvironment),
+            Arc::new(fathom_env_fs::FilesystemEnvironment),
         );
         register_environment(&mut environments, Arc::new(SystemEnvironment));
 
@@ -317,12 +263,5 @@ mod tests {
         let valid =
             EnvironmentRegistry::validate("filesystem__read", &json!({"path":"fs://notes.txt"}));
         assert!(valid.is_ok());
-    }
-
-    #[test]
-    fn legacy_aliases_resolve() {
-        let canonical =
-            EnvironmentRegistry::canonicalize_action_id("fs_read").expect("alias should resolve");
-        assert_eq!(canonical, "filesystem__read");
     }
 }

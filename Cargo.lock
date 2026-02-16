@@ -654,13 +654,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fathom-env"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "fathom-env-fs"
+version = "0.1.0"
+dependencies = [
+ "fathom-env",
+ "serde_json",
+]
+
+[[package]]
 name = "fathom-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "fathom-tooling",
- "fathom-tools-fs",
+ "fathom-env",
+ "fathom-env-fs",
  "futures-util",
  "prost",
  "reqwest",
@@ -672,23 +689,6 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
-]
-
-[[package]]
-name = "fathom-tooling"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "fathom-tools-fs"
-version = "0.1.0"
-dependencies = [
- "fathom-tooling",
- "serde_json",
 ]
 
 [[package]]

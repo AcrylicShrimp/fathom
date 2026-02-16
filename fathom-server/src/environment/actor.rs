@@ -9,7 +9,7 @@ use crate::session::state::SessionCommand;
 use crate::session::task_context::TaskExecutionContext;
 use crate::util::now_unix_ms;
 
-use fathom_tooling::{ActionOutcome, EnvironmentSnapshot, FinalizedAction};
+use fathom_env::{ActionOutcome, EnvironmentSnapshot, FinalizedAction};
 
 #[derive(Debug, Clone)]
 pub(crate) struct EnvironmentCommittedAction {
