@@ -194,7 +194,7 @@ impl App {
         if self.completion_is_visible() {
             "Commands: ↑/↓ select | Tab/Enter accept | Esc close"
         } else {
-            "Keys: Shift+Tab switch | Enter send | Enter/Ctrl+Enter task detail (tools, empty input) | / opens commands | ↑/↓ scroll/select | Esc clear input | Ctrl+C quit"
+            "Keys: Shift+Tab switch | Enter send | Ctrl+Enter task detail (tools; Ctrl+J/M fallback) | / opens commands | ↑/↓ scroll/select | Esc clear input | Ctrl+C quit"
         }
     }
 }
@@ -392,7 +392,7 @@ async fn run_loop(
                     app.completion_next();
                     continue;
                 }
-                KeyCode::Enter => {
+                KeyCode::Enter if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     let _ = app.accept_completion();
                     continue;
                 }

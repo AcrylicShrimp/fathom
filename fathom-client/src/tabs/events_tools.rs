@@ -213,6 +213,14 @@ fn is_action_validation_error(detail: &str) -> bool {
         || detail.contains("unknown action `")
 }
 
+fn is_ctrl_enter_like(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(
+            key.code,
+            KeyCode::Enter | KeyCode::Char('j') | KeyCode::Char('m')
+        )
+}
+
 impl Tab for ToolsEventsTab {
     fn on_event(&mut self, event: &EventRecord) {
         if Self::should_render(event) {
@@ -291,7 +299,7 @@ impl Tab for ToolsEventsTab {
     fn handle_key(
         &mut self,
         key: &KeyEvent,
-        input_is_empty: bool,
+        _input_is_empty: bool,
         viewport_height: u16,
         viewport_width: u16,
     ) -> TabKeyResult {
@@ -311,18 +319,21 @@ impl Tab for ToolsEventsTab {
                 }
             }
             KeyCode::Enter => {
-                let open_requested =
-                    key.modifiers.contains(KeyModifiers::CONTROL) || input_is_empty;
-                if !open_requested {
+                if !is_ctrl_enter_like(key) {
                     return TabKeyResult::Ignored;
                 }
 
                 if let Some(detail) = self.selected_task_detail() {
                     TabKeyResult::OpenTaskDetail(detail)
-                } else if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    TabKeyResult::Handled
                 } else {
-                    TabKeyResult::Ignored
+                    TabKeyResult::Handled
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Char('m') if is_ctrl_enter_like(key) => {
+                if let Some(detail) = self.selected_task_detail() {
+                    TabKeyResult::OpenTaskDetail(detail)
+                } else {
+                    TabKeyResult::Handled
                 }
             }
             _ => TabKeyResult::Ignored,
@@ -446,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn opens_task_detail_with_plain_enter_when_input_is_empty() {
+    fn plain_enter_is_ignored() {
         let mut tab = ToolsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
@@ -463,11 +474,11 @@ mod tests {
 
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let result = tab.handle_key(&key, true, 10, 80);
-        assert!(matches!(result, TabKeyResult::OpenTaskDetail(_)));
+        assert!(matches!(result, TabKeyResult::Ignored));
     }
 
     #[test]
-    fn plain_enter_with_non_empty_input_is_ignored() {
+    fn opens_task_detail_with_ctrl_j_alias() {
         let mut tab = ToolsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
@@ -482,9 +493,30 @@ mod tests {
             },
         });
 
-        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
         let result = tab.handle_key(&key, false, 10, 80);
-        assert!(matches!(result, TabKeyResult::Ignored));
+        assert!(matches!(result, TabKeyResult::OpenTaskDetail(_)));
+    }
+
+    #[test]
+    fn opens_task_detail_with_ctrl_m_alias() {
+        let mut tab = ToolsEventsTab::new();
+        tab.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::TaskStateChanged {
+                task_id: "task-1".to_string(),
+                action_id: "filesystem__read".to_string(),
+                status: "failed".to_string(),
+                args_json: r#"{"path":"notes.txt"}"#.to_string(),
+                args_preview: r#"{"path":"notes.txt"}"#.to_string(),
+                result_message: "not found".to_string(),
+                result_preview: "not found".to_string(),
+            },
+        });
+
+        let key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL);
+        let result = tab.handle_key(&key, false, 10, 80);
+        assert!(matches!(result, TabKeyResult::OpenTaskDetail(_)));
     }
 
     #[test]
