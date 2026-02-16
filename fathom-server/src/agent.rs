@@ -71,7 +71,7 @@ impl AgentOrchestrator {
         };
 
         let mut diagnostics = Vec::new();
-        let mut retry_feedback: Option<&str> = None;
+        let mut retry_feedback: Option<String> = None;
 
         for semantic_attempt in 0..=1usize {
             on_stream(StreamNote {
@@ -79,7 +79,7 @@ impl AgentOrchestrator {
                 detail: format!("semantic_attempt={}", semantic_attempt + 1),
             });
 
-            let prompt = build_agent_prompt(snapshot, retry_feedback);
+            let prompt = build_agent_prompt(snapshot, retry_feedback.as_deref());
             let result = openai
                 .stream_actions(
                     &prompt,
@@ -131,7 +131,8 @@ impl AgentOrchestrator {
                     if semantic_attempt == 0 {
                         retry_feedback = Some(
                             "No valid executable action call or assistant output was produced. \
-You MUST emit at least one valid action call or assistant output.",
+You MUST emit at least one valid action call or assistant output."
+                                .to_string(),
                         );
                         continue;
                     }
@@ -144,6 +145,17 @@ You MUST emit at least one valid action call or assistant output.",
                 }
                 Err(error) => {
                     diagnostics.push(format!("openai request failed: {error}"));
+                    if semantic_attempt == 0 && is_recoverable_action_error(&error) {
+                        retry_feedback = Some(format!(
+                            "The previous action call was invalid and could not be executed: {error}\n\
+Emit a corrected action call with valid arguments, or emit assistant output."
+                        ));
+                        diagnostics.push(
+                            "retrying semantic attempt due to recoverable action-call error"
+                                .to_string(),
+                        );
+                        continue;
+                    }
                     return AgentTurnOutcome::failure("openai_error", error, diagnostics);
                 }
             }
@@ -155,4 +167,10 @@ You MUST emit at least one valid action call or assistant output.",
             diagnostics,
         )
     }
+}
+
+fn is_recoverable_action_error(error: &str) -> bool {
+    error.contains("validation failed")
+        || error.contains("invalid arguments JSON for action")
+        || error.contains("unknown action `")
 }

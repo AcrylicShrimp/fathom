@@ -11,8 +11,7 @@ use crate::environment::EnvironmentRegistry;
 
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-5.2-codex";
-const DEFAULT_REASONING_EFFORT: &str = "extra_high";
-const FALLBACK_REASONING_EFFORT: &str = "high";
+const DEFAULT_REASONING_EFFORT: &str = "high";
 const DEFAULT_TIMEOUT_SECS: u64 = 45;
 
 #[derive(Debug, Clone)]
@@ -79,7 +78,7 @@ impl OpenAiClient {
         };
 
         let mut attempts = 0usize;
-        let mut reasoning_effort = DEFAULT_REASONING_EFFORT;
+        let reasoning_effort = DEFAULT_REASONING_EFFORT;
         let max_retries = self.retry_policy.max_retries();
         let mut last_error = String::new();
 
@@ -122,6 +121,9 @@ impl OpenAiClient {
                     match result {
                         Ok(outcome) => return Ok(outcome),
                         Err(error) => {
+                            if is_non_retryable_stream_error(&error) {
+                                return Err(error);
+                            }
                             last_error = error;
                             if attempts >= max_retries {
                                 break;
@@ -148,23 +150,6 @@ impl OpenAiClient {
                         status.as_u16(),
                         truncate_for_log(&text)
                     );
-
-                    let invalid_reasoning = status.as_u16() == 400
-                        && reasoning_effort == DEFAULT_REASONING_EFFORT
-                        && text.contains("reasoning")
-                        && text.contains("effort");
-                    if invalid_reasoning {
-                        on_stream(StreamNote {
-                            phase: "openai.request.fallback".to_string(),
-                            detail: format!(
-                                "falling back reasoning effort to `{}`",
-                                FALLBACK_REASONING_EFFORT
-                            ),
-                        });
-                        reasoning_effort = FALLBACK_REASONING_EFFORT;
-                        attempts += 1;
-                        continue;
-                    }
 
                     if should_retry_status(status.as_u16()) && attempts < max_retries {
                         let delay = self.retry_policy.compute_delay(attempts, retry_after);
@@ -557,8 +542,13 @@ where
         )
     })?;
 
-    let canonical_action_id = EnvironmentRegistry::validate(&raw_action_id, &args_value)
-        .map_err(|error| format!("action validation failed: {error}"))?;
+    let canonical_action_id =
+        EnvironmentRegistry::validate(&raw_action_id, &args_value).map_err(|error| {
+            format!(
+                "action `{raw_action_id}` validation failed: {error}; args={}",
+                truncate_for_log(&arguments_raw)
+            )
+        })?;
 
     let args_json = serde_json::to_string(&args_value)
         .map_err(|error| format!("failed to canonicalize action args: {error}"))?;
@@ -722,6 +712,12 @@ fn should_retry_status(status: u16) -> bool {
 
 fn should_retry_transport(error: &reqwest::Error) -> bool {
     error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
+}
+
+fn is_non_retryable_stream_error(error: &str) -> bool {
+    error.contains("validation failed")
+        || error.contains("invalid arguments JSON for action")
+        || error.contains("unknown action `")
 }
 
 fn truncate_for_log(value: &str) -> String {
