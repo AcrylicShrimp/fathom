@@ -20,6 +20,11 @@ use crate::runtime::{
 use crate::tabs::{ConversationTab, EventsTab, Tab};
 use crate::view::{EventRecord, session_event_to_record};
 
+enum AppEvent {
+    Record(EventRecord),
+    Status(String),
+}
+
 struct App {
     session: ClientSession,
     input: String,
@@ -92,28 +97,32 @@ async fn run_interactive(server: &str, session: ClientSession) -> Result<()> {
         session.session_id, session.agent_id, session.user_id
     )));
 
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<EventRecord>();
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut stream = attach_session_events(server, &session.session_id).await?;
+    let stream_event_tx = event_tx.clone();
 
     tokio::spawn(async move {
         loop {
             match stream.message().await {
                 Ok(Some(event)) => {
-                    if event_tx.send(session_event_to_record(&event)).is_err() {
+                    if stream_event_tx
+                        .send(AppEvent::Record(session_event_to_record(&event)))
+                        .is_err()
+                    {
                         break;
                     }
                 }
                 Ok(None) => {
-                    let _ = event_tx.send(EventRecord::local(
+                    let _ = stream_event_tx.send(AppEvent::Record(EventRecord::local(
                         "[stream] session event stream closed".to_string(),
-                    ));
+                    )));
                     break;
                 }
                 Err(status) => {
-                    let _ = event_tx.send(EventRecord::local(format!(
+                    let _ = stream_event_tx.send(AppEvent::Record(EventRecord::local(format!(
                         "[stream] session event stream error: {}",
                         status.message()
-                    )));
+                    ))));
                     break;
                 }
             }
@@ -126,7 +135,7 @@ async fn run_interactive(server: &str, session: ClientSession) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let run_result = run_loop(server, &mut app, &mut event_rx, &mut terminal).await;
+    let run_result = run_loop(server, &mut app, &event_tx, &mut event_rx, &mut terminal).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -138,12 +147,16 @@ async fn run_interactive(server: &str, session: ClientSession) -> Result<()> {
 async fn run_loop(
     server: &str,
     app: &mut App,
-    event_rx: &mut mpsc::UnboundedReceiver<EventRecord>,
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+    event_rx: &mut mpsc::UnboundedReceiver<AppEvent>,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
     loop {
-        while let Ok(record) = event_rx.try_recv() {
-            app.push_event(record);
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                AppEvent::Record(record) => app.push_event(record),
+                AppEvent::Status(status) => app.status = status,
+            }
         }
 
         let rows = main_layout(terminal.size()?.into());
@@ -220,40 +233,55 @@ async fn run_loop(
                 }
 
                 if text == "/heartbeat" || text == "/hb" {
-                    match enqueue_heartbeat(server, &app.session.session_id).await {
-                        Ok(trigger_id) => {
-                            app.status = format!("heartbeat queued ({trigger_id})");
-                            app.push_event(EventRecord::local(format!(
-                                "[local] heartbeat queued id={trigger_id}"
-                            )));
+                    app.status = "queueing heartbeat...".to_string();
+                    let server = server.to_string();
+                    let session_id = app.session.session_id.clone();
+                    let event_tx = event_tx.clone();
+                    tokio::spawn(async move {
+                        match enqueue_heartbeat(&server, &session_id).await {
+                            Ok(trigger_id) => {
+                                let _ = event_tx.send(AppEvent::Status(format!(
+                                    "heartbeat queued ({trigger_id})"
+                                )));
+                                let _ = event_tx.send(AppEvent::Record(EventRecord::local(
+                                    format!("[local] heartbeat queued id={trigger_id}"),
+                                )));
+                            }
+                            Err(error) => {
+                                let _ = event_tx
+                                    .send(AppEvent::Status(format!("heartbeat failed: {error}")));
+                                let _ = event_tx.send(AppEvent::Record(EventRecord::local(
+                                    format!("[local] heartbeat failed: {error}"),
+                                )));
+                            }
                         }
-                        Err(error) => {
-                            app.status = format!("heartbeat failed: {error}");
-                            app.push_event(EventRecord::local(format!(
-                                "[local] heartbeat failed: {error}"
-                            )));
-                        }
-                    }
+                    });
                     continue;
                 }
 
-                match enqueue_user_message(
-                    server,
-                    &app.session.session_id,
-                    &app.session.user_id,
-                    &text,
-                )
-                .await
-                {
-                    Ok(trigger_id) => {
-                        app.status = format!("message queued ({trigger_id})");
-                        app.push_event(EventRecord::local(format!("[local] -> {text}")));
+                app.status = "queueing message...".to_string();
+                let server = server.to_string();
+                let session_id = app.session.session_id.clone();
+                let user_id = app.session.user_id.clone();
+                let event_tx = event_tx.clone();
+                tokio::spawn(async move {
+                    match enqueue_user_message(&server, &session_id, &user_id, &text).await {
+                        Ok(trigger_id) => {
+                            let _ = event_tx
+                                .send(AppEvent::Status(format!("message queued ({trigger_id})")));
+                            let _ = event_tx.send(AppEvent::Record(EventRecord::local(format!(
+                                "[local] -> {text}"
+                            ))));
+                        }
+                        Err(error) => {
+                            let _ =
+                                event_tx.send(AppEvent::Status(format!("send failed: {error}")));
+                            let _ = event_tx.send(AppEvent::Record(EventRecord::local(format!(
+                                "[local] send failed: {error}"
+                            ))));
+                        }
                     }
-                    Err(error) => {
-                        app.status = format!("send failed: {error}");
-                        app.push_event(EventRecord::local(format!("[local] send failed: {error}")));
-                    }
-                }
+                });
             }
             KeyCode::Backspace => {
                 app.input.pop();

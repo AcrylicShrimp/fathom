@@ -149,9 +149,10 @@ Client-side dedup policy:
   - creates/upserts profiles
   - creates a session
   - subscribes to session events
-  - enqueues user and heartbeat triggers
+  - enqueues user and heartbeat triggers asynchronously (UI loop never blocks on RPC round-trips)
   - transforms all inbound events into one canonical internal `EventRecord`
   - routes the same `EventRecord` stream to all tab implementations
+  - merges network stream events and async enqueue completion/status updates through one internal app event channel
 - Tab architecture:
   - `Conversation` tab:
     - chat-oriented projection only (user + assistant conversation lines)
@@ -160,6 +161,7 @@ Client-side dedup policy:
     - internal/system diagnostics are excluded from this tab
   - `Events` tab: full-fidelity debug event stream
   - tab switching via `Shift+Tab`
+  - input remains interactive while assistant streaming is in progress
 
 ### CLI (`fathom`)
 - `fathom server --addr ...`
