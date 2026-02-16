@@ -117,6 +117,7 @@ message TurnEndedEvent {
 
 message AssistantOutputEvent {
   string content = 1;
+  string stream_id = 2;
 }
 
 message TaskStateChangedEvent {
@@ -133,6 +134,14 @@ message AgentStreamEvent {
   string phase = 1;
   string detail = 2;
   int64 created_at_unix_ms = 3;
+}
+
+message AssistantStreamEvent {
+  string stream_id = 1;
+  string delta = 2;
+  bool done = 3;
+  int64 created_at_unix_ms = 4;
+  string user_id = 5;
 }
 
 message TurnFailureEvent {
@@ -153,6 +162,7 @@ message SessionEvent {
     ProfileRefreshedEvent profile_refreshed = 15;
     AgentStreamEvent agent_stream = 16;
     TurnFailureEvent turn_failure = 17;
+    AssistantStreamEvent assistant_stream = 18;
   }
 }
 

@@ -53,6 +53,7 @@ pub(crate) struct SessionIdentityMapSnapshot {
 pub(crate) struct ToolInvocation {
     pub(crate) tool_name: String,
     pub(crate) args_json: String,
+    pub(crate) call_key: String,
     pub(crate) call_id: Option<String>,
 }
 
@@ -60,6 +61,22 @@ pub(crate) struct ToolInvocation {
 pub(crate) struct StreamNote {
     pub(crate) phase: String,
     pub(crate) detail: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolArgDeltaNote {
+    pub(crate) call_key: String,
+    pub(crate) call_id: Option<String>,
+    pub(crate) tool_name: Option<String>,
+    pub(crate) args_delta: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ToolArgDoneNote {
+    pub(crate) call_key: String,
+    pub(crate) call_id: Option<String>,
+    pub(crate) tool_name: Option<String>,
+    pub(crate) args_json: String,
 }
 
 #[derive(Debug, Clone)]

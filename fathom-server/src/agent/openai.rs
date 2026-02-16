@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::agent::retry::RetryPolicy;
 use crate::agent::tool_registry::ToolRegistry;
-use crate::agent::types::{StreamNote, ToolInvocation};
+use crate::agent::types::{StreamNote, ToolArgDeltaNote, ToolArgDoneNote, ToolInvocation};
 
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-5.2-codex";
@@ -53,16 +53,20 @@ impl OpenAiClient {
         })
     }
 
-    pub(crate) async fn stream_tool_calls<FS, FT>(
+    pub(crate) async fn stream_tool_calls<FS, FT, FD, FN>(
         &self,
         prompt: &str,
         tool_registry: &ToolRegistry,
         mut on_stream: FS,
         mut on_tool: FT,
+        mut on_tool_args_delta: FD,
+        mut on_tool_args_done: FN,
     ) -> Result<OpenAiStreamOutcome, String>
     where
         FS: FnMut(StreamNote),
         FT: FnMut(ToolInvocation),
+        FD: FnMut(ToolArgDeltaNote),
+        FN: FnMut(ToolArgDoneNote),
     {
         let Some(api_key) = self.api_key.as_deref() else {
             return Err("OPENAI_API_KEY is required but not configured".to_string());
@@ -99,7 +103,14 @@ impl OpenAiClient {
             match response {
                 Ok(response) if response.status().is_success() => {
                     let result = self
-                        .parse_stream(response, tool_registry, &mut on_stream, &mut on_tool)
+                        .parse_stream(
+                            response,
+                            tool_registry,
+                            &mut on_stream,
+                            &mut on_tool,
+                            &mut on_tool_args_delta,
+                            &mut on_tool_args_done,
+                        )
                         .await;
                     match result {
                         Ok(outcome) => return Ok(outcome),
@@ -189,16 +200,20 @@ impl OpenAiClient {
         Err(last_error)
     }
 
-    async fn parse_stream<FS, FT>(
+    async fn parse_stream<FS, FT, FD, FN>(
         &self,
         response: reqwest::Response,
         tool_registry: &ToolRegistry,
         on_stream: &mut FS,
         on_tool: &mut FT,
+        on_tool_args_delta: &mut FD,
+        on_tool_args_done: &mut FN,
     ) -> Result<OpenAiStreamOutcome, String>
     where
         FS: FnMut(StreamNote),
         FT: FnMut(ToolInvocation),
+        FD: FnMut(ToolArgDeltaNote),
+        FN: FnMut(ToolArgDoneNote),
     {
         let mut stream = response.bytes_stream();
         let mut line_buffer = String::new();
@@ -235,6 +250,8 @@ impl OpenAiClient {
                     tool_registry,
                     on_stream,
                     on_tool,
+                    on_tool_args_delta,
+                    on_tool_args_done,
                     &mut partial_calls,
                     &mut dispatched_keys,
                     &mut tool_call_count,
@@ -251,11 +268,13 @@ impl OpenAiClient {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_stream_event<FS, FT>(
+fn handle_stream_event<FS, FT, FD, FN>(
     value: Value,
     tool_registry: &ToolRegistry,
     on_stream: &mut FS,
     on_tool: &mut FT,
+    on_tool_args_delta: &mut FD,
+    on_tool_args_done: &mut FN,
     partial_calls: &mut HashMap<String, PartialToolCall>,
     dispatched_keys: &mut HashSet<String>,
     tool_call_count: &mut usize,
@@ -264,6 +283,8 @@ fn handle_stream_event<FS, FT>(
 where
     FS: FnMut(StreamNote),
     FT: FnMut(ToolInvocation),
+    FD: FnMut(ToolArgDeltaNote),
+    FN: FnMut(ToolArgDoneNote),
 {
     let event_type = value
         .get("type")
@@ -306,7 +327,19 @@ where
                     .map(str::to_string),
                 arguments: String::new(),
             });
+            if let Some(name) = value.get("name").and_then(Value::as_str) {
+                partial.name = Some(name.to_string());
+            }
             partial.arguments.push_str(delta);
+
+            if !delta.is_empty() {
+                on_tool_args_delta(ToolArgDeltaNote {
+                    call_key: key,
+                    call_id: partial.call_id.clone(),
+                    tool_name: partial.name.clone(),
+                    args_delta: delta.to_string(),
+                });
+            }
         }
         "response.function_call_arguments.done" => {
             let key = extract_call_key(&value).unwrap_or_else(|| "unknown_call".to_string());
@@ -326,7 +359,17 @@ where
                     .map(str::to_string),
                 arguments: String::new(),
             });
+            if let Some(name) = value.get("name").and_then(Value::as_str) {
+                partial.name = Some(name.to_string());
+            }
             partial.arguments = arguments.to_string();
+
+            on_tool_args_done(ToolArgDoneNote {
+                call_key: key.clone(),
+                call_id: partial.call_id.clone(),
+                tool_name: partial.name.clone(),
+                args_json: partial.arguments.clone(),
+            });
 
             if let Some(name) = partial.name.clone() {
                 maybe_dispatch_partial(
@@ -447,6 +490,7 @@ where
     on_tool(ToolInvocation {
         tool_name: tool_name.clone(),
         args_json: args_json.clone(),
+        call_key: key.clone(),
         call_id: call_id.clone(),
     });
 

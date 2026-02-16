@@ -1,11 +1,14 @@
+use std::sync::{Arc, Mutex};
+
 use tokio::sync::{broadcast, mpsc};
 
-use crate::agent::{StreamNote, ToolInvocation};
+use crate::agent::{StreamNote, ToolArgDeltaNote, ToolArgDoneNote, ToolInvocation};
 use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::state::{SessionCommand, SessionState};
 use crate::util::now_unix_ms;
 
+use super::assistant_stream::TurnAssistantStreamEmitter;
 use super::events::emit_event;
 use super::history_flush::flush_history;
 use super::profiles::apply_profile_refresh;
@@ -81,6 +84,7 @@ pub(super) async fn process_turns(
                 &state.session_id,
                 pb::session_event::Kind::AssistantOutput(pb::AssistantOutputEvent {
                     content: output.clone(),
+                    stream_id: String::new(),
                 }),
             );
         }
@@ -112,6 +116,7 @@ async fn run_agent_turn(
     let snapshot = runtime.build_turn_snapshot(state, turn_id, agent_triggers);
     let orchestrator = runtime.agent_orchestrator();
     let session_id = state.session_id.clone();
+    let stream_emitter = Arc::new(Mutex::new(TurnAssistantStreamEmitter::new(turn_id)));
 
     let outcome = orchestrator
         .run_turn(
@@ -128,6 +133,14 @@ async fn run_agent_turn(
                 );
             },
             |tool_invocation: ToolInvocation| {
+                let stream_id = stream_emitter
+                    .lock()
+                    .expect("stream emitter lock poisoned")
+                    .stream_id_for_invocation(
+                        &tool_invocation.tool_name,
+                        &tool_invocation.call_key,
+                        tool_invocation.call_id.as_deref(),
+                    );
                 let task = queue_task(
                     runtime,
                     state,
@@ -135,12 +148,25 @@ async fn run_agent_turn(
                     events_tx,
                     tool_invocation.tool_name,
                     tool_invocation.args_json,
+                    stream_id,
                 );
 
                 assistant_outputs.push(queued_tool_output(
                     &task,
                     tool_invocation.call_id.as_deref(),
                 ));
+            },
+            |note: ToolArgDeltaNote| {
+                stream_emitter
+                    .lock()
+                    .expect("stream emitter lock poisoned")
+                    .on_tool_args_delta(&note, |kind| emit_event(events_tx, &session_id, kind));
+            },
+            |note: ToolArgDoneNote| {
+                stream_emitter
+                    .lock()
+                    .expect("stream emitter lock poisoned")
+                    .on_tool_args_done(&note, |kind| emit_event(events_tx, &session_id, kind));
             },
         )
         .await;

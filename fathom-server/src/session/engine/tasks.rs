@@ -22,6 +22,7 @@ pub(super) fn queue_task(
     events_tx: &broadcast::Sender<pb::SessionEvent>,
     tool_name: String,
     args_json: String,
+    stream_id: Option<String>,
 ) -> pb::Task {
     let task_id = runtime.next_task_id();
     let now = now_unix_ms();
@@ -43,6 +44,11 @@ pub(super) fn queue_task(
         updated_at_unix_ms: now,
     };
     state.tasks.insert(task_id.clone(), task.clone());
+    if let Some(stream_id) = stream_id {
+        state
+            .send_message_task_stream_ids
+            .insert(task_id.clone(), stream_id);
+    }
 
     if should_run_now {
         state.running_task_ids.insert(task_id.clone());
@@ -101,6 +107,7 @@ pub(super) fn cancel_task(
     } else if status == pb::TaskStatus::Running {
         state.running_task_ids.remove(task_id);
     }
+    state.send_message_task_stream_ids.remove(task_id);
 
     task.status = pb::TaskStatus::Canceled as i32;
     task.result_message = "canceled by request".to_string();
@@ -164,11 +171,16 @@ pub(super) fn handle_finished_task(
     history::append_task_finished_history(state, &task_snapshot);
 
     if let Some(content) = extract_send_message_content(&task_snapshot) {
+        let stream_id = state
+            .send_message_task_stream_ids
+            .remove(task_id)
+            .unwrap_or_default();
         emit_event(
             events_tx,
             &state.session_id,
             pb::session_event::Kind::AssistantOutput(pb::AssistantOutputEvent {
                 content: content.clone(),
+                stream_id,
             }),
         );
         history::append_assistant_output_history(state, &content);

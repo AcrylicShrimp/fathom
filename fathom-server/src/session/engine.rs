@@ -1,4 +1,5 @@
 mod actor;
+mod assistant_stream;
 mod events;
 mod history_flush;
 mod profiles;

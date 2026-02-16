@@ -1,4 +1,5 @@
 mod runtime;
+mod tabs;
 mod tui;
 mod util;
 mod view;

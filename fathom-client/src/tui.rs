@@ -17,17 +17,15 @@ use crate::runtime::{
     ClientSession, attach_session_events, enqueue_heartbeat, enqueue_user_message,
     setup_default_session, wait_for_server,
 };
-use crate::view::render_event;
-
-const MAX_LOG_LINES: usize = 10_000;
+use crate::tabs::{ConversationTab, EventsTab, Tab};
+use crate::view::{EventRecord, session_event_to_record};
 
 struct App {
     session: ClientSession,
     input: String,
-    logs: Vec<String>,
     status: String,
-    log_scroll: u16,
-    follow_logs: bool,
+    tabs: Vec<Box<dyn Tab>>,
+    active_tab_index: usize,
 }
 
 impl App {
@@ -35,67 +33,43 @@ impl App {
         Self {
             session,
             input: String::new(),
-            logs: Vec::new(),
             status: "connected".to_string(),
-            log_scroll: 0,
-            follow_logs: true,
+            tabs: vec![Box::new(ConversationTab::new()), Box::new(EventsTab::new())],
+            active_tab_index: 0,
         }
     }
 
-    fn push_log(&mut self, line: String) {
-        self.logs.push(line);
-        if self.logs.len() > MAX_LOG_LINES {
-            let overflow = self.logs.len() - MAX_LOG_LINES;
-            self.logs.drain(0..overflow);
-            self.log_scroll = self.log_scroll.saturating_sub(overflow as u16);
+    fn push_event(&mut self, event: EventRecord) {
+        for tab in &mut self.tabs {
+            tab.on_event(&event);
         }
     }
 
-    fn logs_text(&self) -> String {
-        if self.logs.is_empty() {
-            "(no events yet)".to_string()
-        } else {
-            self.logs.join("\n")
-        }
+    fn active_tab(&self) -> &dyn Tab {
+        self.tabs[self.active_tab_index].as_ref()
     }
 
-    fn max_scroll(&self, viewport_height: u16) -> u16 {
-        if viewport_height == 0 {
-            return 0;
-        }
-
-        self.logs
-            .len()
-            .saturating_sub(viewport_height as usize)
-            .min(u16::MAX as usize) as u16
+    fn active_tab_mut(&mut self) -> &mut dyn Tab {
+        self.tabs[self.active_tab_index].as_mut()
     }
 
-    fn sync_scroll(&mut self, viewport_height: u16) {
-        let max_scroll = self.max_scroll(viewport_height);
-        if self.follow_logs || self.log_scroll > max_scroll {
-            self.log_scroll = max_scroll;
-        }
+    fn switch_tab(&mut self) {
+        self.active_tab_index = (self.active_tab_index + 1) % self.tabs.len();
     }
 
-    fn scroll_up(&mut self, amount: u16) {
-        self.follow_logs = false;
-        self.log_scroll = self.log_scroll.saturating_sub(amount);
-    }
-
-    fn scroll_down(&mut self, amount: u16, viewport_height: u16) {
-        let max_scroll = self.max_scroll(viewport_height);
-        self.log_scroll = self.log_scroll.saturating_add(amount).min(max_scroll);
-        self.follow_logs = self.log_scroll == max_scroll;
-    }
-
-    fn scroll_to_top(&mut self) {
-        self.follow_logs = false;
-        self.log_scroll = 0;
-    }
-
-    fn scroll_to_bottom(&mut self, viewport_height: u16) {
-        self.log_scroll = self.max_scroll(viewport_height);
-        self.follow_logs = true;
+    fn tab_label_row(&self) -> String {
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                if index == self.active_tab_index {
+                    format!("[{}]", tab.title())
+                } else {
+                    tab.title().to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
     }
 }
 
@@ -113,31 +87,33 @@ pub async fn run_tui(server: &str) -> Result<()> {
 
 async fn run_interactive(server: &str, session: ClientSession) -> Result<()> {
     let mut app = App::new(session.clone());
-    app.push_log(format!(
+    app.push_event(EventRecord::local(format!(
         "[local] session={} agent={} user={}",
         session.session_id, session.agent_id, session.user_id
-    ));
+    )));
 
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<String>();
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<EventRecord>();
     let mut stream = attach_session_events(server, &session.session_id).await?;
 
     tokio::spawn(async move {
         loop {
             match stream.message().await {
                 Ok(Some(event)) => {
-                    if event_tx.send(render_event(&event)).is_err() {
+                    if event_tx.send(session_event_to_record(&event)).is_err() {
                         break;
                     }
                 }
                 Ok(None) => {
-                    let _ = event_tx.send("[stream] session event stream closed".to_string());
+                    let _ = event_tx.send(EventRecord::local(
+                        "[stream] session event stream closed".to_string(),
+                    ));
                     break;
                 }
                 Err(status) => {
-                    let _ = event_tx.send(format!(
+                    let _ = event_tx.send(EventRecord::local(format!(
                         "[stream] session event stream error: {}",
                         status.message()
-                    ));
+                    )));
                     break;
                 }
             }
@@ -162,41 +138,21 @@ async fn run_interactive(server: &str, session: ClientSession) -> Result<()> {
 async fn run_loop(
     server: &str,
     app: &mut App,
-    event_rx: &mut mpsc::UnboundedReceiver<String>,
+    event_rx: &mut mpsc::UnboundedReceiver<EventRecord>,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
     loop {
-        while let Ok(line) = event_rx.try_recv() {
-            app.push_log(line);
+        while let Ok(record) = event_rx.try_recv() {
+            app.push_event(record);
         }
 
-        let log_viewport_height = log_viewport_height(terminal.size()?.into());
-        app.sync_scroll(log_viewport_height);
+        let rows = main_layout(terminal.size()?.into());
+        let viewport_height = app.active_tab().viewport_height(rows[0]);
+        app.active_tab_mut().sync_scroll(viewport_height);
 
         terminal.draw(|frame| {
-            let area = frame.area();
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(5),
-                    Constraint::Length(3),
-                    Constraint::Length(1),
-                ])
-                .split(area);
-
-            let log_title = if app.follow_logs {
-                format!("fathom-client events [{}] (follow)", app.session.session_id)
-            } else {
-                format!("fathom-client events [{}] (scroll)", app.session.session_id)
-            };
-            let log_panel = Paragraph::new(app.logs_text())
-                .block(
-                    Block::default()
-                        .title(log_title)
-                        .borders(Borders::ALL),
-                )
-                .scroll((app.log_scroll, 0));
-            frame.render_widget(log_panel, rows[0]);
+            let rows = main_layout(frame.area());
+            app.active_tab().render(frame, rows[0], &app.session.session_id);
 
             let input_panel = Paragraph::new(app.input.as_str()).block(
                 Block::default()
@@ -205,9 +161,11 @@ async fn run_loop(
             );
             frame.render_widget(input_panel, rows[1]);
 
-            let footer = "Keys: Enter send | q quit (empty input) | Ctrl+C quit | Esc clear | /hb | ↑/↓ line | PgUp/PgDn page | Home/End";
-            let footer_panel = Paragraph::new(footer);
-            frame.render_widget(footer_panel, rows[2]);
+            let footer = format!(
+                "Tabs: {} | Keys: Shift+Tab switch | Enter send | q quit (empty input) | Ctrl+C quit | Esc clear | /hb | ↑/↓ line | PgUp/PgDn page | Home/End",
+                app.tab_label_row()
+            );
+            frame.render_widget(Paragraph::new(footer), rows[2]);
 
             let x = rows[1]
                 .x
@@ -228,17 +186,19 @@ async fn run_loop(
             continue;
         }
 
-        let page_size = log_viewport_height.max(1);
+        let page_size = viewport_height.max(1);
 
         match key.code {
             KeyCode::Char('q') if app.input.trim().is_empty() => return Ok(()),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
-            KeyCode::Up => app.scroll_up(1),
-            KeyCode::Down => app.scroll_down(1, log_viewport_height),
-            KeyCode::PageUp => app.scroll_up(page_size),
-            KeyCode::PageDown => app.scroll_down(page_size, log_viewport_height),
-            KeyCode::Home => app.scroll_to_top(),
-            KeyCode::End => app.scroll_to_bottom(log_viewport_height),
+            KeyCode::BackTab => app.switch_tab(),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => app.switch_tab(),
+            KeyCode::Up => app.active_tab_mut().scroll_up(1),
+            KeyCode::Down => app.active_tab_mut().scroll_down(1, viewport_height),
+            KeyCode::PageUp => app.active_tab_mut().scroll_up(page_size),
+            KeyCode::PageDown => app.active_tab_mut().scroll_down(page_size, viewport_height),
+            KeyCode::Home => app.active_tab_mut().scroll_to_top(),
+            KeyCode::End => app.active_tab_mut().scroll_to_bottom(viewport_height),
             KeyCode::Enter => {
                 let text = app.input.trim().to_string();
                 app.input.clear();
@@ -254,11 +214,15 @@ async fn run_loop(
                     match enqueue_heartbeat(server, &app.session.session_id).await {
                         Ok(trigger_id) => {
                             app.status = format!("heartbeat queued ({trigger_id})");
-                            app.push_log(format!("[local] heartbeat queued id={trigger_id}"));
+                            app.push_event(EventRecord::local(format!(
+                                "[local] heartbeat queued id={trigger_id}"
+                            )));
                         }
                         Err(error) => {
                             app.status = format!("heartbeat failed: {error}");
-                            app.push_log(format!("[local] heartbeat failed: {error}"));
+                            app.push_event(EventRecord::local(format!(
+                                "[local] heartbeat failed: {error}"
+                            )));
                         }
                     }
                     continue;
@@ -274,11 +238,11 @@ async fn run_loop(
                 {
                     Ok(trigger_id) => {
                         app.status = format!("message queued ({trigger_id})");
-                        app.push_log(format!("[local] -> {text}"));
+                        app.push_event(EventRecord::local(format!("[local] -> {text}")));
                     }
                     Err(error) => {
                         app.status = format!("send failed: {error}");
-                        app.push_log(format!("[local] send failed: {error}"));
+                        app.push_event(EventRecord::local(format!("[local] send failed: {error}")));
                     }
                 }
             }
@@ -296,7 +260,7 @@ async fn run_loop(
     }
 }
 
-fn log_viewport_height(area: Rect) -> u16 {
+fn main_layout(area: Rect) -> [Rect; 3] {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -305,5 +269,5 @@ fn log_viewport_height(area: Rect) -> u16 {
             Constraint::Length(1),
         ])
         .split(area);
-    rows[0].height.saturating_sub(2)
+    [rows[0], rows[1], rows[2]]
 }

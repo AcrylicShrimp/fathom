@@ -8,7 +8,8 @@ mod types;
 pub(crate) use tool_registry::ToolRegistry;
 pub(crate) use types::{
     AgentTurnOutcome, SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote,
-    SummaryBlockRefSnapshot, SystemContextSnapshot, ToolInvocation, TurnSnapshot,
+    SummaryBlockRefSnapshot, SystemContextSnapshot, ToolArgDeltaNote, ToolArgDoneNote,
+    ToolInvocation, TurnSnapshot,
 };
 
 use openai::OpenAiClient;
@@ -37,15 +38,19 @@ impl AgentOrchestrator {
         }
     }
 
-    pub(crate) async fn run_turn<FS, FT>(
+    pub(crate) async fn run_turn<FS, FT, FD, FN>(
         &self,
         snapshot: &TurnSnapshot,
         mut on_stream: FS,
         mut on_tool: FT,
+        mut on_tool_args_delta: FD,
+        mut on_tool_args_done: FN,
     ) -> AgentTurnOutcome
     where
         FS: FnMut(StreamNote),
         FT: FnMut(ToolInvocation),
+        FD: FnMut(ToolArgDeltaNote),
+        FN: FnMut(ToolArgDoneNote),
     {
         if let Some(error) = &self.init_error {
             return AgentTurnOutcome::failure(
@@ -74,9 +79,20 @@ impl AgentOrchestrator {
 
             let prompt = build_tool_only_prompt(snapshot, retry_feedback);
             let result = openai
-                .stream_tool_calls(&prompt, &self.tools, &mut on_stream, |tool_invocation| {
-                    on_tool(tool_invocation);
-                })
+                .stream_tool_calls(
+                    &prompt,
+                    &self.tools,
+                    &mut on_stream,
+                    |tool_invocation| {
+                        on_tool(tool_invocation);
+                    },
+                    |note| {
+                        on_tool_args_delta(note);
+                    },
+                    |note| {
+                        on_tool_args_done(note);
+                    },
+                )
                 .await;
 
             match result {
