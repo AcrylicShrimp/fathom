@@ -32,7 +32,7 @@ impl Tab for EventsTab {
         } else {
             "scroll"
         };
-        let panel = Paragraph::new(self.lines.text())
+        let panel = Paragraph::new(self.lines.rendered_text(self.viewport_width(area)))
             .block(
                 Block::default()
                     .title(format!("events [{}] ({mode})", session_id))
@@ -46,23 +46,28 @@ impl Tab for EventsTab {
         LineBuffer::viewport_height(area)
     }
 
-    fn sync_scroll(&mut self, viewport_height: u16) {
-        self.lines.sync_scroll(viewport_height);
+    fn viewport_width(&self, area: Rect) -> u16 {
+        LineBuffer::viewport_width(area)
+    }
+
+    fn sync_scroll(&mut self, viewport_height: u16, viewport_width: u16) {
+        self.lines.sync_scroll(viewport_height, viewport_width);
     }
 
     fn scroll_up(&mut self, amount: u16) {
         self.lines.scroll_up(amount);
     }
 
-    fn scroll_down(&mut self, amount: u16, viewport_height: u16) {
-        self.lines.scroll_down(amount, viewport_height);
+    fn scroll_down(&mut self, amount: u16, viewport_height: u16, viewport_width: u16) {
+        self.lines
+            .scroll_down(amount, viewport_height, viewport_width);
     }
 
     fn scroll_to_top(&mut self) {
         self.lines.scroll_to_top();
     }
 
-    fn scroll_to_bottom(&mut self, viewport_height: u16) {
-        self.lines.scroll_to_bottom(viewport_height);
+    fn scroll_to_bottom(&mut self, viewport_height: u16, viewport_width: u16) {
+        self.lines.scroll_to_bottom(viewport_height, viewport_width);
     }
 }

@@ -148,7 +148,9 @@ async fn run_loop(
 
         let rows = main_layout(terminal.size()?.into());
         let viewport_height = app.active_tab().viewport_height(rows[0]);
-        app.active_tab_mut().sync_scroll(viewport_height);
+        let viewport_width = app.active_tab().viewport_width(rows[0]);
+        app.active_tab_mut()
+            .sync_scroll(viewport_height, viewport_width);
 
         terminal.draw(|frame| {
             let rows = main_layout(frame.area());
@@ -194,11 +196,18 @@ async fn run_loop(
             KeyCode::BackTab => app.switch_tab(),
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => app.switch_tab(),
             KeyCode::Up => app.active_tab_mut().scroll_up(1),
-            KeyCode::Down => app.active_tab_mut().scroll_down(1, viewport_height),
+            KeyCode::Down => app
+                .active_tab_mut()
+                .scroll_down(1, viewport_height, viewport_width),
             KeyCode::PageUp => app.active_tab_mut().scroll_up(page_size),
-            KeyCode::PageDown => app.active_tab_mut().scroll_down(page_size, viewport_height),
+            KeyCode::PageDown => {
+                app.active_tab_mut()
+                    .scroll_down(page_size, viewport_height, viewport_width)
+            }
             KeyCode::Home => app.active_tab_mut().scroll_to_top(),
-            KeyCode::End => app.active_tab_mut().scroll_to_bottom(viewport_height),
+            KeyCode::End => app
+                .active_tab_mut()
+                .scroll_to_bottom(viewport_height, viewport_width),
             KeyCode::Enter => {
                 let text = app.input.trim().to_string();
                 app.input.clear();

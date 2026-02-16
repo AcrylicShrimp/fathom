@@ -16,11 +16,12 @@ pub(crate) trait Tab {
     fn on_event(&mut self, event: &EventRecord);
     fn render(&self, frame: &mut Frame<'_>, area: Rect, session_id: &str);
     fn viewport_height(&self, area: Rect) -> u16;
-    fn sync_scroll(&mut self, viewport_height: u16);
+    fn viewport_width(&self, area: Rect) -> u16;
+    fn sync_scroll(&mut self, viewport_height: u16, viewport_width: u16);
     fn scroll_up(&mut self, amount: u16);
-    fn scroll_down(&mut self, amount: u16, viewport_height: u16);
+    fn scroll_down(&mut self, amount: u16, viewport_height: u16, viewport_width: u16);
     fn scroll_to_top(&mut self);
-    fn scroll_to_bottom(&mut self, viewport_height: u16);
+    fn scroll_to_bottom(&mut self, viewport_height: u16, viewport_width: u16);
 }
 
 pub(super) struct PushOutcome {
@@ -82,6 +83,10 @@ impl LineBuffer {
         }
     }
 
+    pub(super) fn rendered_text(&self, viewport_width: u16) -> String {
+        wrap_text_lines(&self.text(), viewport_width).join("\n")
+    }
+
     pub(super) fn is_following(&self) -> bool {
         self.follow
     }
@@ -94,19 +99,22 @@ impl LineBuffer {
         area.height.saturating_sub(2)
     }
 
-    fn max_scroll(&self, viewport_height: u16) -> u16 {
+    pub(super) fn viewport_width(area: Rect) -> u16 {
+        area.width.saturating_sub(2).max(1)
+    }
+
+    fn max_scroll(&self, viewport_height: u16, viewport_width: u16) -> u16 {
         if viewport_height == 0 {
             return 0;
         }
 
-        self.lines
-            .len()
+        wrapped_line_count(&self.text(), viewport_width)
             .saturating_sub(viewport_height as usize)
             .min(u16::MAX as usize) as u16
     }
 
-    pub(super) fn sync_scroll(&mut self, viewport_height: u16) {
-        let max_scroll = self.max_scroll(viewport_height);
+    pub(super) fn sync_scroll(&mut self, viewport_height: u16, viewport_width: u16) {
+        let max_scroll = self.max_scroll(viewport_height, viewport_width);
         if self.follow || self.scroll > max_scroll {
             self.scroll = max_scroll;
         }
@@ -117,8 +125,8 @@ impl LineBuffer {
         self.scroll = self.scroll.saturating_sub(amount);
     }
 
-    pub(super) fn scroll_down(&mut self, amount: u16, viewport_height: u16) {
-        let max_scroll = self.max_scroll(viewport_height);
+    pub(super) fn scroll_down(&mut self, amount: u16, viewport_height: u16, viewport_width: u16) {
+        let max_scroll = self.max_scroll(viewport_height, viewport_width);
         self.scroll = self.scroll.saturating_add(amount).min(max_scroll);
         self.follow = self.scroll == max_scroll;
     }
@@ -128,8 +136,87 @@ impl LineBuffer {
         self.scroll = 0;
     }
 
-    pub(super) fn scroll_to_bottom(&mut self, viewport_height: u16) {
-        self.scroll = self.max_scroll(viewport_height);
+    pub(super) fn scroll_to_bottom(&mut self, viewport_height: u16, viewport_width: u16) {
+        self.scroll = self.max_scroll(viewport_height, viewport_width);
         self.follow = true;
+    }
+}
+
+fn wrapped_line_count(source: &str, viewport_width: u16) -> usize {
+    let width = usize::from(viewport_width.max(1));
+    let mut total = 0usize;
+    for logical_line in source.split('\n') {
+        let char_len = logical_line.chars().count();
+        total = total.saturating_add(if char_len == 0 {
+            1
+        } else {
+            char_len.div_ceil(width)
+        });
+    }
+    total.max(1)
+}
+
+fn wrap_text_lines(source: &str, viewport_width: u16) -> Vec<String> {
+    let width = usize::from(viewport_width.max(1));
+    let mut wrapped = Vec::new();
+
+    for logical_line in source.split('\n') {
+        if logical_line.is_empty() {
+            wrapped.push(String::new());
+            continue;
+        }
+
+        let mut current = String::new();
+        let mut count = 0usize;
+        for ch in logical_line.chars() {
+            if count == width {
+                wrapped.push(current);
+                current = String::new();
+                count = 0;
+            }
+            current.push(ch);
+            count += 1;
+        }
+        wrapped.push(current);
+    }
+
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+    wrapped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LineBuffer;
+
+    #[test]
+    fn wraps_long_lines_for_render() {
+        let mut lines = LineBuffer::new();
+        let _ = lines.push_line("abcdef".to_string());
+
+        assert_eq!(lines.rendered_text(3), "abc\ndef");
+    }
+
+    #[test]
+    fn keeps_internal_newlines_and_wraps_each_line() {
+        let mut lines = LineBuffer::new();
+        let _ = lines.push_line("abc\ndefgh".to_string());
+
+        assert_eq!(lines.rendered_text(4), "abc\ndefg\nh");
+    }
+
+    #[test]
+    fn computes_scroll_from_wrapped_visual_lines() {
+        let mut lines = LineBuffer::new();
+        let _ = lines.push_line("abcdefghij".to_string());
+        lines.sync_scroll(3, 4);
+
+        assert_eq!(lines.scroll_value(), 0);
+        lines.scroll_down(1, 3, 4);
+        assert_eq!(lines.scroll_value(), 0);
+
+        lines.scroll_to_bottom(2, 4);
+        assert_eq!(lines.scroll_value(), 1);
     }
 }
