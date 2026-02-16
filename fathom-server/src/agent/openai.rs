@@ -10,7 +10,7 @@ use crate::agent::tool_registry::ToolRegistry;
 use crate::agent::types::{StreamNote, ToolInvocation};
 
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
-const DEFAULT_MODEL: &str = "gpt-5.3-codex";
+const DEFAULT_MODEL: &str = "gpt-5.2-codex";
 const DEFAULT_REASONING_EFFORT: &str = "extra_high";
 const FALLBACK_REASONING_EFFORT: &str = "high";
 const DEFAULT_TIMEOUT_SECS: u64 = 45;

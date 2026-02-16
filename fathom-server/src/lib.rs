@@ -11,9 +11,12 @@ pub mod pb {
 
 mod agent;
 mod fs;
+mod history;
+mod policy;
 mod runtime;
 mod service;
 mod session;
+mod system_tools;
 mod util;
 
 use pb::runtime_service_server::RuntimeServiceServer;

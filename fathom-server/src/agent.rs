@@ -2,16 +2,17 @@ mod openai;
 mod prompt;
 mod retry;
 mod tool_registry;
+mod tools;
 mod types;
 
+pub(crate) use tool_registry::ToolRegistry;
 pub(crate) use types::{
-    AgentTurnOutcome, SessionCompactionSnapshot, StreamNote, SummaryBlockRefSnapshot,
-    ToolInvocation, TurnSnapshot,
+    AgentTurnOutcome, SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote,
+    SummaryBlockRefSnapshot, SystemContextSnapshot, ToolInvocation, TurnSnapshot,
 };
 
 use openai::OpenAiClient;
 use prompt::build_tool_only_prompt;
-use tool_registry::ToolRegistry;
 
 #[derive(Clone)]
 pub(crate) struct AgentOrchestrator {

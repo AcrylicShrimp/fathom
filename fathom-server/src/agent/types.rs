@@ -1,4 +1,7 @@
+use std::collections::BTreeMap;
+
 use crate::pb;
+use crate::policy::{HistoryPolicy, PathPolicy, ToolPolicy};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SummaryBlockRefSnapshot {
@@ -19,11 +22,31 @@ pub(crate) struct SessionCompactionSnapshot {
 pub(crate) struct TurnSnapshot {
     pub(crate) session_id: String,
     pub(crate) turn_id: u64,
+    pub(crate) system_context: SystemContextSnapshot,
     pub(crate) agent_profile: pb::AgentProfile,
     pub(crate) participant_profiles: Vec<pb::UserProfile>,
     pub(crate) triggers: Vec<pb::Trigger>,
     pub(crate) recent_history: Vec<String>,
     pub(crate) compaction: SessionCompactionSnapshot,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SystemContextSnapshot {
+    pub(crate) runtime_version: String,
+    pub(crate) workspace_root: String,
+    pub(crate) path_policy: PathPolicy,
+    pub(crate) session_identity: SessionIdentityMapSnapshot,
+    pub(crate) tool_policy: ToolPolicy,
+    pub(crate) history_policy: HistoryPolicy,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SessionIdentityMapSnapshot {
+    pub(crate) session_id: String,
+    pub(crate) active_agent_id: String,
+    pub(crate) participant_user_ids: Vec<String>,
+    pub(crate) active_agent_spec_version: u64,
+    pub(crate) participant_user_updated_at: BTreeMap<String, i64>,
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,171 @@
+use tokio::sync::{broadcast, mpsc};
+
+use crate::agent::{StreamNote, ToolInvocation};
+use crate::pb;
+use crate::runtime::Runtime;
+use crate::session::state::{SessionCommand, SessionState};
+use crate::util::now_unix_ms;
+
+use super::events::emit_event;
+use super::history_flush::flush_history;
+use super::profiles::apply_profile_refresh;
+use super::tasks::{queue_task, queued_tool_output};
+
+pub(super) async fn process_turns(
+    runtime: &Runtime,
+    state: &mut SessionState,
+    command_tx: &mpsc::Sender<SessionCommand>,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+) {
+    if state.turn_in_progress {
+        return;
+    }
+
+    state.turn_in_progress = true;
+    while !state.trigger_queue.is_empty() {
+        state.turn_seq += 1;
+        let turn_id = state.turn_seq;
+
+        let mut turn_triggers = Vec::with_capacity(state.trigger_queue.len());
+        while let Some(trigger) = state.trigger_queue.pop_front() {
+            turn_triggers.push(trigger);
+        }
+
+        emit_event(
+            events_tx,
+            &state.session_id,
+            pb::session_event::Kind::TurnStarted(pb::TurnStartedEvent {
+                turn_id,
+                trigger_count: turn_triggers.len() as u64,
+            }),
+        );
+
+        let mut assistant_outputs = Vec::new();
+        let mut agent_triggers = Vec::new();
+
+        for trigger in &turn_triggers {
+            match trigger.kind.as_ref() {
+                Some(pb::trigger::Kind::RefreshProfile(refresh)) => {
+                    let refreshed_user_ids = apply_profile_refresh(runtime, state, refresh).await;
+                    emit_event(
+                        events_tx,
+                        &state.session_id,
+                        pb::session_event::Kind::ProfileRefreshed(pb::ProfileRefreshedEvent {
+                            scope: refresh.scope,
+                            refreshed_user_ids,
+                            agent_spec_version: state.agent_profile_copy.spec_version,
+                        }),
+                    );
+                    assistant_outputs.push("profile copies refreshed for this session".to_string());
+                }
+                _ => agent_triggers.push(trigger.clone()),
+            }
+        }
+
+        if !agent_triggers.is_empty() {
+            run_agent_turn(
+                runtime,
+                state,
+                command_tx,
+                events_tx,
+                turn_id,
+                &agent_triggers,
+                &mut assistant_outputs,
+            )
+            .await;
+        }
+
+        for output in &assistant_outputs {
+            emit_event(
+                events_tx,
+                &state.session_id,
+                pb::session_event::Kind::AssistantOutput(pb::AssistantOutputEvent {
+                    content: output.clone(),
+                }),
+            );
+        }
+
+        flush_history(state, &turn_triggers, &assistant_outputs);
+        let reason = format!("processed {} trigger(s)", turn_triggers.len());
+        emit_event(
+            events_tx,
+            &state.session_id,
+            pb::session_event::Kind::TurnEnded(pb::TurnEndedEvent {
+                turn_id,
+                reason,
+                history_size: state.history.len() as u64,
+            }),
+        );
+    }
+    state.turn_in_progress = false;
+}
+
+async fn run_agent_turn(
+    runtime: &Runtime,
+    state: &mut SessionState,
+    command_tx: &mpsc::Sender<SessionCommand>,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+    turn_id: u64,
+    agent_triggers: &[pb::Trigger],
+    assistant_outputs: &mut Vec<String>,
+) {
+    let snapshot = runtime.build_turn_snapshot(state, turn_id, agent_triggers);
+    let orchestrator = runtime.agent_orchestrator();
+    let session_id = state.session_id.clone();
+
+    let outcome = orchestrator
+        .run_turn(
+            &snapshot,
+            |note: StreamNote| {
+                emit_event(
+                    events_tx,
+                    &session_id,
+                    pb::session_event::Kind::AgentStream(pb::AgentStreamEvent {
+                        phase: note.phase,
+                        detail: note.detail,
+                        created_at_unix_ms: now_unix_ms(),
+                    }),
+                );
+            },
+            |tool_invocation: ToolInvocation| {
+                let task = queue_task(
+                    runtime,
+                    state,
+                    command_tx,
+                    events_tx,
+                    tool_invocation.tool_name,
+                    tool_invocation.args_json,
+                );
+
+                assistant_outputs.push(queued_tool_output(
+                    &task,
+                    tool_invocation.call_id.as_deref(),
+                ));
+            },
+        )
+        .await;
+
+    assistant_outputs.extend(outcome.diagnostics.clone());
+
+    if outcome.failed {
+        emit_event(
+            events_tx,
+            &state.session_id,
+            pb::session_event::Kind::TurnFailure(pb::TurnFailureEvent {
+                turn_id,
+                reason_code: outcome.failure_code.clone(),
+                message: outcome.failure_message.clone(),
+            }),
+        );
+        assistant_outputs.push(format!(
+            "turn failed [{}]: {}",
+            outcome.failure_code, outcome.failure_message
+        ));
+        return;
+    }
+
+    assistant_outputs.push(format!(
+        "agent dispatched {} tool call(s)",
+        outcome.tool_call_count
+    ));
+}

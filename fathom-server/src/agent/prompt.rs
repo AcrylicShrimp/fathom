@@ -1,3 +1,4 @@
+use crate::agent::ToolRegistry;
 use crate::agent::types::TurnSnapshot;
 use crate::pb;
 
@@ -5,19 +6,121 @@ pub(crate) fn build_tool_only_prompt(
     snapshot: &TurnSnapshot,
     retry_feedback: Option<&str>,
 ) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("You are Fathom's session agent.".to_string());
-    lines.push("You must respond using one or more tool calls only.".to_string());
-    lines.push("Never emit plain assistant text as the final answer for this turn.".to_string());
-    lines.push("If no action is needed, call schedule_heartbeat with a short delay.".to_string());
-    lines.push("All tools are server-managed background jobs.".to_string());
-    lines.push("Use fs_list/fs_read/fs_write/fs_replace for file operations.".to_string());
+    let mut lines: Vec<String> = vec![
+        "You are Fathom's session agent.".to_string(),
+        "You must respond using one or more tool calls only.".to_string(),
+        "Never emit plain assistant text as the final answer for this turn.".to_string(),
+        "Use send_message to talk to users.".to_string(),
+        "send_message is non-triggering: it does not create a task_done follow-up trigger."
+            .to_string(),
+        "If no action is needed, call schedule_heartbeat with a short delay.".to_string(),
+        "All tools are server-managed background jobs.".to_string(),
+        "Use fs_list/fs_read/fs_write/fs_replace for file operations.".to_string(),
+    ];
+    let discovery_tools = ToolRegistry::discovery_tool_names();
+    if !discovery_tools.is_empty() {
+        lines.push(format!(
+            "Use {} for system discovery.",
+            discovery_tools.join("/")
+        ));
+    }
     lines.push("Task results arrive as JSON text in task_done.result_message.".to_string());
     lines.push(String::new());
 
     lines.push("## Session".to_string());
     lines.push(format!("session_id: {}", snapshot.session_id));
     lines.push(format!("turn_id: {}", snapshot.turn_id));
+    lines.push(String::new());
+
+    lines.push("## System Context (authoritative)".to_string());
+    lines.push(format!(
+        "runtime_version: {}",
+        snapshot.system_context.runtime_version
+    ));
+    lines.push(format!(
+        "workspace_root: {}",
+        snapshot.system_context.workspace_root
+    ));
+    lines.push("path_policy.managed_uri_patterns:".to_string());
+    for pattern in &snapshot.system_context.path_policy.managed_uri_patterns {
+        lines.push(format!("- {pattern}"));
+    }
+    lines.push(format!(
+        "path_policy.fs_uri_policy: {}",
+        snapshot.system_context.path_policy.fs_uri_policy
+    ));
+    lines.push("session_identity:".to_string());
+    lines.push(format!(
+        "- session_id: {}",
+        snapshot.system_context.session_identity.session_id
+    ));
+    lines.push(format!(
+        "- active_agent_id: {}",
+        snapshot.system_context.session_identity.active_agent_id
+    ));
+    lines.push(format!(
+        "- active_agent_spec_version: {}",
+        snapshot
+            .system_context
+            .session_identity
+            .active_agent_spec_version
+    ));
+    lines.push(format!(
+        "- participant_user_ids: {}",
+        snapshot
+            .system_context
+            .session_identity
+            .participant_user_ids
+            .join(",")
+    ));
+    lines.push(format!(
+        "- participant_user_updated_at: {:?}",
+        snapshot
+            .system_context
+            .session_identity
+            .participant_user_updated_at
+    ));
+    lines.push("tool_policy:".to_string());
+    lines.push(format!(
+        "- non_triggering_tools: {}",
+        snapshot
+            .system_context
+            .tool_policy
+            .non_triggering_tools
+            .join(",")
+    ));
+    lines.push(format!(
+        "- general_tools_trigger_followup_turn: {}",
+        snapshot
+            .system_context
+            .tool_policy
+            .general_tools_trigger_followup_turn
+    ));
+    lines.push("history_policy:".to_string());
+    lines.push(format!(
+        "- format: {}",
+        snapshot.system_context.history_policy.format
+    ));
+    lines.push(format!(
+        "- task_started_event: {}",
+        snapshot.system_context.history_policy.task_started_event
+    ));
+    lines.push(format!(
+        "- task_finished_event: {}",
+        snapshot.system_context.history_policy.task_finished_event
+    ));
+    lines.push(format!(
+        "- preview_max_bytes: {}",
+        snapshot.system_context.history_policy.preview_max_bytes
+    ));
+    lines.push(format!(
+        "- preview_max_lines: {}",
+        snapshot.system_context.history_policy.preview_max_lines
+    ));
+    lines.push(format!(
+        "- lookup_tool: {}",
+        snapshot.system_context.history_policy.lookup_tool
+    ));
     lines.push(String::new());
 
     lines.push("## Agent Profile Copy".to_string());
@@ -51,6 +154,7 @@ pub(crate) fn build_tool_only_prompt(
     lines.push(String::new());
 
     lines.push("## Recent History".to_string());
+    lines.push("History entries are structured JSON lines.".to_string());
     if snapshot.recent_history.is_empty() {
         lines.push("(empty)".to_string());
     } else {

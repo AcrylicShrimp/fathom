@@ -60,6 +60,13 @@ Tasks are background jobs created by agent actions.
   - `fs_read(path)`
   - `fs_write(path, content, allow_override)`
   - `fs_replace(path, old, new, mode)`
+- Trigger policy:
+  - General tools enqueue `TaskDone` triggers and can drive a follow-up agent turn.
+  - `send_message(content, user_id?)` is a system tool that emits user-facing assistant output but does **not** enqueue `TaskDone` (prevents self-loop chains).
+- History transformation policy:
+  - `task_started` and `task_finished` are recorded as distinct history events.
+  - Task args/results are stored in history as truncated previews with byte/line cutoff metadata and lookup references.
+  - Agent can query full payloads with `sys_get_task_payload`.
 
 ### Filesystem Path Spaces
 Filesystem tools use URI-style paths:
@@ -105,6 +112,12 @@ Each session publishes a stream of `SessionEvent`:
   - global profile stores
   - session registry
   - per-session actor loop
+- Layered internal modules:
+  - `agent/*`: model orchestration, prompt rendering, tool schema
+  - `session/*`: deterministic turn actor + task policy
+  - `history/*`: structured history line transformation and preview truncation
+  - `system_tools/*`: runtime/profile/session/task discovery tools
+  - `fs/*`: managed and real filesystem tools
 - OpenAI-backed `AgentOrchestrator` with:
   - static tool registry (server-defined tools only)
   - streaming Responses API integration

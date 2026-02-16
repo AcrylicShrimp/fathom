@@ -1,0 +1,296 @@
+mod context;
+mod profiles;
+mod tasks;
+
+use serde::Deserialize;
+use serde_json::json;
+
+use crate::fs::TaskOutcome;
+use crate::runtime::Runtime;
+use crate::session::task_context::TaskExecutionContext;
+
+use self::profiles::{parse_profile_kind, parse_profile_view};
+use self::tasks::parse_task_payload_part;
+
+#[derive(Debug, Deserialize)]
+struct GetContextArgs {
+    #[serde(default)]
+    include_tools: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListProfilesArgs {
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetProfileArgs {
+    kind: String,
+    id: String,
+    view: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetTaskPayloadArgs {
+    task_id: String,
+    part: String,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default)]
+    limit: usize,
+}
+
+pub(crate) async fn execute_tool(
+    runtime: &Runtime,
+    context: &TaskExecutionContext,
+    tool_name: &str,
+    args_json: &str,
+) -> Option<TaskOutcome> {
+    match tool_name {
+        "sys_get_context" => Some(execute_get_context(runtime, context, args_json).await),
+        "sys_list_profiles" => Some(execute_list_profiles(runtime, args_json).await),
+        "sys_get_session_identity_map" => Some(execute_get_session_identity_map(context)),
+        "sys_get_profile" => Some(execute_get_profile(runtime, args_json).await),
+        "sys_get_task_payload" => Some(execute_get_task_payload(runtime, context, args_json).await),
+        _ => None,
+    }
+}
+
+async fn execute_get_context(
+    runtime: &Runtime,
+    context: &TaskExecutionContext,
+    args_json: &str,
+) -> TaskOutcome {
+    let args = match parse_args::<GetContextArgs>(args_json, "sys_get_context") {
+        Ok(args) => args,
+        Err(error) => return failure("sys_get_context", error),
+    };
+
+    success(
+        "sys_get_context",
+        context::build_context_payload(runtime, context, args.include_tools),
+    )
+}
+
+async fn execute_list_profiles(runtime: &Runtime, args_json: &str) -> TaskOutcome {
+    let args = match parse_args::<ListProfilesArgs>(args_json, "sys_list_profiles") {
+        Ok(args) => args,
+        Err(error) => return failure("sys_list_profiles", error),
+    };
+
+    let kind = match parse_profile_kind(&args.kind) {
+        Ok(kind) => kind,
+        Err(error) => return failure("sys_list_profiles", error),
+    };
+
+    success(
+        "sys_list_profiles",
+        profiles::list_profiles(runtime, kind).await,
+    )
+}
+
+fn execute_get_session_identity_map(context: &TaskExecutionContext) -> TaskOutcome {
+    success(
+        "sys_get_session_identity_map",
+        json!({
+            "session_id": context.session_id.clone(),
+            "active_agent_id": context.active_agent_id.clone(),
+            "participant_user_ids": context.participant_user_ids.clone(),
+            "active_agent_spec_version": context.active_agent_spec_version,
+            "participant_user_updated_at": context.participant_user_updated_at.clone(),
+        }),
+    )
+}
+
+async fn execute_get_profile(runtime: &Runtime, args_json: &str) -> TaskOutcome {
+    let args = match parse_args::<GetProfileArgs>(args_json, "sys_get_profile") {
+        Ok(args) => args,
+        Err(error) => return failure("sys_get_profile", error),
+    };
+    if args.id.trim().is_empty() {
+        return failure("sys_get_profile", "id must be non-empty".to_string());
+    }
+
+    let kind = match parse_profile_kind(&args.kind) {
+        Ok(kind) => kind,
+        Err(error) => return failure("sys_get_profile", error),
+    };
+    let view = match parse_profile_view(&args.view) {
+        Ok(view) => view,
+        Err(error) => return failure("sys_get_profile", error),
+    };
+
+    match profiles::get_profile(runtime, kind, &args.id, view).await {
+        Ok(payload) => success("sys_get_profile", payload),
+        Err(error) => failure("sys_get_profile", error),
+    }
+}
+
+async fn execute_get_task_payload(
+    runtime: &Runtime,
+    context: &TaskExecutionContext,
+    args_json: &str,
+) -> TaskOutcome {
+    let args = match parse_args::<GetTaskPayloadArgs>(args_json, "sys_get_task_payload") {
+        Ok(args) => args,
+        Err(error) => return failure("sys_get_task_payload", error),
+    };
+    if args.task_id.trim().is_empty() {
+        return failure(
+            "sys_get_task_payload",
+            "task_id must be non-empty".to_string(),
+        );
+    }
+
+    let part = match parse_task_payload_part(&args.part) {
+        Ok(part) => part,
+        Err(error) => return failure("sys_get_task_payload", error),
+    };
+
+    match tasks::get_task_payload(
+        runtime,
+        context,
+        &args.task_id,
+        part,
+        args.offset,
+        args.limit,
+    )
+    .await
+    {
+        Ok(payload) => success("sys_get_task_payload", payload),
+        Err(error) => failure("sys_get_task_payload", error),
+    }
+}
+
+fn parse_args<T>(args_json: &str, tool_name: &str) -> Result<T, String>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    serde_json::from_str(args_json)
+        .map_err(|error| format!("failed to parse args for `{tool_name}`: {error}"))
+}
+
+fn success(op: &str, data: serde_json::Value) -> TaskOutcome {
+    TaskOutcome {
+        succeeded: true,
+        message: json!({
+            "ok": true,
+            "op": op,
+            "data": data,
+        })
+        .to_string(),
+    }
+}
+
+fn failure(op: &str, message: String) -> TaskOutcome {
+    TaskOutcome {
+        succeeded: false,
+        message: json!({
+            "ok": false,
+            "op": op,
+            "error_code": "invalid_args",
+            "message": message,
+        })
+        .to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use crate::agent::ToolRegistry;
+    use crate::policy::system_policy;
+    use crate::runtime::Runtime;
+    use crate::session::task_context::TaskExecutionContext;
+
+    use super::execute_tool;
+
+    #[tokio::test]
+    async fn sys_get_context_returns_payload() {
+        let runtime = Runtime::new(2, 10);
+        let context = TaskExecutionContext {
+            session_id: "session-1".to_string(),
+            active_agent_id: "agent-1".to_string(),
+            participant_user_ids: vec!["user-1".to_string()],
+            active_agent_spec_version: 1,
+            participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
+        };
+
+        let outcome = execute_tool(&runtime, &context, "sys_get_context", "{}")
+            .await
+            .expect("should dispatch sys_get_context");
+        assert!(outcome.succeeded);
+    }
+
+    #[tokio::test]
+    async fn sys_get_context_includes_known_tools_from_registry() {
+        let runtime = Runtime::new(2, 10);
+        let context = TaskExecutionContext {
+            session_id: "session-1".to_string(),
+            active_agent_id: "agent-1".to_string(),
+            participant_user_ids: vec!["user-1".to_string()],
+            active_agent_spec_version: 1,
+            participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
+        };
+
+        let outcome = execute_tool(
+            &runtime,
+            &context,
+            "sys_get_context",
+            r#"{"include_tools":true}"#,
+        )
+        .await
+        .expect("should dispatch sys_get_context");
+        assert!(outcome.succeeded);
+
+        let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+        let known_tools = payload["data"]["tool_policy"]["known_tools"]
+            .as_array()
+            .expect("known_tools must be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        assert_eq!(known_tools, ToolRegistry::known_tool_names());
+    }
+
+    #[tokio::test]
+    async fn sys_get_context_uses_canonical_policy_snapshot() {
+        let runtime = Runtime::new(2, 10);
+        let context = TaskExecutionContext {
+            session_id: "session-1".to_string(),
+            active_agent_id: "agent-1".to_string(),
+            participant_user_ids: vec!["user-1".to_string()],
+            active_agent_spec_version: 1,
+            participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
+        };
+        let policy = system_policy();
+
+        let outcome = execute_tool(&runtime, &context, "sys_get_context", "{}")
+            .await
+            .expect("should dispatch sys_get_context");
+        assert!(outcome.succeeded);
+
+        let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+        let data = payload.get("data").expect("data field must exist");
+
+        assert_eq!(
+            data["path_policy"]["managed_uri_patterns"],
+            serde_json::json!(policy.path_policy.managed_uri_patterns)
+        );
+        assert_eq!(
+            data["path_policy"]["fs_uri_policy"],
+            serde_json::json!(policy.path_policy.fs_uri_policy)
+        );
+        assert_eq!(
+            data["history_policy"]["lookup_tool"],
+            serde_json::json!(policy.history_policy.lookup_tool)
+        );
+        assert_eq!(
+            data["tool_policy"]["non_triggering_tools"],
+            serde_json::json!(policy.tool_policy.non_triggering_tools)
+        );
+    }
+}
