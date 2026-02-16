@@ -154,10 +154,6 @@ impl ConversationTab {
 }
 
 impl Tab for ConversationTab {
-    fn title(&self) -> &'static str {
-        "Conversation"
-    }
-
     fn on_event(&mut self, event: &EventRecord) {
         match event {
             EventRecord::Local { message } => {

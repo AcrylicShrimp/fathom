@@ -18,10 +18,6 @@ impl EventsTab {
 }
 
 impl Tab for EventsTab {
-    fn title(&self) -> &'static str {
-        "Events"
-    }
-
     fn on_event(&mut self, event: &EventRecord) {
         let _ = self.lines.push_line(render_event_record(event));
     }

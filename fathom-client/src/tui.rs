@@ -11,7 +11,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use tokio::sync::mpsc;
 
 use crate::commands::{
@@ -133,21 +133,6 @@ impl App {
         self.active_tab_index = (self.active_tab_index + 1) % self.tabs.len();
     }
 
-    fn tab_label_row(&self) -> String {
-        self.tabs
-            .iter()
-            .enumerate()
-            .map(|(index, tab)| {
-                if index == self.active_tab_index {
-                    format!("[{}]", tab.title())
-                } else {
-                    tab.title().to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" | ")
-    }
-
     fn refresh_completion(&mut self) {
         self.completion.refresh_from_input(self.input.as_str());
     }
@@ -175,6 +160,14 @@ impl App {
         self.input = format!("/{} ", selected.name);
         self.refresh_completion();
         true
+    }
+
+    fn footer_text(&self) -> &'static str {
+        if self.completion_is_visible() {
+            "Commands: ↑/↓ select | Tab/Enter accept | Esc close"
+        } else {
+            "Keys: Shift+Tab switch | Enter send | / opens commands | ↑/↓ scroll | Esc clear input | Ctrl+C quit"
+        }
     }
 }
 
@@ -259,15 +252,19 @@ async fn run_loop(
             }
         }
 
-        let rows = main_layout(terminal.size()?.into());
+        let terminal_area: Rect = terminal.size()?.into();
+        let footer_height = wrapped_line_count(app.footer_text(), terminal_area.width);
+        let rows = main_layout(terminal_area, footer_height);
         let viewport_height = app.active_tab().viewport_height(rows[0]);
         let viewport_width = app.active_tab().viewport_width(rows[0]);
         app.active_tab_mut()
             .sync_scroll(viewport_height, viewport_width);
 
         terminal.draw(|frame| {
-            let rows = main_layout(frame.area());
-            app.active_tab().render(frame, rows[0], &app.session.session_id);
+            let footer_height = wrapped_line_count(app.footer_text(), frame.area().width);
+            let rows = main_layout(frame.area(), footer_height);
+            app.active_tab()
+                .render(frame, rows[0], &app.session.session_id);
 
             let input_panel = Paragraph::new(app.input.as_str()).block(
                 Block::default()
@@ -280,11 +277,10 @@ async fn run_loop(
                 render_completion_popup(frame, rows[0], &app.completion);
             }
 
-            let footer = format!(
-                "Tabs: {} | Keys: Shift+Tab switch | Enter send | /heartbeat | / opens commands | ↑/↓ scroll or select | Tab/Enter accept command | Esc close command/clear | Ctrl+C quit",
-                app.tab_label_row()
+            frame.render_widget(
+                Paragraph::new(app.footer_text()).wrap(Wrap { trim: false }),
+                rows[2],
             );
-            frame.render_widget(Paragraph::new(footer), rows[2]);
 
             let x = rows[1]
                 .x
@@ -478,16 +474,31 @@ fn render_completion_popup(
     frame.render_stateful_widget(list, popup, &mut state);
 }
 
-fn main_layout(area: Rect) -> [Rect; 3] {
+fn main_layout(area: Rect, footer_height: u16) -> [Rect; 3] {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(5),
             Constraint::Length(3),
-            Constraint::Length(1),
+            Constraint::Length(footer_height.max(1)),
         ])
         .split(area);
     [rows[0], rows[1], rows[2]]
+}
+
+fn wrapped_line_count(text: &str, width: u16) -> u16 {
+    if width == 0 {
+        return 1;
+    }
+
+    let wrapped = text
+        .lines()
+        .map(|line| {
+            let chars = line.chars().count().max(1) as u16;
+            chars.saturating_sub(1) / width + 1
+        })
+        .sum::<u16>();
+    wrapped.max(1)
 }
 
 #[cfg(test)]

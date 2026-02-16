@@ -12,7 +12,6 @@ use crate::view::EventRecord;
 const MAX_LINES_PER_TAB: usize = 10_000;
 
 pub(crate) trait Tab {
-    fn title(&self) -> &'static str;
     fn on_event(&mut self, event: &EventRecord);
     fn render(&self, frame: &mut Frame<'_>, area: Rect, session_id: &str);
     fn viewport_height(&self, area: Rect) -> u16;
