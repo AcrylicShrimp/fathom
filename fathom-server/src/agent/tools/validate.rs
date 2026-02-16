@@ -75,6 +75,12 @@ pub(crate) fn validate_tool_args(tool_name: &str, args: &Value) -> Result<(), St
             }
             Ok(())
         }
+        "sys_get_time" => {
+            if !args_obj.is_empty() {
+                return Err("sys_get_time does not accept arguments".to_string());
+            }
+            Ok(())
+        }
         "sys_list_profiles" => {
             let kind = require_non_empty_string(args_obj, "kind")?;
             if kind != "agent" && kind != "user" && kind != "all" {

@@ -9,6 +9,7 @@ Fathom is a session-oriented agent runtime with a gRPC server and TUI client.
 - Agent input is trigger-based, not direct message-based.
 - Agent intelligence is backed by OpenAI Responses API.
 - Assistant user-facing output supports streaming from server to client.
+- Server synthesizes authoritative time context (UTC + server-local timezone) for agent turns.
 
 ## Core Concepts
 
@@ -74,6 +75,10 @@ Tasks are background jobs created by agent actions.
   - `task_started` and `task_finished` are recorded as distinct history events.
   - Task args/results are stored in history as truncated previews with byte/line cutoff metadata and lookup references.
   - Agent can query full payloads with `sys_get_task_payload`.
+- Time context policy:
+  - Each turn snapshot includes `time_context` (`utc_rfc3339`, `local_rfc3339`, `local_timezone_name`, `local_utc_offset`, `generated_at_unix_ms`).
+  - `sys_get_context` includes the same `time_context` shape.
+  - `sys_get_time` returns refreshed server-clock time when the model needs newer values mid-session.
 
 ### Filesystem Path Spaces
 Filesystem tools use URI-style paths:

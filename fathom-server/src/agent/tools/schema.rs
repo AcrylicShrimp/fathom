@@ -78,6 +78,12 @@ pub(crate) fn parameters_for(tool_name: &str) -> Option<Value> {
             "required": [],
             "additionalProperties": false
         })),
+        "sys_get_time" => Some(json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+        })),
         "sys_list_profiles" => Some(json!({
             "type": "object",
             "properties": {

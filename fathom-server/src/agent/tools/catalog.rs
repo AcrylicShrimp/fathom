@@ -15,7 +15,7 @@ pub(crate) struct ToolCatalogEntry {
     pub(crate) category: ToolCategory,
 }
 
-const TOOL_CATALOG: [ToolCatalogEntry; 13] = [
+const TOOL_CATALOG: [ToolCatalogEntry; 14] = [
     ToolCatalogEntry {
         name: "memory_append",
         description: "Append a durable note to agent or user long-term memory.",
@@ -59,6 +59,11 @@ const TOOL_CATALOG: [ToolCatalogEntry; 13] = [
     ToolCatalogEntry {
         name: "sys_get_context",
         description: "Get authoritative runtime/session context and policy hints.",
+        category: ToolCategory::SystemDiscovery,
+    },
+    ToolCatalogEntry {
+        name: "sys_get_time",
+        description: "Get the latest server clock time context (UTC and local timezone).",
         category: ToolCategory::SystemDiscovery,
     },
     ToolCatalogEntry {

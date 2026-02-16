@@ -2,6 +2,7 @@ mod context_snapshot;
 mod ids;
 mod profiles;
 mod sessions;
+mod time_context;
 mod workspace;
 
 use std::collections::HashMap;

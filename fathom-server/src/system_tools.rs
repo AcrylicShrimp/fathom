@@ -19,6 +19,10 @@ struct GetContextArgs {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GetTimeArgs {}
+
+#[derive(Debug, Deserialize)]
 struct ListProfilesArgs {
     kind: String,
 }
@@ -48,6 +52,7 @@ pub(crate) async fn execute_tool(
 ) -> Option<TaskOutcome> {
     match tool_name {
         "sys_get_context" => Some(execute_get_context(runtime, context, args_json).await),
+        "sys_get_time" => Some(execute_get_time(runtime, args_json)),
         "sys_list_profiles" => Some(execute_list_profiles(runtime, args_json).await),
         "sys_get_session_identity_map" => Some(execute_get_session_identity_map(context)),
         "sys_get_profile" => Some(execute_get_profile(runtime, args_json).await),
@@ -70,6 +75,13 @@ async fn execute_get_context(
         "sys_get_context",
         context::build_context_payload(runtime, context, args.include_tools),
     )
+}
+
+fn execute_get_time(runtime: &Runtime, args_json: &str) -> TaskOutcome {
+    if let Err(error) = parse_args::<GetTimeArgs>(args_json, "sys_get_time") {
+        return failure("sys_get_time", error);
+    }
+    success("sys_get_time", context::build_time_payload(runtime))
 }
 
 async fn execute_list_profiles(runtime: &Runtime, args_json: &str) -> TaskOutcome {
@@ -221,6 +233,14 @@ mod tests {
             .await
             .expect("should dispatch sys_get_context");
         assert!(outcome.succeeded);
+
+        let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+        let time_context = payload["data"]["time_context"]
+            .as_object()
+            .expect("time_context must be an object");
+        assert!(time_context.contains_key("utc_rfc3339"));
+        assert!(time_context.contains_key("local_rfc3339"));
+        assert!(time_context.contains_key("local_timezone_name"));
     }
 
     #[tokio::test]
@@ -292,5 +312,46 @@ mod tests {
             data["tool_policy"]["non_triggering_tools"],
             serde_json::json!(policy.tool_policy.non_triggering_tools)
         );
+    }
+
+    #[tokio::test]
+    async fn sys_get_time_returns_canonical_time_context() {
+        let runtime = Runtime::new(2, 10);
+        let context = TaskExecutionContext {
+            session_id: "session-1".to_string(),
+            active_agent_id: "agent-1".to_string(),
+            participant_user_ids: vec!["user-1".to_string()],
+            active_agent_spec_version: 1,
+            participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
+        };
+
+        let outcome = execute_tool(&runtime, &context, "sys_get_time", "{}")
+            .await
+            .expect("should dispatch sys_get_time");
+        assert!(outcome.succeeded);
+
+        let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+        let data = payload.get("data").expect("data field must exist");
+        assert!(data["utc_rfc3339"].as_str().is_some());
+        assert!(data["local_rfc3339"].as_str().is_some());
+        assert!(data["local_timezone_name"].as_str().is_some());
+        assert_eq!(data["time_source"].as_str(), Some("server_clock"));
+    }
+
+    #[tokio::test]
+    async fn sys_get_time_rejects_unknown_fields() {
+        let runtime = Runtime::new(2, 10);
+        let context = TaskExecutionContext {
+            session_id: "session-1".to_string(),
+            active_agent_id: "agent-1".to_string(),
+            participant_user_ids: vec!["user-1".to_string()],
+            active_agent_spec_version: 1,
+            participant_user_updated_at: [("user-1".to_string(), 123)].into_iter().collect(),
+        };
+
+        let outcome = execute_tool(&runtime, &context, "sys_get_time", r#"{"unexpected":1}"#)
+            .await
+            .expect("should dispatch sys_get_time");
+        assert!(!outcome.succeeded);
     }
 }

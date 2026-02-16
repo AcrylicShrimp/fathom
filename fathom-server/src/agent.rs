@@ -8,8 +8,8 @@ mod types;
 pub(crate) use tool_registry::ToolRegistry;
 pub(crate) use types::{
     AgentTurnOutcome, SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote,
-    SummaryBlockRefSnapshot, SystemContextSnapshot, ToolArgDeltaNote, ToolArgDoneNote,
-    ToolInvocation, TurnSnapshot,
+    SummaryBlockRefSnapshot, SystemContextSnapshot, SystemTimeContext, ToolArgDeltaNote,
+    ToolArgDoneNote, ToolInvocation, TurnSnapshot,
 };
 
 use openai::OpenAiClient;

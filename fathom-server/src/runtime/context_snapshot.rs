@@ -57,6 +57,7 @@ impl Runtime {
         SystemContextSnapshot {
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
             workspace_root: self.workspace_root().display().to_string(),
+            time_context: self.current_system_time_context(),
             path_policy: policy.path_policy,
             session_identity: SessionIdentityMapSnapshot {
                 session_id: state.session_id.clone(),
@@ -68,5 +69,36 @@ impl Runtime {
             tool_policy: policy.tool_policy,
             history_policy: policy.history_policy,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::Runtime;
+    use crate::session::SessionState;
+    use crate::util::{default_agent_profile, default_user_profile};
+
+    #[test]
+    fn turn_snapshot_includes_time_context() {
+        let runtime = Runtime::new(2, 10);
+        let user_id = "user-a".to_string();
+        let state = SessionState::new(
+            "session-1".to_string(),
+            "agent-a".to_string(),
+            vec![user_id.clone()],
+            default_agent_profile("agent-a"),
+            HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
+        );
+
+        let snapshot = runtime.build_turn_snapshot(&state, 1, &[]);
+        let time_context = snapshot.system_context.time_context;
+
+        assert!(!time_context.utc_rfc3339.trim().is_empty());
+        assert!(!time_context.local_rfc3339.trim().is_empty());
+        assert!(!time_context.local_timezone_name.trim().is_empty());
+        assert!(!time_context.local_utc_offset.trim().is_empty());
+        assert_eq!(time_context.time_source, "server_clock");
     }
 }

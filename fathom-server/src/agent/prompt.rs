@@ -16,6 +16,7 @@ pub(crate) fn build_tool_only_prompt(
         "If no action is needed, call schedule_heartbeat with a short delay.".to_string(),
         "All tools are server-managed background jobs.".to_string(),
         "Use fs_list/fs_read/fs_write/fs_replace for file operations.".to_string(),
+        "If you need fresher clock data than this snapshot, call sys_get_time.".to_string(),
     ];
     let discovery_tools = ToolRegistry::discovery_tool_names();
     if !discovery_tools.is_empty() {
@@ -40,6 +41,31 @@ pub(crate) fn build_tool_only_prompt(
     lines.push(format!(
         "workspace_root: {}",
         snapshot.system_context.workspace_root
+    ));
+    lines.push("current_time:".to_string());
+    lines.push(format!(
+        "- utc_rfc3339: {}",
+        snapshot.system_context.time_context.utc_rfc3339
+    ));
+    lines.push(format!(
+        "- local_rfc3339: {}",
+        snapshot.system_context.time_context.local_rfc3339
+    ));
+    lines.push(format!(
+        "- local_timezone_name: {}",
+        snapshot.system_context.time_context.local_timezone_name
+    ));
+    lines.push(format!(
+        "- local_utc_offset: {}",
+        snapshot.system_context.time_context.local_utc_offset
+    ));
+    lines.push(format!(
+        "- generated_at_unix_ms: {}",
+        snapshot.system_context.time_context.generated_at_unix_ms
+    ));
+    lines.push(format!(
+        "- time_source: {}",
+        snapshot.system_context.time_context.time_source
     ));
     lines.push("path_policy.managed_uri_patterns:".to_string());
     for pattern in &snapshot.system_context.path_policy.managed_uri_patterns {
@@ -226,5 +252,65 @@ fn trigger_text(trigger: &pb::Trigger) -> String {
                 refresh.scope, refresh.user_id
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::agent::{
+        SessionCompactionSnapshot, SessionIdentityMapSnapshot, SystemContextSnapshot,
+        SystemTimeContext, TurnSnapshot,
+    };
+    use crate::policy::system_policy;
+    use crate::util::default_agent_profile;
+
+    use super::build_tool_only_prompt;
+
+    #[test]
+    fn prompt_contains_current_time_block() {
+        let policy = system_policy();
+        let snapshot = TurnSnapshot {
+            session_id: "session-1".to_string(),
+            turn_id: 1,
+            system_context: SystemContextSnapshot {
+                runtime_version: "0.1.0".to_string(),
+                workspace_root: "/workspace".to_string(),
+                time_context: SystemTimeContext {
+                    generated_at_unix_ms: 1_765_000_000_000,
+                    utc_rfc3339: "2026-02-16T00:00:00.000Z".to_string(),
+                    local_rfc3339: "2026-02-16T09:00:00.000+09:00".to_string(),
+                    local_timezone_name: "Asia/Seoul".to_string(),
+                    local_utc_offset: "+09:00".to_string(),
+                    time_source: "server_clock".to_string(),
+                },
+                path_policy: policy.path_policy,
+                session_identity: SessionIdentityMapSnapshot {
+                    session_id: "session-1".to_string(),
+                    active_agent_id: "agent-default".to_string(),
+                    participant_user_ids: vec!["user-default".to_string()],
+                    active_agent_spec_version: 1,
+                    participant_user_updated_at: BTreeMap::from([(
+                        "user-default".to_string(),
+                        1_765_000_000_000,
+                    )]),
+                },
+                tool_policy: policy.tool_policy,
+                history_policy: policy.history_policy,
+            },
+            agent_profile: default_agent_profile("agent-default"),
+            participant_profiles: vec![],
+            triggers: vec![],
+            recent_history: vec![],
+            compaction: SessionCompactionSnapshot::default(),
+        };
+
+        let prompt = build_tool_only_prompt(&snapshot, None);
+
+        assert!(prompt.contains("current_time:"));
+        assert!(prompt.contains("utc_rfc3339: 2026-02-16T00:00:00.000Z"));
+        assert!(prompt.contains("local_timezone_name: Asia/Seoul"));
+        assert!(prompt.contains("call sys_get_time"));
     }
 }

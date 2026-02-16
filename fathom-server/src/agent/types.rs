@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use serde::Serialize;
+
 use crate::pb;
 use crate::policy::{HistoryPolicy, PathPolicy, ToolPolicy};
 
@@ -34,10 +36,21 @@ pub(crate) struct TurnSnapshot {
 pub(crate) struct SystemContextSnapshot {
     pub(crate) runtime_version: String,
     pub(crate) workspace_root: String,
+    pub(crate) time_context: SystemTimeContext,
     pub(crate) path_policy: PathPolicy,
     pub(crate) session_identity: SessionIdentityMapSnapshot,
     pub(crate) tool_policy: ToolPolicy,
     pub(crate) history_policy: HistoryPolicy,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SystemTimeContext {
+    pub(crate) generated_at_unix_ms: i64,
+    pub(crate) utc_rfc3339: String,
+    pub(crate) local_rfc3339: String,
+    pub(crate) local_timezone_name: String,
+    pub(crate) local_utc_offset: String,
+    pub(crate) time_source: String,
 }
 
 #[derive(Debug, Clone)]

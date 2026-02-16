@@ -11,9 +11,11 @@ pub(crate) fn build_context_payload(
     include_tools: bool,
 ) -> Value {
     let policy = system_policy();
+    let time_context = runtime.current_system_time_context();
     let mut payload = json!({
         "runtime_version": env!("CARGO_PKG_VERSION"),
         "workspace_root": runtime.workspace_root().display().to_string(),
+        "time_context": time_context,
         "path_policy": policy.path_policy,
         "session_identity": {
             "session_id": context.session_id.clone(),
@@ -31,4 +33,8 @@ pub(crate) fn build_context_payload(
     }
 
     payload
+}
+
+pub(crate) fn build_time_payload(runtime: &Runtime) -> Value {
+    json!(runtime.current_system_time_context())
 }
