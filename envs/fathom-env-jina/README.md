@@ -143,4 +143,4 @@ The `error.code` field can be:
   - `X-With-Links-Summary: true`
   - `X-Token-Budget: 200000`
 - No explicit `X-Engine` or `X-Return-Format` header is set by default.
-- Timeout is runtime-managed via action timeout policy.
+- Timeout is runtime-managed via action timeout policy (default 30000ms, max 30000ms).

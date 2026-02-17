@@ -11,7 +11,7 @@ use jina_read_url::JinaReadUrlAction;
 
 pub const JINA_ENVIRONMENT_ID: &str = "jina";
 pub(crate) const JINA_ACTION_MAX_TIMEOUT_MS: u64 = 30_000;
-pub(crate) const JINA_ACTION_DESIRED_TIMEOUT_MS: u64 = 10_000;
+pub(crate) const JINA_ACTION_DESIRED_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const JINA_MAX_CONTENT_BYTES: usize = 100_000;
 pub(crate) const JINA_TOKEN_BUDGET_DEFAULT: u64 = 200_000;
 pub(crate) const JINA_TOKEN_BUDGET_MAX: u64 = 500_000;
