@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use serde::Serialize;
 
@@ -108,6 +110,72 @@ pub(crate) struct ResolvedPayloadLookupHint {
     pub(crate) payload_chunk: String,
     pub(crate) injected_truncated: bool,
     pub(crate) injected_omitted_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptMessage {
+    pub(crate) role: String,
+    pub(crate) label: String,
+    pub(crate) content: String,
+    pub(crate) stable_hash: String,
+}
+
+impl PromptMessage {
+    pub(crate) fn new(role: impl Into<String>, label: impl Into<String>, content: String) -> Self {
+        let role = role.into();
+        let label = label.into();
+        let mut hasher = DefaultHasher::new();
+        role.hash(&mut hasher);
+        label.hash(&mut hasher);
+        content.hash(&mut hasher);
+        let stable_hash = format!("{:016x}", hasher.finish());
+        Self {
+            role,
+            label,
+            content,
+            stable_hash,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptMessageStat {
+    pub(crate) label: String,
+    pub(crate) role: String,
+    pub(crate) estimated_tokens: usize,
+    pub(crate) stable_hash: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct PromptBuildStats {
+    pub(crate) estimated_prompt_tokens: usize,
+    pub(crate) messages_count: usize,
+    pub(crate) stable_prefix_hash: String,
+    pub(crate) compaction_applied: bool,
+    pub(crate) compaction_reason: String,
+    pub(crate) timeline_raw_events: usize,
+    pub(crate) timeline_compacted_events: usize,
+    pub(crate) dedup_dropped_events: usize,
+    pub(crate) per_message: Vec<PromptMessageStat>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct PromptMessageBundle {
+    pub(crate) messages: Vec<PromptMessage>,
+    pub(crate) stats: PromptBuildStats,
+}
+
+impl PromptMessageBundle {
+    pub(crate) fn as_debug_prompt(&self) -> String {
+        let mut sections = Vec::with_capacity(self.messages.len());
+        for message in &self.messages {
+            sections.push(format!(
+                "### {} ({})\n{}",
+                message.label, message.role, message.content
+            ));
+        }
+        sections.join("\n\n")
+    }
 }
 
 #[derive(Debug, Clone)]

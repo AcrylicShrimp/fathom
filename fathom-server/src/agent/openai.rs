@@ -6,7 +6,9 @@ use reqwest::header::RETRY_AFTER;
 use serde_json::{Value, json};
 
 use crate::agent::retry::RetryPolicy;
-use crate::agent::types::{ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, StreamNote};
+use crate::agent::types::{
+    ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, PromptMessage, StreamNote,
+};
 use crate::environment::EnvironmentRegistry;
 
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
@@ -56,7 +58,7 @@ impl OpenAiClient {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn stream_actions<FS, FA, FD, FN, FT, FC>(
         &self,
-        prompt: &str,
+        prompt_messages: &[PromptMessage],
         environment_registry: &EnvironmentRegistry,
         mut on_stream: FS,
         mut on_action: FA,
@@ -88,10 +90,24 @@ impl OpenAiClient {
                 detail: format!("attempt={} effort={reasoning_effort}", attempts + 1),
             });
 
+            let input_messages = prompt_messages
+                .iter()
+                .map(|message| {
+                    json!({
+                        "role": message.role,
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": message.content,
+                            }
+                        ],
+                    })
+                })
+                .collect::<Vec<_>>();
             let body = json!({
                 "model": DEFAULT_MODEL,
                 "stream": true,
-                "input": prompt,
+                "input": input_messages,
                 "reasoning": { "effort": reasoning_effort },
                 "tools": environment_registry.openai_action_definitions(),
                 "tool_choice": "auto"

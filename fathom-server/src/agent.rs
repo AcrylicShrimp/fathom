@@ -6,16 +6,20 @@ mod types;
 pub(crate) use types::{
     ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, ActivatedEnvironmentActionHint,
     ActivatedEnvironmentHint, ActivatedEnvironmentRecipeHint, AgentTurnOutcome, InFlightActionHint,
-    ResolvedPayloadLookupHint, SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote,
-    SummaryBlockRefSnapshot, SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
+    PromptMessageBundle, ResolvedPayloadLookupHint, SessionCompactionSnapshot,
+    SessionIdentityMapSnapshot, StreamNote, SummaryBlockRefSnapshot, SystemContextSnapshot,
+    SystemTimeContext, TurnSnapshot,
 };
 
 use crate::environment::EnvironmentRegistry;
 use openai::OpenAiClient;
-use prompt::build_agent_prompt;
+use prompt::build_agent_prompt_bundle;
 
-pub(crate) fn render_prompt(snapshot: &TurnSnapshot, retry_feedback: Option<&str>) -> String {
-    build_agent_prompt(snapshot, retry_feedback)
+pub(crate) fn render_prompt_bundle(
+    snapshot: &TurnSnapshot,
+    retry_feedback: Option<&str>,
+) -> PromptMessageBundle {
+    build_agent_prompt_bundle(snapshot, retry_feedback)
 }
 
 #[derive(Clone)]
@@ -84,10 +88,20 @@ impl AgentOrchestrator {
                 detail: format!("semantic_attempt={}", semantic_attempt + 1),
             });
 
-            let prompt = build_agent_prompt(snapshot, retry_feedback.as_deref());
+            let prompt_bundle = build_agent_prompt_bundle(snapshot, retry_feedback.as_deref());
+            on_stream(StreamNote {
+                phase: "agent.prompt.summary".to_string(),
+                detail: format!(
+                    "messages={} estimated_tokens={} compaction_applied={} dedup_dropped={}",
+                    prompt_bundle.stats.messages_count,
+                    prompt_bundle.stats.estimated_prompt_tokens,
+                    prompt_bundle.stats.compaction_applied,
+                    prompt_bundle.stats.dedup_dropped_events
+                ),
+            });
             let result = openai
                 .stream_actions(
-                    &prompt,
+                    &prompt_bundle.messages,
                     &self.environment_registry,
                     &mut on_stream,
                     |action_invocation| {
@@ -115,6 +129,15 @@ impl AgentOrchestrator {
                 {
                     diagnostics.extend(stream_outcome.diagnostics);
                     diagnostics.push(format!(
+                        "prompt_messages={} estimated_tokens={} compaction_applied={} timeline_raw={} timeline_compacted={} dedup_dropped={}",
+                        prompt_bundle.stats.messages_count,
+                        prompt_bundle.stats.estimated_prompt_tokens,
+                        prompt_bundle.stats.compaction_applied,
+                        prompt_bundle.stats.timeline_raw_events,
+                        prompt_bundle.stats.timeline_compacted_events,
+                        prompt_bundle.stats.dedup_dropped_events
+                    ));
+                    diagnostics.push(format!(
                         "action_calls_dispatched={} assistant_outputs={} on attempt {}",
                         stream_outcome.action_call_count,
                         stream_outcome.assistant_outputs.len(),
@@ -128,6 +151,15 @@ impl AgentOrchestrator {
                 }
                 Ok(stream_outcome) => {
                     diagnostics.extend(stream_outcome.diagnostics);
+                    diagnostics.push(format!(
+                        "prompt_messages={} estimated_tokens={} compaction_applied={} timeline_raw={} timeline_compacted={} dedup_dropped={}",
+                        prompt_bundle.stats.messages_count,
+                        prompt_bundle.stats.estimated_prompt_tokens,
+                        prompt_bundle.stats.compaction_applied,
+                        prompt_bundle.stats.timeline_raw_events,
+                        prompt_bundle.stats.timeline_compacted_events,
+                        prompt_bundle.stats.dedup_dropped_events
+                    ));
                     diagnostics.push(format!(
                         "no action call or assistant output generated on attempt {}",
                         semantic_attempt + 1

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::agent::{
-    ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, StreamNote, render_prompt,
+    ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, StreamNote, render_prompt_bundle,
 };
 use crate::environment::EnvironmentActorHandle;
 use crate::pb;
@@ -179,7 +179,8 @@ async fn run_agent_turn(
 ) -> AgentTurnSummary {
     let assistant_output_start_len = assistant_outputs.len();
     let snapshot = runtime.build_turn_snapshot(state, turn_id, agent_triggers);
-    let prompt = render_prompt(&snapshot, None);
+    let prompt_bundle = render_prompt_bundle(&snapshot, None);
+    let debug_prompt = prompt_bundle.as_debug_prompt();
     let invocation_detail_path = format!(
         "sessions/{}/invocations/invocation-{}.json",
         state.session_id, invocation_seq
@@ -194,7 +195,9 @@ async fn run_agent_turn(
             "turn_id": turn_id,
             "invocation_seq": invocation_seq,
             "snapshot": turn_snapshot_to_json(&snapshot),
-            "prompt": prompt,
+            "prompt": debug_prompt,
+            "prompt_messages": prompt_bundle.messages,
+            "prompt_stats": prompt_bundle.stats,
         }),
     );
     runtime.diagnostics().append_session_record(

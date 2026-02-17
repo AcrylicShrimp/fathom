@@ -7,9 +7,7 @@ use crate::pb;
 use crate::session::state::SessionState;
 use crate::util::now_unix_ms;
 
-pub(crate) use constants::{
-    HISTORY_FORMAT, TASK_FINISHED_EVENT, TASK_PAYLOAD_LOOKUP_ACTION, TASK_STARTED_EVENT,
-};
+pub(crate) use constants::{TASK_FINISHED_EVENT, TASK_PAYLOAD_LOOKUP_ACTION, TASK_STARTED_EVENT};
 pub(crate) use preview::build_payload_preview;
 
 pub(crate) fn append_trigger_history(state: &mut SessionState, trigger: &pb::Trigger) {
