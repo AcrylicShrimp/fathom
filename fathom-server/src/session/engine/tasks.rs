@@ -271,9 +271,37 @@ pub(super) fn queued_action_output(task: &pb::Task, call_id: Option<&str>) -> St
     let call_suffix = call_id
         .map(|value| format!(" call_id={value}"))
         .unwrap_or_default();
+    let reasoning_suffix = extract_reasoning_suffix(&task.args_json);
 
     format!(
-        "queued action `{}` as {} ({status}){}",
-        task.action_id, task.task_id, call_suffix
+        "queued action `{}` as {} ({status}){}{}",
+        task.action_id, task.task_id, call_suffix, reasoning_suffix
     )
+}
+
+fn extract_reasoning_suffix(args_json: &str) -> String {
+    const MAX_REASONING_CHARS: usize = 160;
+
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(args_json) else {
+        return String::new();
+    };
+    let reasoning = args
+        .get("reasoning")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(reasoning) = reasoning else {
+        return String::new();
+    };
+    let reasoning = if reasoning.chars().count() > MAX_REASONING_CHARS {
+        let mut truncated = reasoning
+            .chars()
+            .take(MAX_REASONING_CHARS)
+            .collect::<String>();
+        truncated.push_str("...");
+        truncated
+    } else {
+        reasoning.to_string()
+    };
+    format!(" reasoning={reasoning}")
 }

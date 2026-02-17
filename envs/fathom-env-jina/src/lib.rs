@@ -13,6 +13,8 @@ pub const JINA_ENVIRONMENT_ID: &str = "jina";
 pub(crate) const JINA_ACTION_MAX_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const JINA_ACTION_DESIRED_TIMEOUT_MS: u64 = 10_000;
 pub(crate) const JINA_MAX_CONTENT_BYTES: usize = 100_000;
+pub(crate) const JINA_TOKEN_BUDGET_DEFAULT: u64 = 200_000;
+pub(crate) const JINA_TOKEN_BUDGET_MAX: u64 = 500_000;
 pub use execute::execute_action;
 
 pub struct JinaEnvironment;
@@ -40,16 +42,17 @@ impl Environment for JinaEnvironment {
                 title: "Read a specific URL".to_string(),
                 steps: vec![
                     "Call jina__read_url with one absolute http(s) URL when you need readable page content.".to_string(),
-                    "Prefer URLs discovered from search results or user-provided links.".to_string(),
+                    "The environment tries hard selector filtering first, then soft no-selector fallback on provider/transport failures.".to_string(),
                     "Use extracted title and source_url fields when citing facts back to the user.".to_string(),
                 ],
             },
             EnvironmentRecipe {
-                title: "Handle large pages safely".to_string(),
+                title: "Handle noisy pages".to_string(),
                 steps: vec![
-                    "Check truncated=true to detect content limits on large pages.".to_string(),
-                    "When truncated, summarize with explicit partial-context caveat and request narrower follow-up targets if needed.".to_string(),
-                    "Avoid chaining excessive reads in one turn when early reads already contain sufficient evidence.".to_string(),
+                    "Inspect advisory and attempts metadata in each result; content may still be low quality even when request succeeds.".to_string(),
+                    "Optional string fields must be omitted when unused; do not pass empty strings for selector/cookie fields.".to_string(),
+                    "When needed, provide advanced options (target_selector/remove_selector/wait_for_selector/set_cookie/no_cache/token_budget/timeout_ms).".to_string(),
+                    "Prefer custom targeted retry before chaining many payload lookups.".to_string(),
                 ],
             },
         ]

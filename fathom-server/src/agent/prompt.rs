@@ -159,11 +159,13 @@ fn build_core_policy_block() -> String {
         "You are Fathom's session agent.",
         "You may emit assistant text and/or action calls.",
         "When calling actions, use canonical action ids in the format env__action.",
+        "Every action call must include a concise `reasoning` field that explains why the call is necessary now.",
         "Use only actions listed under Engaged Environments for this session.",
         "If you need more context, prefer discovery actions listed below.",
         "All actions are server-managed background jobs and emit task_done triggers after commit.",
         "Task_done triggers are scheduler signals; rely on canonical action_started/action_finished timeline entries for history reasoning.",
         "Use Resolved Payload Lookups when present before issuing additional payload fetches.",
+        "For optional action arguments, omit fields you do not need; never send empty placeholder strings.",
         "Action input schemas are enforced by the runtime; provide exact argument shapes.",
         "Avoid unbounded tool chaining. When evidence is sufficient, provide a direct assistant report to the user.",
     ]
@@ -1054,6 +1056,9 @@ mod tests {
         assert!(
             debug_prompt.contains("system__get_time (discovery): Get current server time context.")
         );
+        assert!(debug_prompt.contains(
+            "For optional action arguments, omit fields you do not need; never send empty placeholder strings."
+        ));
         assert!(debug_prompt.contains("## Conversation Timeline (canonical)"));
     }
 }

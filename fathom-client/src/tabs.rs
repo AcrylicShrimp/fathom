@@ -1,10 +1,12 @@
 mod conversation;
 mod events_full;
 mod events_tools;
+mod running_tasks;
 
 pub(crate) use conversation::ConversationTab;
 pub(crate) use events_full::FullEventsTab;
 pub(crate) use events_tools::ToolsEventsTab;
+pub(crate) use running_tasks::RunningTasksTab;
 
 use crossterm::event::KeyEvent;
 use ratatui::Frame;

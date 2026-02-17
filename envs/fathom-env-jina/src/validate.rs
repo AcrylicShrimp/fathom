@@ -32,3 +32,38 @@ pub(crate) fn validate_http_url(field_name: &str, value: &str) -> Result<(), Str
 
     Ok(())
 }
+
+pub(crate) fn optional_non_empty_string<'a>(
+    args: &'a ArgsObject,
+    key: &str,
+) -> Result<Option<&'a str>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("field `{key}` must be omitted or a non-empty string"))?;
+    Ok(Some(value))
+}
+
+pub(crate) fn optional_boolean(args: &ArgsObject, key: &str) -> Result<Option<bool>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_bool()
+        .ok_or_else(|| format!("missing or invalid boolean field `{key}`"))?;
+    Ok(Some(value))
+}
+
+pub(crate) fn optional_u64(args: &ArgsObject, key: &str) -> Result<Option<u64>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_u64()
+        .ok_or_else(|| format!("missing or invalid integer field `{key}`"))?;
+    Ok(Some(value))
+}

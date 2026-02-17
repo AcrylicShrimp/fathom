@@ -1,18 +1,91 @@
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::error::JinaError;
+use crate::JINA_TOKEN_BUDGET_DEFAULT;
 
 const JINA_READER_URL: &str = "https://r.jina.ai/";
 const JINA_API_KEY_ENV: &str = "JINA_API_KEY";
 const ERROR_BODY_PREVIEW_BYTES: usize = 2_048;
+pub(crate) const HARD_DEFAULT_TARGET_SELECTOR: &str = "main, section, article";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ReadRequest {
     pub(crate) source_url: String,
     pub(crate) timeout_ms: u64,
     pub(crate) max_content_bytes: usize,
+    pub(crate) options: ReadRequestOptions,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReadRequestOptions {
+    pub(crate) target_selector: Option<String>,
+    pub(crate) remove_selector: Option<String>,
+    pub(crate) wait_for_selector: Option<String>,
+    pub(crate) set_cookie: Option<String>,
+    pub(crate) no_cache: bool,
+    pub(crate) token_budget: u64,
+    pub(crate) retain_images_none: bool,
+    pub(crate) with_images_summary: bool,
+    pub(crate) with_links_summary: bool,
+}
+
+impl Default for ReadRequestOptions {
+    fn default() -> Self {
+        Self {
+            target_selector: None,
+            remove_selector: None,
+            wait_for_selector: None,
+            set_cookie: None,
+            no_cache: false,
+            token_budget: JINA_TOKEN_BUDGET_DEFAULT,
+            retain_images_none: true,
+            with_images_summary: true,
+            with_links_summary: true,
+        }
+    }
+}
+
+impl ReadRequestOptions {
+    fn header_pairs(&self) -> Vec<(&'static str, String)> {
+        let mut headers = Vec::new();
+        if self.retain_images_none {
+            headers.push(("X-Retain-Images", "none".to_string()));
+        }
+        if self.with_images_summary {
+            headers.push(("X-With-Images-Summary", "true".to_string()));
+        }
+        if self.with_links_summary {
+            headers.push(("X-With-Links-Summary", "true".to_string()));
+        }
+        headers.push(("X-Token-Budget", self.token_budget.to_string()));
+
+        if let Some(value) = self.target_selector.as_deref() {
+            headers.push(("X-Target-Selector", value.to_string()));
+        }
+        if let Some(value) = self.remove_selector.as_deref() {
+            headers.push(("X-Remove-Selector", value.to_string()));
+        }
+        if let Some(value) = self.wait_for_selector.as_deref() {
+            headers.push(("X-Wait-For-Selector", value.to_string()));
+        }
+        if let Some(value) = self.set_cookie.as_deref() {
+            headers.push(("X-Set-Cookie", value.to_string()));
+        }
+        if self.no_cache {
+            headers.push(("X-No-Cache", "true".to_string()));
+        }
+        headers
+    }
+
+    pub(crate) fn headers_json(&self) -> Value {
+        let mut map = Map::new();
+        for (name, value) in self.header_pairs() {
+            map.insert(name.to_string(), Value::String(value));
+        }
+        Value::Object(map)
+    }
 }
 
 pub(crate) async fn run_reader(request: ReadRequest) -> Result<Value, JinaError> {
@@ -25,20 +98,20 @@ pub(crate) async fn run_reader(request: ReadRequest) -> Result<Value, JinaError>
         })?;
 
     let timeout = Duration::from_millis(request.timeout_ms);
+    let headers_json = request.options.headers_json();
     let client = reqwest::Client::new();
-    let response = client
+    let mut request_builder = client
         .post(JINA_READER_URL)
         .header(reqwest::header::ACCEPT, "application/json")
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
-        .header("X-Return-Format", "markdown")
         .timeout(timeout)
-        .json(&json!({
-            "url": request.source_url,
-        }))
-        .send()
-        .await
-        .map_err(map_transport_error)?;
+        .json(&json!({ "url": request.source_url }));
+    for (header_name, header_value) in request.options.header_pairs() {
+        request_builder = request_builder.header(header_name, header_value);
+    }
+
+    let response = request_builder.send().await.map_err(map_transport_error)?;
 
     let status = response.status();
     let body = response.text().await.map_err(map_transport_error)?;
@@ -50,6 +123,7 @@ pub(crate) async fn run_reader(request: ReadRequest) -> Result<Value, JinaError>
         .with_details(json!({
             "status_code": status.as_u16(),
             "response_body_preview": preview_text(&body, ERROR_BODY_PREVIEW_BYTES),
+            "request_headers": headers_json,
         })));
     }
 
@@ -59,8 +133,13 @@ pub(crate) async fn run_reader(request: ReadRequest) -> Result<Value, JinaError>
         ))
         .with_details(json!({
             "response_body_preview": preview_text(&body, ERROR_BODY_PREVIEW_BYTES),
+            "request_headers": headers_json,
         }))
     })?;
+
+    if let Some(provider_error) = provider_error_from_payload(&response_json, &headers_json) {
+        return Err(provider_error);
+    }
 
     let extracted = extract_reader_payload(&response_json, request.source_url.as_str())?;
     let (content_markdown, truncated_bytes) = truncate_utf8_by_bytes(
@@ -93,6 +172,34 @@ pub(crate) async fn run_reader(request: ReadRequest) -> Result<Value, JinaError>
     }
 
     Ok(output)
+}
+
+fn provider_error_from_payload(
+    response_json: &Value,
+    request_headers: &Value,
+) -> Option<JinaError> {
+    let provider_code = response_json.get("code").and_then(Value::as_i64);
+    let provider_status = response_json.get("status").and_then(Value::as_i64);
+    let provider_message = response_json.get("message").and_then(Value::as_str);
+
+    let has_provider_error = provider_code.is_some_and(|code| code >= 400)
+        || provider_status.is_some_and(|status| status >= 40_000);
+    if !has_provider_error {
+        return None;
+    }
+
+    let message = provider_message
+        .map(str::to_string)
+        .unwrap_or_else(|| "Jina reader reported provider error".to_string());
+    Some(
+        JinaError::provider_http(format!("Jina reader provider error: {message}")).with_details(
+            json!({
+                "provider_code": provider_code,
+                "provider_status": provider_status,
+                "request_headers": request_headers,
+            }),
+        ),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -209,7 +316,10 @@ fn preview_text(value: &str, max_bytes: usize) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{extract_reader_payload, preview_text, truncate_utf8_by_bytes};
+    use super::{
+        HARD_DEFAULT_TARGET_SELECTOR, ReadRequestOptions, extract_reader_payload, preview_text,
+        provider_error_from_payload, truncate_utf8_by_bytes,
+    };
 
     #[test]
     fn extract_payload_from_data_content() {
@@ -265,5 +375,46 @@ mod tests {
         let value = "áéíóú-abcdef";
         let preview = preview_text(value, 7);
         assert!(preview.ends_with('…'));
+    }
+
+    #[test]
+    fn options_emit_expected_headers() {
+        let options = ReadRequestOptions {
+            target_selector: Some(HARD_DEFAULT_TARGET_SELECTOR.to_string()),
+            remove_selector: Some(".cookie".to_string()),
+            wait_for_selector: Some("main".to_string()),
+            set_cookie: Some("foo=bar".to_string()),
+            no_cache: true,
+            token_budget: 200_000,
+            retain_images_none: true,
+            with_images_summary: true,
+            with_links_summary: true,
+        };
+        let headers = options.headers_json();
+        assert_eq!(headers["X-Retain-Images"], "none");
+        assert_eq!(headers["X-With-Images-Summary"], "true");
+        assert_eq!(headers["X-With-Links-Summary"], "true");
+        assert_eq!(headers["X-Token-Budget"], "200000");
+        assert_eq!(headers["X-Target-Selector"], "main, section, article");
+        assert_eq!(headers["X-Remove-Selector"], ".cookie");
+        assert_eq!(headers["X-Wait-For-Selector"], "main");
+        assert_eq!(headers["X-Set-Cookie"], "foo=bar");
+        assert_eq!(headers["X-No-Cache"], "true");
+    }
+
+    #[test]
+    fn provider_error_detected_from_payload() {
+        let payload = json!({
+            "code": 422,
+            "status": 42206,
+            "message": "No content available for selector",
+            "data": null
+        });
+        let headers = json!({
+            "X-Target-Selector": "main, section, article"
+        });
+        let error = provider_error_from_payload(&payload, &headers).expect("provider error");
+        assert_eq!(error.code(), "provider_http");
+        assert!(error.message().contains("No content available"));
     }
 }

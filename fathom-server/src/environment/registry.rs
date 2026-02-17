@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::runtime::Runtime;
 use crate::session::task_context::TaskExecutionContext;
@@ -102,7 +102,7 @@ impl EnvironmentRegistry {
                     "type": "function",
                     "name": entry.canonical_action_id,
                     "description": spec.description,
-                    "parameters": spec.input_schema,
+                    "parameters": with_reasoning_schema(spec.input_schema),
                 })
             })
             .collect()
@@ -194,6 +194,7 @@ impl EnvironmentRegistry {
         let Some(entry) = default_registry().inner.actions.get(&canonical_action_id) else {
             return Err(format!("unknown action `{action_id}`"));
         };
+        validate_reasoning_arg(&canonical_action_id, args)?;
         entry.action.validate(args)?;
         Ok(canonical_action_id)
     }
@@ -215,16 +216,17 @@ impl EnvironmentRegistry {
         environment_state: &Value,
         execution_timeout_ms: u64,
     ) -> Option<ActionOutcome> {
+        let execution_args_json = strip_runtime_fields_from_args_json(args_json);
         match resolved.environment_id.as_str() {
             fathom_env_fs::FILESYSTEM_ENVIRONMENT_ID => fathom_env_fs::execute_action(
                 resolved.action_name.as_str(),
-                args_json,
+                &execution_args_json,
                 environment_state,
             ),
             fathom_env_brave_search::BRAVE_SEARCH_ENVIRONMENT_ID => {
                 fathom_env_brave_search::execute_action(
                     resolved.action_name.as_str(),
-                    args_json,
+                    &execution_args_json,
                     environment_state,
                     execution_timeout_ms,
                 )
@@ -233,7 +235,7 @@ impl EnvironmentRegistry {
             fathom_env_jina::JINA_ENVIRONMENT_ID => {
                 fathom_env_jina::execute_action(
                     resolved.action_name.as_str(),
-                    args_json,
+                    &execution_args_json,
                     environment_state,
                     execution_timeout_ms,
                 )
@@ -242,7 +244,7 @@ impl EnvironmentRegistry {
             fathom_env_shell::SHELL_ENVIRONMENT_ID => {
                 fathom_env_shell::execute_action(
                     resolved.action_name.as_str(),
-                    args_json,
+                    &execution_args_json,
                     environment_state,
                     execution_timeout_ms,
                 )
@@ -253,7 +255,7 @@ impl EnvironmentRegistry {
                     runtime,
                     context,
                     resolved.action_name.as_str(),
-                    args_json,
+                    &execution_args_json,
                 )
                 .await
             }
@@ -376,6 +378,86 @@ impl EnvironmentRegistry {
     }
 }
 
+const ACTION_REASONING_KEY: &str = "reasoning";
+const ACTION_REASONING_MAX_BYTES: usize = 1_024;
+
+fn with_reasoning_schema(input_schema: Value) -> Value {
+    let Value::Object(mut schema) = input_schema else {
+        return input_schema;
+    };
+    ensure_schema_object_properties(&mut schema);
+    ensure_schema_required_reasoning(&mut schema);
+    Value::Object(schema)
+}
+
+fn ensure_schema_object_properties(schema: &mut Map<String, Value>) {
+    let properties_entry = schema
+        .entry("properties".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Value::Object(properties) = properties_entry else {
+        return;
+    };
+    properties
+        .entry(ACTION_REASONING_KEY.to_string())
+        .or_insert_with(|| {
+            json!({
+                "type": "string",
+                "minLength": 1,
+                "maxLength": ACTION_REASONING_MAX_BYTES,
+                "description": "Short reason for why this action is needed now."
+            })
+        });
+}
+
+fn ensure_schema_required_reasoning(schema: &mut Map<String, Value>) {
+    let required_entry = schema
+        .entry("required".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Value::Array(required) = required_entry else {
+        return;
+    };
+    if required
+        .iter()
+        .any(|value| value.as_str() == Some(ACTION_REASONING_KEY))
+    {
+        return;
+    }
+    required.push(Value::String(ACTION_REASONING_KEY.to_string()));
+}
+
+fn validate_reasoning_arg(action_id: &str, args: &Value) -> Result<(), String> {
+    let Some(args) = args.as_object() else {
+        return Err("action arguments must be a JSON object".to_string());
+    };
+    let reasoning = args
+        .get(ACTION_REASONING_KEY)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "action `{action_id}` validation failed: missing non-empty string field `reasoning`"
+            )
+        })?;
+    if reasoning.len() > ACTION_REASONING_MAX_BYTES {
+        return Err(format!(
+            "action `{action_id}` validation failed: field `reasoning` exceeds {ACTION_REASONING_MAX_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn strip_runtime_fields_from_args_json(args_json: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(args_json) else {
+        return args_json.to_string();
+    };
+    let Some(args) = value.as_object_mut() else {
+        return args_json.to_string();
+    };
+    args.remove(ACTION_REASONING_KEY);
+    serde_json::to_string(&value).unwrap_or_else(|_| args_json.to_string())
+}
+
 fn default_registry() -> &'static EnvironmentRegistry {
     static REGISTRY: OnceLock<EnvironmentRegistry> = OnceLock::new();
     REGISTRY.get_or_init(EnvironmentRegistry::build)
@@ -414,8 +496,24 @@ mod tests {
             EnvironmentRegistry::validate("filesystem__read", &json!({"path":"fs://notes.txt"}));
         assert!(invalid.is_err());
 
-        let valid = EnvironmentRegistry::validate("filesystem__read", &json!({"path":"notes.txt"}));
+        let valid = EnvironmentRegistry::validate(
+            "filesystem__read",
+            &json!({"path":"notes.txt", "reasoning":"read file requested by user"}),
+        );
         assert!(valid.is_ok());
+    }
+
+    #[test]
+    fn validates_reasoning_requirement() {
+        let missing_reasoning =
+            EnvironmentRegistry::validate("filesystem__read", &json!({"path":"notes.txt"}));
+        assert!(missing_reasoning.is_err());
+
+        let empty_reasoning = EnvironmentRegistry::validate(
+            "filesystem__read",
+            &json!({"path":"notes.txt","reasoning":"   "}),
+        );
+        assert!(empty_reasoning.is_err());
     }
 
     #[test]
@@ -451,6 +549,25 @@ mod tests {
 
         assert!(description.contains("non-empty relative"));
         assert!(description.contains("use `.`"));
+    }
+
+    #[test]
+    fn openai_definitions_require_reasoning_field() {
+        let registry = EnvironmentRegistry::new();
+        let definitions = registry.openai_action_definitions();
+
+        for definition in definitions {
+            let required = definition["parameters"]["required"]
+                .as_array()
+                .expect("required must be an array");
+            assert!(
+                required
+                    .iter()
+                    .any(|entry| entry.as_str() == Some("reasoning")),
+                "reasoning must be required for {}",
+                definition["name"]
+            );
+        }
     }
 
     #[test]
@@ -509,5 +626,16 @@ mod tests {
             desired_timeout_ms: Some(1_001),
         };
         assert!(policy.effective_timeout_ms().is_err());
+    }
+
+    #[test]
+    fn strips_runtime_reasoning_field_for_execution() {
+        let raw = r#"{"query":"seti","count":5,"reasoning":"need sources"}"#;
+        let stripped = super::strip_runtime_fields_from_args_json(raw);
+        let value: serde_json::Value =
+            serde_json::from_str(&stripped).expect("stripped args must be valid json");
+        assert!(value.get("reasoning").is_none());
+        assert_eq!(value["query"], "seti");
+        assert_eq!(value["count"], 5);
     }
 }

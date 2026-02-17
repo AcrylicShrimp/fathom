@@ -183,10 +183,7 @@ You MUST emit at least one valid action call or assistant output."
                 Err(error) => {
                     diagnostics.push(format!("openai request failed: {error}"));
                     if semantic_attempt == 0 && is_recoverable_action_error(&error) {
-                        retry_feedback = Some(format!(
-                            "The previous action call was invalid and could not be executed: {error}\n\
-Emit a corrected action call with valid arguments, or emit assistant output."
-                        ));
+                        retry_feedback = Some(build_retry_feedback(&error));
                         diagnostics.push(
                             "retrying semantic attempt due to recoverable action-call error"
                                 .to_string(),
@@ -210,4 +207,43 @@ fn is_recoverable_action_error(error: &str) -> bool {
     error.contains("validation failed")
         || error.contains("invalid arguments JSON for action")
         || error.contains("unknown action `")
+}
+
+fn build_retry_feedback(error: &str) -> String {
+    let mut feedback = format!(
+        "The previous action call was invalid and could not be executed: {error}\n\
+Emit a corrected action call with valid arguments, or emit assistant output."
+    );
+    if is_optional_string_validation_error(error) {
+        feedback.push_str(
+            "\nFor optional string fields, omit the field instead of sending empty strings.",
+        );
+    }
+    feedback
+}
+
+fn is_optional_string_validation_error(error: &str) -> bool {
+    error.contains("validation failed") && error.contains("must be omitted or a non-empty string")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_retry_feedback;
+
+    #[test]
+    fn retry_feedback_guides_optional_string_omission() {
+        let feedback = build_retry_feedback(
+            "action `jina__read_url` validation failed: field `remove_selector` must be omitted or a non-empty string",
+        );
+        assert!(feedback.contains("omit the field instead of sending empty strings"));
+    }
+
+    #[test]
+    fn retry_feedback_generic_error_keeps_base_instruction() {
+        let feedback = build_retry_feedback(
+            "action `filesystem__read` validation failed: missing or invalid string field `path`",
+        );
+        assert!(feedback.contains("Emit a corrected action call with valid arguments"));
+        assert!(!feedback.contains("omit the field instead of sending empty strings"));
+    }
 }

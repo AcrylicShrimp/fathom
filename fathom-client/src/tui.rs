@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 
@@ -21,8 +22,10 @@ use crate::runtime::{
     ClientSession, attach_session_events, enqueue_user_message, setup_default_session,
     wait_for_server,
 };
-use crate::tabs::{ConversationTab, FullEventsTab, Tab, TabKeyResult, TaskDetail, ToolsEventsTab};
-use crate::view::{EventRecord, session_event_to_record};
+use crate::tabs::{
+    ConversationTab, FullEventsTab, RunningTasksTab, Tab, TabKeyResult, TaskDetail, ToolsEventsTab,
+};
+use crate::view::{EventRecord, SessionEventRecordKind, session_event_to_record};
 
 const MAX_COMPLETION_ROWS: usize = 8;
 
@@ -104,6 +107,7 @@ struct App {
     session: ClientSession,
     input: String,
     status: String,
+    activity: ActivityState,
     completion: SlashCompletionState,
     task_detail: Option<TaskDetailModal>,
     tabs: Vec<Box<dyn Tab>>,
@@ -116,10 +120,12 @@ impl App {
             session,
             input: String::new(),
             status: "connected".to_string(),
+            activity: ActivityState::default(),
             completion: SlashCompletionState::default(),
             task_detail: None,
             tabs: vec![
                 Box::new(ConversationTab::new()),
+                Box::new(RunningTasksTab::new()),
                 Box::new(ToolsEventsTab::new()),
                 Box::new(FullEventsTab::new()),
             ],
@@ -128,6 +134,7 @@ impl App {
     }
 
     fn push_event(&mut self, event: EventRecord) {
+        self.activity.on_event(&event);
         for tab in &mut self.tabs {
             tab.on_event(&event);
         }
@@ -196,6 +203,89 @@ impl App {
         } else {
             "Keys: Shift+Tab switch | Enter send | Ctrl+Enter task detail (tools; Ctrl+J/M fallback) | / opens commands | ↑/↓ scroll/select | Esc clear input | Ctrl+C quit"
         }
+    }
+
+    fn activity_text(&self) -> String {
+        self.activity.render_line()
+    }
+}
+
+#[derive(Default)]
+struct ActivityState {
+    agent_invoking: bool,
+    active_tasks: BTreeMap<String, ActiveTask>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveTask {
+    action_id: String,
+    status: String,
+}
+
+impl ActivityState {
+    fn on_event(&mut self, event: &EventRecord) {
+        let EventRecord::Session { kind, .. } = event else {
+            return;
+        };
+
+        match kind {
+            SessionEventRecordKind::AgentStream { phase, .. } => {
+                if phase == "agent.turn.attempt" || phase == "openai.request.start" {
+                    self.agent_invoking = true;
+                }
+            }
+            SessionEventRecordKind::TurnEnded { .. }
+            | SessionEventRecordKind::TurnFailure { .. } => {
+                self.agent_invoking = false;
+            }
+            SessionEventRecordKind::TaskStateChanged {
+                task_id,
+                action_id,
+                status,
+                ..
+            } => {
+                if status == "pending" || status == "running" {
+                    self.active_tasks.insert(
+                        task_id.clone(),
+                        ActiveTask {
+                            action_id: action_id.clone(),
+                            status: status.clone(),
+                        },
+                    );
+                } else {
+                    self.active_tasks.remove(task_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn render_line(&self) -> String {
+        let agent = if self.agent_invoking {
+            "invoking"
+        } else {
+            "idle"
+        };
+        let active_count = self.active_tasks.len();
+
+        if active_count == 0 {
+            return format!("agent={agent} | active_tasks=0");
+        }
+
+        let mut tasks = self
+            .active_tasks
+            .iter()
+            .take(2)
+            .map(|(task_id, task)| format!("{task_id} {} ({})", task.action_id, task.status))
+            .collect::<Vec<_>>();
+        if active_count > 2 {
+            tasks.push(format!("+{} more", active_count - 2));
+        }
+
+        format!(
+            "agent={agent} | active_tasks={active_count} | {}",
+            tasks.join(" | ")
+        )
     }
 }
 
@@ -299,12 +389,17 @@ async fn run_loop(
             app.active_tab()
                 .render(frame, rows[0], &app.session.session_id);
 
+            let activity_panel = Paragraph::new(app.activity_text())
+                .wrap(Wrap { trim: false })
+                .block(Block::default().title("Activity").borders(Borders::ALL));
+            frame.render_widget(activity_panel, rows[1]);
+
             let input_panel = Paragraph::new(app.input.as_str()).block(
                 Block::default()
                     .title(format!("Input ({})", app.status))
                     .borders(Borders::ALL),
             );
-            frame.render_widget(input_panel, rows[1]);
+            frame.render_widget(input_panel, rows[2]);
 
             if app.completion_is_visible() {
                 render_completion_popup(frame, rows[0], &app.completion);
@@ -316,15 +411,15 @@ async fn run_loop(
 
             frame.render_widget(
                 Paragraph::new(app.footer_text()).wrap(Wrap { trim: false }),
-                rows[2],
+                rows[3],
             );
 
             if app.task_detail().is_none() {
-                let x = rows[1]
+                let x = rows[2]
                     .x
                     .saturating_add(1)
                     .saturating_add(app.input.chars().count() as u16);
-                let y = rows[1].y.saturating_add(1);
+                let y = rows[2].y.saturating_add(1);
                 frame.set_cursor_position((x, y));
             }
         })?;
@@ -645,16 +740,17 @@ fn pretty_json_or_raw(source: &str) -> String {
     }
 }
 
-fn main_layout(area: Rect, footer_height: u16) -> [Rect; 3] {
+fn main_layout(area: Rect, footer_height: u16) -> [Rect; 4] {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(5),
             Constraint::Length(3),
+            Constraint::Length(3),
             Constraint::Length(footer_height.max(1)),
         ])
         .split(area);
-    [rows[0], rows[1], rows[2]]
+    [rows[0], rows[1], rows[2], rows[3]]
 }
 
 fn wrapped_line_count(text: &str, width: u16) -> u16 {
@@ -682,8 +778,9 @@ fn normalized_submit_text(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, SlashCompletionState, normalized_submit_text};
+    use super::{ActivityState, App, SlashCompletionState, normalized_submit_text};
     use crate::runtime::ClientSession;
+    use crate::view::{EventRecord, SessionEventRecordKind};
 
     fn test_session() -> ClientSession {
         ClientSession {
@@ -728,5 +825,58 @@ mod tests {
             normalized_submit_text("  hello world  "),
             Some("hello world".to_string())
         );
+    }
+
+    #[test]
+    fn activity_line_updates_from_agent_and_task_events() {
+        let mut activity = ActivityState::default();
+        assert_eq!(activity.render_line(), "agent=idle | active_tasks=0");
+
+        activity.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::AgentStream {
+                phase: "agent.turn.attempt".to_string(),
+                detail: "semantic_attempt=1".to_string(),
+            },
+        });
+        assert!(activity.render_line().contains("agent=invoking"));
+
+        activity.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::TaskStateChanged {
+                task_id: "task-1".to_string(),
+                action_id: "filesystem__list".to_string(),
+                status: "running".to_string(),
+                args_json: "{}".to_string(),
+                args_preview: "{}".to_string(),
+                result_message: String::new(),
+                result_preview: String::new(),
+            },
+        });
+        assert!(activity.render_line().contains("active_tasks=1"));
+
+        activity.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::TaskStateChanged {
+                task_id: "task-1".to_string(),
+                action_id: "filesystem__list".to_string(),
+                status: "succeeded".to_string(),
+                args_json: "{}".to_string(),
+                args_preview: "{}".to_string(),
+                result_message: "{}".to_string(),
+                result_preview: "{}".to_string(),
+            },
+        });
+        assert!(activity.render_line().contains("active_tasks=0"));
+
+        activity.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::TurnEnded {
+                turn_id: 1,
+                reason: "done".to_string(),
+                history_size: 0,
+            },
+        });
+        assert_eq!(activity.render_line(), "agent=idle | active_tasks=0");
     }
 }
