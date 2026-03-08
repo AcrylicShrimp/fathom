@@ -2,8 +2,8 @@ use fathom_env::{Action, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::validate::{
-    args_object, optional_boolean, optional_non_empty_string, optional_u64,
-    require_non_empty_string, validate_http_url,
+    args_object, optional_non_empty_string, optional_u64, require_non_empty_string,
+    validate_http_url,
 };
 use crate::{
     JINA_ACTION_DESIRED_TIMEOUT_MS, JINA_ACTION_MAX_TIMEOUT_MS, JINA_ENVIRONMENT_ID,
@@ -12,7 +12,6 @@ use crate::{
 
 const MAX_URL_BYTES: usize = 8_192;
 const MAX_SELECTOR_BYTES: usize = 4_096;
-const MAX_COOKIE_BYTES: usize = 16_384;
 
 pub struct JinaReadUrlAction;
 
@@ -29,8 +28,6 @@ impl Action for JinaReadUrlAction {
                     "target_selector": { "type": "string", "minLength": 1 },
                     "remove_selector": { "type": "string", "minLength": 1 },
                     "wait_for_selector": { "type": "string", "minLength": 1 },
-                    "set_cookie": { "type": "string", "minLength": 1 },
-                    "no_cache": { "type": "boolean" },
                     "token_budget": { "type": "integer", "minimum": 1, "maximum": JINA_TOKEN_BUDGET_MAX },
                     "timeout_ms": { "type": "integer", "minimum": 1, "maximum": JINA_ACTION_MAX_TIMEOUT_MS }
                 },
@@ -74,14 +71,6 @@ impl Action for JinaReadUrlAction {
                 "jina__read_url.wait_for_selector must be <= {MAX_SELECTOR_BYTES} bytes"
             ));
         }
-        if let Some(cookie) = optional_non_empty_string(args, "set_cookie")?
-            && cookie.len() > MAX_COOKIE_BYTES
-        {
-            return Err(format!(
-                "jina__read_url.set_cookie must be <= {MAX_COOKIE_BYTES} bytes"
-            ));
-        }
-        let _ = optional_boolean(args, "no_cache")?;
         if let Some(token_budget) = optional_u64(args, "token_budget")?
             && !(1..=JINA_TOKEN_BUDGET_MAX).contains(&token_budget)
         {
@@ -155,8 +144,6 @@ mod tests {
                     "target_selector": "main, section, article",
                     "remove_selector": ".cookie, .banner",
                     "wait_for_selector": "main",
-                    "set_cookie": "foo=bar",
-                    "no_cache": true,
                     "token_budget": 200000,
                     "timeout_ms": 5000
                 }))
@@ -195,15 +182,18 @@ mod tests {
             .and_then(Value::as_object)
             .expect("schema properties");
 
-        for key in [
-            "target_selector",
-            "remove_selector",
-            "wait_for_selector",
-            "set_cookie",
-        ] {
+        for key in ["target_selector", "remove_selector", "wait_for_selector"] {
             assert_eq!(properties[key]["type"], json!("string"));
             assert_eq!(properties[key]["minLength"], json!(1));
         }
+        assert!(
+            properties.get("set_cookie").is_none(),
+            "set_cookie must not be exposed"
+        );
+        assert!(
+            properties.get("no_cache").is_none(),
+            "no_cache must not be exposed"
+        );
 
         let required = spec
             .input_schema
@@ -225,11 +215,6 @@ mod tests {
             !required
                 .iter()
                 .any(|value| value.as_str() == Some("wait_for_selector"))
-        );
-        assert!(
-            !required
-                .iter()
-                .any(|value| value.as_str() == Some("set_cookie"))
         );
     }
 }

@@ -50,8 +50,8 @@ impl Environment for JinaEnvironment {
                 title: "Handle noisy pages".to_string(),
                 steps: vec![
                     "Inspect advisory and attempts metadata in each result; content may still be low quality even when request succeeds.".to_string(),
-                    "Optional string fields must be omitted when unused; do not pass empty strings for selector/cookie fields.".to_string(),
-                    "When needed, provide advanced options (target_selector/remove_selector/wait_for_selector/set_cookie/no_cache/token_budget/timeout_ms).".to_string(),
+                    "Optional string fields must be omitted when unused; do not pass empty strings for selector fields.".to_string(),
+                    "When needed, provide advanced options (target_selector/remove_selector/wait_for_selector/token_budget/timeout_ms).".to_string(),
                     "Prefer custom targeted retry before chaining many payload lookups.".to_string(),
                 ],
             },

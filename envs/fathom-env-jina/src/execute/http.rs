@@ -23,8 +23,6 @@ pub(crate) struct ReadRequestOptions {
     pub(crate) target_selector: Option<String>,
     pub(crate) remove_selector: Option<String>,
     pub(crate) wait_for_selector: Option<String>,
-    pub(crate) set_cookie: Option<String>,
-    pub(crate) no_cache: bool,
     pub(crate) token_budget: u64,
     pub(crate) retain_images_none: bool,
     pub(crate) with_images_summary: bool,
@@ -37,8 +35,6 @@ impl Default for ReadRequestOptions {
             target_selector: None,
             remove_selector: None,
             wait_for_selector: None,
-            set_cookie: None,
-            no_cache: false,
             token_budget: JINA_TOKEN_BUDGET_DEFAULT,
             retain_images_none: true,
             with_images_summary: true,
@@ -69,12 +65,6 @@ impl ReadRequestOptions {
         }
         if let Some(value) = self.wait_for_selector.as_deref() {
             headers.push(("X-Wait-For-Selector", value.to_string()));
-        }
-        if let Some(value) = self.set_cookie.as_deref() {
-            headers.push(("X-Set-Cookie", value.to_string()));
-        }
-        if self.no_cache {
-            headers.push(("X-No-Cache", "true".to_string()));
         }
         headers
     }
@@ -383,8 +373,6 @@ mod tests {
             target_selector: Some(HARD_DEFAULT_TARGET_SELECTOR.to_string()),
             remove_selector: Some(".cookie".to_string()),
             wait_for_selector: Some("main".to_string()),
-            set_cookie: Some("foo=bar".to_string()),
-            no_cache: true,
             token_budget: 200_000,
             retain_images_none: true,
             with_images_summary: true,
@@ -398,8 +386,8 @@ mod tests {
         assert_eq!(headers["X-Target-Selector"], "main, section, article");
         assert_eq!(headers["X-Remove-Selector"], ".cookie");
         assert_eq!(headers["X-Wait-For-Selector"], "main");
-        assert_eq!(headers["X-Set-Cookie"], "foo=bar");
-        assert_eq!(headers["X-No-Cache"], "true");
+        assert!(headers.get("X-Set-Cookie").is_none());
+        assert!(headers.get("X-No-Cache").is_none());
     }
 
     #[test]

@@ -25,10 +25,6 @@ struct ReadUrlArgs {
     #[serde(default)]
     wait_for_selector: Option<String>,
     #[serde(default)]
-    set_cookie: Option<String>,
-    #[serde(default)]
-    no_cache: Option<bool>,
-    #[serde(default)]
     token_budget: Option<u64>,
     #[serde(default)]
     timeout_ms: Option<u64>,
@@ -93,8 +89,6 @@ async fn execute_read_url(args_json: &str, execution_timeout_ms: u64) -> ActionO
         target_selector: args.target_selector.clone(),
         remove_selector: args.remove_selector.clone(),
         wait_for_selector: args.wait_for_selector.clone(),
-        set_cookie: args.set_cookie.clone(),
-        no_cache: args.no_cache.unwrap_or(false),
         token_budget: args.token_budget.unwrap_or(JINA_TOKEN_BUDGET_DEFAULT),
         retain_images_none: true,
         with_images_summary: true,

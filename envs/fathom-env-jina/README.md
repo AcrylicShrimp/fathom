@@ -42,8 +42,6 @@ Input:
   "target_selector": "string (optional)",
   "remove_selector": "string (optional)",
   "wait_for_selector": "string (optional)",
-  "set_cookie": "string (optional)",
-  "no_cache": "boolean (optional)",
   "token_budget": "integer (optional, default 200000)",
   "timeout_ms": "integer (optional)"
 }

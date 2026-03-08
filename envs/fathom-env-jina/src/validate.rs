@@ -48,16 +48,6 @@ pub(crate) fn optional_non_empty_string<'a>(
     Ok(Some(value))
 }
 
-pub(crate) fn optional_boolean(args: &ArgsObject, key: &str) -> Result<Option<bool>, String> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let value = value
-        .as_bool()
-        .ok_or_else(|| format!("missing or invalid boolean field `{key}`"))?;
-    Ok(Some(value))
-}
-
 pub(crate) fn optional_u64(args: &ArgsObject, key: &str) -> Result<Option<u64>, String> {
     let Some(value) = args.get(key) else {
         return Ok(None);
