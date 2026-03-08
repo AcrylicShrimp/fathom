@@ -3,6 +3,7 @@ use crate::util::{refresh_scope_label, task_status_label};
 
 const TASK_ARGS_PREVIEW_MAX_CHARS: usize = 140;
 const TASK_RESULT_PREVIEW_MAX_CHARS: usize = 160;
+const TOOL_CALL_ARGS_PREVIEW_MAX_CHARS: usize = 120;
 
 #[derive(Debug, Clone)]
 pub(crate) enum EventRecord {
@@ -52,6 +53,20 @@ pub(crate) enum SessionEventRecordKind {
     ProfileRefreshed {
         scope: String,
         refreshed_user_ids: Vec<String>,
+    },
+    SystemNotice {
+        level: String,
+        code: String,
+        message: String,
+    },
+    ToolCall {
+        phase: String,
+        call_key: String,
+        call_id: String,
+        action_id: String,
+        task_id: String,
+        args_preview: String,
+        detail: String,
     },
     AgentStream {
         phase: String,
@@ -150,6 +165,39 @@ pub(crate) fn session_event_to_record(event: &pb::SessionEvent) -> EventRecord {
                 refreshed_user_ids: data.refreshed_user_ids.clone(),
             }
         }
+        pb::session_event::Kind::SystemNotice(data) => SessionEventRecordKind::SystemNotice {
+            level: system_notice_level_label(
+                pb::SystemNoticeLevel::try_from(data.level)
+                    .unwrap_or(pb::SystemNoticeLevel::Unspecified),
+            )
+            .to_string(),
+            code: data.code.clone(),
+            message: data.message.clone(),
+        },
+        pb::session_event::Kind::ToolCall(data) => {
+            let args_source = if data.args_json.trim().is_empty() {
+                data.args_delta.as_str()
+            } else {
+                data.args_json.as_str()
+            };
+            SessionEventRecordKind::ToolCall {
+                phase: tool_call_phase_label(
+                    pb::ToolCallPhase::try_from(data.phase)
+                        .unwrap_or(pb::ToolCallPhase::Unspecified),
+                )
+                .to_string(),
+                call_key: data.call_key.clone(),
+                call_id: data.call_id.clone(),
+                action_id: data.action_id.clone(),
+                task_id: data.task_id.clone(),
+                args_preview: if args_source.trim().is_empty() {
+                    String::new()
+                } else {
+                    summarize_for_preview(args_source, TOOL_CALL_ARGS_PREVIEW_MAX_CHARS)
+                },
+                detail: data.detail.clone(),
+            }
+        }
         pb::session_event::Kind::AgentStream(data) => SessionEventRecordKind::AgentStream {
             phase: data.phase.clone(),
             detail: data.detail.clone(),
@@ -244,6 +292,46 @@ pub(crate) fn render_event_record(record: &EventRecord) -> String {
                         refreshed_user_ids.join(",")
                     )
                 }
+                SessionEventRecordKind::SystemNotice {
+                    level,
+                    code,
+                    message,
+                } => {
+                    if code.is_empty() {
+                        format!("{prefix} system notice [{level}] {message}")
+                    } else {
+                        format!("{prefix} system notice [{level}] {code}: {message}")
+                    }
+                }
+                SessionEventRecordKind::ToolCall {
+                    phase,
+                    call_key,
+                    call_id,
+                    action_id,
+                    task_id,
+                    args_preview,
+                    detail,
+                } => {
+                    let mut line = format!("{prefix} tool {phase}");
+                    if !action_id.is_empty() {
+                        line.push_str(&format!(" action={action_id}"));
+                    }
+                    if !task_id.is_empty() {
+                        line.push_str(&format!(" task={task_id}"));
+                    }
+                    if !call_id.is_empty() {
+                        line.push_str(&format!(" call_id={call_id}"));
+                    } else if !call_key.is_empty() {
+                        line.push_str(&format!(" call={call_key}"));
+                    }
+                    if !args_preview.is_empty() && (phase != "queued" || detail.is_empty()) {
+                        line.push_str(&format!(" args={args_preview}"));
+                    }
+                    if !detail.is_empty() {
+                        line.push_str(&format!(" detail={detail}"));
+                    }
+                    line
+                }
                 SessionEventRecordKind::AgentStream { phase, detail } => {
                     format!("{prefix} agent stream [{phase}] {detail}")
                 }
@@ -293,6 +381,24 @@ fn normalize_json_if_possible(source: &str) -> String {
     {
         Some(normalized) => normalized,
         None => trimmed.to_string(),
+    }
+}
+
+fn system_notice_level_label(level: pb::SystemNoticeLevel) -> &'static str {
+    match level {
+        pb::SystemNoticeLevel::Unspecified => "unspecified",
+        pb::SystemNoticeLevel::Info => "info",
+        pb::SystemNoticeLevel::Warning => "warning",
+        pb::SystemNoticeLevel::Error => "error",
+    }
+}
+
+fn tool_call_phase_label(phase: pb::ToolCallPhase) -> &'static str {
+    match phase {
+        pb::ToolCallPhase::Unspecified => "unspecified",
+        pb::ToolCallPhase::ArgumentsDelta => "arguments.delta",
+        pb::ToolCallPhase::ArgumentsReady => "arguments.ready",
+        pb::ToolCallPhase::Queued => "queued",
     }
 }
 
@@ -355,5 +461,49 @@ mod tests {
 
         assert!(line.contains("-> failed"));
         assert!(line.contains("result=not found\\nthis file does not exist"));
+    }
+
+    #[test]
+    fn tool_call_event_render_includes_phase_and_task() {
+        let event = pb::SessionEvent {
+            session_id: "s1".to_string(),
+            created_at_unix_ms: 0,
+            kind: Some(pb::session_event::Kind::ToolCall(pb::ToolCallEvent {
+                phase: pb::ToolCallPhase::Queued as i32,
+                call_key: "call-1".to_string(),
+                call_id: "fc_1".to_string(),
+                action_id: "filesystem__list".to_string(),
+                task_id: "task-1".to_string(),
+                args_delta: String::new(),
+                args_json: r#"{"path":"."}"#.to_string(),
+                detail: "queued action `filesystem__list` as task-1 (running)".to_string(),
+            })),
+        };
+        let record = session_event_to_record(&event);
+        let line = render_event_record(&record);
+
+        assert!(line.contains("tool queued"));
+        assert!(line.contains("task=task-1"));
+        assert!(line.contains("call_id=fc_1"));
+    }
+
+    #[test]
+    fn system_notice_event_render_includes_level_and_code() {
+        let event = pb::SessionEvent {
+            session_id: "s1".to_string(),
+            created_at_unix_ms: 0,
+            kind: Some(pb::session_event::Kind::SystemNotice(
+                pb::SystemNoticeEvent {
+                    level: pb::SystemNoticeLevel::Info as i32,
+                    code: "profile_refresh".to_string(),
+                    message: "profile copies refreshed for this session".to_string(),
+                },
+            )),
+        };
+        let record = session_event_to_record(&event);
+        let line = render_event_record(&record);
+
+        assert!(line.contains("system notice [info]"));
+        assert!(line.contains("profile_refresh"));
     }
 }

@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 
 use serde::Serialize;
 
+use crate::history::HistoryEvent;
 use crate::pb;
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,7 +31,7 @@ pub(crate) struct TurnSnapshot {
     pub(crate) participant_profiles: Vec<pb::UserProfile>,
     pub(crate) resolved_payload_lookups: Vec<ResolvedPayloadLookupHint>,
     pub(crate) triggers: Vec<pb::Trigger>,
-    pub(crate) recent_history: Vec<String>,
+    pub(crate) recent_history: Vec<HistoryEvent>,
     pub(crate) compaction: SessionCompactionSnapshot,
 }
 
@@ -206,6 +207,23 @@ pub(crate) struct ActionArgDoneNote {
     pub(crate) call_id: Option<String>,
     pub(crate) action_id: Option<String>,
     pub(crate) args_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ModelDeltaEvent {
+    StreamNote(StreamNote),
+    ActionInvocation(ActionInvocation),
+    ActionArgsDelta(ActionArgDeltaNote),
+    ActionArgsDone(ActionArgDoneNote),
+    AssistantTextDelta(String),
+    AssistantTextDone(String),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModelInvocationOutcome {
+    pub(crate) action_call_count: usize,
+    pub(crate) assistant_outputs: Vec<String>,
+    pub(crate) diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

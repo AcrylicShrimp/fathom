@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
 
-use serde_json::Value;
-
 use crate::agent::types::{PromptMessage, PromptMessageBundle, PromptMessageStat, TurnSnapshot};
+use crate::history::{HistoryEvent, HistoryEventKind, PayloadPreview};
 use crate::history::{TASK_PAYLOAD_LOOKUP_ACTION, build_payload_preview};
 use crate::pb;
 use crate::util::task_status_label;
@@ -17,6 +16,7 @@ const LOOKUP_SECTION_MAX_TOKENS: usize = 2_000;
 const MIN_TIMELINE_EVENTS_AFTER_COMPACTION: usize = 18;
 const MIN_TIMELINE_EVENTS_AFTER_HARD_TRIM: usize = 8;
 const COMPACTION_BATCH_EVENTS: usize = 12;
+const MAX_SESSION_SUMMARY_BLOCKS_IN_PROMPT: usize = 8;
 const MAX_INLINE_TEXT_CHARS: usize = 320;
 const MAX_PREVIEW_HEAD_CHARS: usize = 180;
 const MAX_PREVIEW_TAIL_CHARS: usize = 120;
@@ -58,6 +58,8 @@ pub(crate) fn build_agent_prompt_bundle(
     let current_turn = build_current_turn_block(snapshot, retry_feedback);
 
     let timeline = build_canonical_timeline(snapshot);
+    let (session_summary_lines, session_summary_count) =
+        build_session_compaction_summaries(snapshot);
     let lookup_lines = build_resolved_lookup_lines(snapshot);
 
     let non_timeline_estimated = estimate_tokens(&core_policy)
@@ -65,10 +67,14 @@ pub(crate) fn build_agent_prompt_bundle(
         + estimate_tokens(&identity_context)
         + estimate_tokens(&current_turn)
         + estimate_tokens(&lookup_lines.join("\n"));
-    let (timeline_events, summary_blocks, compaction_reason, compacted_events) =
-        compact_timeline(&timeline.events, non_timeline_estimated);
+    let (timeline_events, summary_lines, compaction_reason, compacted_events) = compact_timeline(
+        &timeline.events,
+        &session_summary_lines,
+        session_summary_count,
+        non_timeline_estimated,
+    );
 
-    let timeline_lines = render_timeline_lines(&summary_blocks, &timeline_events);
+    let timeline_lines = render_timeline_lines(&summary_lines, &timeline_events);
     let timeline_messages = chunk_section_messages(
         "timeline_window",
         "## Conversation Timeline (canonical)",
@@ -121,7 +127,7 @@ pub(crate) fn build_agent_prompt_bundle(
     bundle.stats.timeline_raw_events = timeline.raw_events;
     bundle.stats.timeline_compacted_events = compacted_events;
     bundle.stats.dedup_dropped_events = timeline.dedup_dropped;
-    bundle.stats.compaction_applied = compacted_events > 0;
+    bundle.stats.compaction_applied = !summary_lines.is_empty() || compacted_events > 0;
     bundle.stats.compaction_reason = compaction_reason;
     bundle.stats.messages_count = bundle.messages.len();
     bundle.stats.estimated_prompt_tokens = bundle
@@ -426,51 +432,70 @@ fn build_resolved_lookup_lines(snapshot: &TurnSnapshot) -> Vec<String> {
     lines
 }
 
+fn build_session_compaction_summaries(snapshot: &TurnSnapshot) -> (Vec<String>, usize) {
+    if snapshot.compaction.summary_blocks.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    let mut summary_blocks = snapshot.compaction.summary_blocks.clone();
+    summary_blocks.sort_by(|a, b| {
+        a.source_range_start
+            .cmp(&b.source_range_start)
+            .then(a.source_range_end.cmp(&b.source_range_end))
+    });
+
+    let omitted = summary_blocks
+        .len()
+        .saturating_sub(MAX_SESSION_SUMMARY_BLOCKS_IN_PROMPT);
+    let total_blocks = summary_blocks.len();
+    let retained = summary_blocks
+        .into_iter()
+        .skip(omitted)
+        .map(|block| block.summary_text)
+        .collect::<Vec<_>>();
+
+    let mut lines = Vec::new();
+    if omitted > 0 {
+        lines.push(format!(
+            "... {} older session summary block(s) omitted ...",
+            omitted
+        ));
+    }
+    lines.extend(retained);
+    (lines, total_blocks)
+}
+
 fn build_canonical_timeline(snapshot: &TurnSnapshot) -> TimelineBuild {
     let mut raw = Vec::<TimelineEvent>::new();
     let mut dedup_dropped = 0usize;
     let mut raw_events = 0usize;
     let mut finished_task_ids = HashSet::<String>::new();
 
-    for line in &snapshot.recent_history {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if value.get("event").and_then(Value::as_str) != Some("task_finished") {
-            continue;
-        }
-        if let Some(task_id) = value.get("actor_id").and_then(Value::as_str) {
-            finished_task_ids.insert(task_id.to_string());
+    for event in &snapshot.recent_history {
+        if matches!(&event.kind, HistoryEventKind::TaskFinished(_)) {
+            finished_task_ids.insert(event.actor_id.clone());
         }
     }
 
-    for (seq, line) in snapshot.recent_history.iter().enumerate() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let Some(event_name) = value.get("event").and_then(Value::as_str) else {
-            continue;
-        };
-        if event_name == "trigger_task_done" {
-            let task_id = value
-                .get("actor_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if finished_task_ids.contains(&task_id) {
-                dedup_dropped += 1;
-                continue;
+    for (seq, event) in snapshot.recent_history.iter().enumerate() {
+        match &event.kind {
+            HistoryEventKind::TriggerTaskDone(_) => {
+                let task_id = event.actor_id.clone();
+                if finished_task_ids.contains(&task_id) {
+                    dedup_dropped += 1;
+                    continue;
+                }
+                if let Some(event) = timeline_event_from_task_done_event(event, seq) {
+                    raw_events += 1;
+                    raw.push(event);
+                }
             }
-            if let Some(event) = timeline_event_from_task_done_value(&value, seq) {
-                raw_events += 1;
-                raw.push(event);
-                continue;
+            _ => {
+                if let Some(event) = timeline_event_from_history_event(event, seq) {
+                    raw_events += 1;
+                    raw.push(event);
+                }
             }
-            continue;
-        }
-        if let Some(event) = timeline_event_from_history_value(&value, seq) {
-            raw_events += 1;
-            raw.push(event);
         }
     }
 
@@ -515,25 +540,15 @@ fn build_canonical_timeline(snapshot: &TurnSnapshot) -> TimelineBuild {
     }
 }
 
-fn timeline_event_from_task_done_value(value: &Value, seq: usize) -> Option<TimelineEvent> {
-    let ts_unix_ms = value
-        .get("ts_unix_ms")
-        .and_then(Value::as_i64)
-        .unwrap_or_default();
-    let task_id = value
-        .get("actor_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let payload = value.get("payload").cloned().unwrap_or(Value::Null);
-    let status = payload
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
-    let result_preview = preview_to_inline(payload.get("result_preview"));
+fn timeline_event_from_task_done_event(event: &HistoryEvent, seq: usize) -> Option<TimelineEvent> {
+    let HistoryEventKind::TriggerTaskDone(payload) = &event.kind else {
+        return None;
+    };
+    let task_id = event.actor_id.clone();
+    let status = payload.status.clone();
+    let result_preview = preview_to_inline(&payload.result_preview);
     Some(TimelineEvent {
-        ts_unix_ms,
+        ts_unix_ms: event.ts_unix_ms,
         seq,
         kind: TimelineKind::ActionFinished,
         task_id: Some(task_id.clone()),
@@ -546,42 +561,24 @@ fn timeline_event_from_task_done_value(value: &Value, seq: usize) -> Option<Time
     })
 }
 
-fn timeline_event_from_history_value(value: &Value, seq: usize) -> Option<TimelineEvent> {
-    let event_name = value.get("event")?.as_str()?;
-    let ts_unix_ms = value
-        .get("ts_unix_ms")
-        .and_then(Value::as_i64)
-        .unwrap_or_default();
-    let actor_id = value
-        .get("actor_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let payload = value.get("payload").cloned().unwrap_or(Value::Null);
-    match event_name {
-        "trigger_user_message" => {
-            let text = payload
-                .get("text")
-                .and_then(Value::as_str)
-                .map(|item| truncate_inline(item, MAX_INLINE_TEXT_CHARS))
-                .unwrap_or_default();
+fn timeline_event_from_history_event(event: &HistoryEvent, seq: usize) -> Option<TimelineEvent> {
+    match &event.kind {
+        HistoryEventKind::TriggerUserMessage(payload) => {
+            let text = truncate_inline(&payload.text, MAX_INLINE_TEXT_CHARS);
             Some(TimelineEvent {
-                ts_unix_ms,
+                ts_unix_ms: event.ts_unix_ms,
                 seq,
                 kind: TimelineKind::UserMessage,
                 task_id: None,
                 action_id: None,
                 status: None,
-                line: format!("user_message user={} text={}", actor_id, text),
+                line: format!("user_message user={} text={}", event.actor_id, text),
             })
         }
-        "assistant_output" => {
-            let content = payload
-                .get("content")
-                .and_then(Value::as_str)
-                .map(|item| truncate_inline(item, MAX_INLINE_TEXT_CHARS))
-                .unwrap_or_default();
+        HistoryEventKind::AssistantOutput(payload) => {
+            let content = truncate_inline(&payload.content, MAX_INLINE_TEXT_CHARS);
             Some(TimelineEvent {
-                ts_unix_ms,
+                ts_unix_ms: event.ts_unix_ms,
                 seq,
                 kind: TimelineKind::AssistantOutput,
                 task_id: None,
@@ -590,25 +587,14 @@ fn timeline_event_from_history_value(value: &Value, seq: usize) -> Option<Timeli
                 line: format!("assistant_output content={content}"),
             })
         }
-        "task_started" => {
-            let task_id = actor_id.to_string();
-            let action_id = payload
-                .get("canonical_action_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let env_id = payload
-                .get("environment_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let status = payload
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let args_preview = preview_to_inline(payload.get("args_preview"));
+        HistoryEventKind::TaskStarted(payload) => {
+            let task_id = event.actor_id.clone();
+            let action_id = payload.canonical_action_id.clone();
+            let env_id = payload.environment_id.as_str();
+            let status = payload.status.clone();
+            let args_preview = preview_to_inline(&payload.args_preview);
             Some(TimelineEvent {
-                ts_unix_ms,
+                ts_unix_ms: event.ts_unix_ms,
                 seq,
                 kind: TimelineKind::ActionStarted,
                 task_id: Some(task_id.clone()),
@@ -620,25 +606,14 @@ fn timeline_event_from_history_value(value: &Value, seq: usize) -> Option<Timeli
                 ),
             })
         }
-        "task_finished" => {
-            let task_id = actor_id.to_string();
-            let action_id = payload
-                .get("canonical_action_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let env_id = payload
-                .get("environment_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let status = payload
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let result_preview = preview_to_inline(payload.get("result_preview"));
+        HistoryEventKind::TaskFinished(payload) => {
+            let task_id = event.actor_id.clone();
+            let action_id = payload.canonical_action_id.clone();
+            let env_id = payload.environment_id.as_str();
+            let status = payload.status.clone();
+            let result_preview = preview_to_inline(&payload.result_preview);
             Some(TimelineEvent {
-                ts_unix_ms,
+                ts_unix_ms: event.ts_unix_ms,
                 seq,
                 kind: TimelineKind::ActionFinished,
                 task_id: Some(task_id.clone()),
@@ -650,16 +625,22 @@ fn timeline_event_from_history_value(value: &Value, seq: usize) -> Option<Timeli
                 ),
             })
         }
-        _ => None,
+        HistoryEventKind::TriggerTaskDone(_)
+        | HistoryEventKind::TriggerUnknown
+        | HistoryEventKind::TriggerHeartbeat
+        | HistoryEventKind::TriggerCron(_)
+        | HistoryEventKind::TriggerRefreshProfile(_) => None,
     }
 }
 
 fn compact_timeline(
     timeline: &[TimelineEvent],
+    initial_summaries: &[String],
+    session_summary_count: usize,
     non_timeline_tokens: usize,
 ) -> (Vec<TimelineEvent>, Vec<String>, String, usize) {
     let mut remaining = timeline.to_vec();
-    let mut summaries = Vec::<String>::new();
+    let mut summaries = initial_summaries.to_vec();
     let mut compacted_count = 0usize;
 
     let context_limit = read_usize_env(
@@ -689,7 +670,10 @@ fn compact_timeline(
         }
         let drained = remaining.drain(0..batch).collect::<Vec<_>>();
         compacted_count += drained.len();
-        summaries.push(summarize_timeline_batch(summaries.len() + 1, &drained));
+        summaries.push(summarize_timeline_batch(
+            summaries.len().saturating_add(1),
+            &drained,
+        ));
     }
 
     while non_timeline_tokens + estimate_timeline_tokens(&summaries, &remaining) > hard_limit
@@ -699,14 +683,25 @@ fn compact_timeline(
         compacted_count += 1;
     }
 
-    let reason = if compacted_count == 0 {
-        "none".to_string()
-    } else if !summaries.is_empty() {
-        format!("soft_compaction+hard_trim compacted_events={compacted_count}")
-    } else {
-        format!("hard_trim compacted_events={compacted_count}")
-    };
+    let reason = build_compaction_reason(session_summary_count, compacted_count);
     (remaining, summaries, reason, compacted_count)
+}
+
+fn build_compaction_reason(session_summary_count: usize, compacted_count: usize) -> String {
+    if session_summary_count == 0 && compacted_count == 0 {
+        return "none".to_string();
+    }
+
+    let mut parts = Vec::new();
+    if session_summary_count > 0 {
+        parts.push(format!("session_summary_blocks={session_summary_count}"));
+    }
+    if compacted_count > 0 {
+        parts.push(format!(
+            "prompt_soft_compaction compacted_events={compacted_count}"
+        ));
+    }
+    parts.join(" + ")
 }
 
 fn summarize_timeline_batch(index: usize, batch: &[TimelineEvent]) -> String {
@@ -873,43 +868,17 @@ fn trigger_text_compact(trigger: &pb::Trigger) -> String {
     }
 }
 
-fn preview_to_inline(preview: Option<&Value>) -> String {
-    let Some(preview) = preview else {
-        return "(none)".to_string();
-    };
-    if !preview.is_object() {
-        return truncate_inline(&preview.to_string(), MAX_INLINE_TEXT_CHARS);
-    }
-
-    let lookup_ref = preview
-        .get("lookup_ref")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let full_bytes = preview
-        .get("full_bytes")
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
-    let omitted_bytes = preview
-        .get("omitted_bytes")
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
-    let truncated = preview
-        .get("truncated")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let head = preview
-        .get("head")
-        .and_then(Value::as_str)
-        .map(|text| truncate_inline(text, MAX_PREVIEW_HEAD_CHARS))
-        .unwrap_or_default();
-    let tail = preview
-        .get("tail")
-        .and_then(Value::as_str)
-        .map(|text| truncate_inline(text, MAX_PREVIEW_TAIL_CHARS))
-        .unwrap_or_default();
+fn preview_to_inline(preview: &PayloadPreview) -> String {
+    let head = truncate_inline(&preview.head, MAX_PREVIEW_HEAD_CHARS);
+    let tail = truncate_inline(&preview.tail, MAX_PREVIEW_TAIL_CHARS);
     format!(
         "lookup_ref={} full_bytes={} omitted_bytes={} truncated={} head={} tail={}",
-        lookup_ref, full_bytes, omitted_bytes, truncated, head, tail
+        preview.lookup_ref,
+        preview.full_bytes,
+        preview.omitted_bytes,
+        preview.truncated,
+        head,
+        tail
     )
 }
 
@@ -967,16 +936,34 @@ mod tests {
 
     use crate::agent::{
         ActivatedEnvironmentActionHint, ActivatedEnvironmentHint, ActivatedEnvironmentRecipeHint,
-        SessionCompactionSnapshot, SessionIdentityMapSnapshot, SystemContextSnapshot,
-        SystemTimeContext, TurnSnapshot,
+        SessionCompactionSnapshot, SessionIdentityMapSnapshot, SummaryBlockRefSnapshot,
+        SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
+    };
+    use crate::history::HistoryEvent;
+    use crate::history::PayloadPreview;
+    use crate::history::schema::{
+        HistoryActorKind, HistoryEventKind, TaskDoneHistoryPayload, TaskFinishedHistoryPayload,
+        UserMessageHistoryPayload,
     };
     use crate::util::default_agent_profile;
 
     use super::build_agent_prompt_bundle;
 
-    #[test]
-    fn bundle_contains_layered_messages_and_stats() {
-        let snapshot = TurnSnapshot {
+    fn sample_preview(lookup_ref: &str) -> PayloadPreview {
+        PayloadPreview {
+            head: "[]".to_string(),
+            tail: String::new(),
+            full_bytes: 12,
+            head_bytes: 2,
+            tail_bytes: 0,
+            truncated: false,
+            omitted_bytes: 0,
+            lookup_ref: lookup_ref.to_string(),
+        }
+    }
+
+    fn base_snapshot(recent_history: Vec<HistoryEvent>) -> TurnSnapshot {
+        TurnSnapshot {
             session_id: "session-1".to_string(),
             turn_id: 1,
             system_context: SystemContextSnapshot {
@@ -1040,9 +1027,14 @@ mod tests {
             participant_profiles: vec![],
             resolved_payload_lookups: vec![],
             triggers: vec![],
-            recent_history: vec![],
+            recent_history,
             compaction: SessionCompactionSnapshot::default(),
-        };
+        }
+    }
+
+    #[test]
+    fn bundle_contains_layered_messages_and_stats() {
+        let snapshot = base_snapshot(vec![]);
 
         let bundle = build_agent_prompt_bundle(&snapshot, None);
         assert!(bundle.messages.len() >= 5);
@@ -1060,5 +1052,83 @@ mod tests {
             "For optional action arguments, omit fields you do not need; never send empty placeholder strings."
         ));
         assert!(debug_prompt.contains("## Conversation Timeline (canonical)"));
+    }
+
+    #[test]
+    fn typed_history_drives_timeline_without_trigger_task_done_duplicates() {
+        let snapshot = base_snapshot(vec![
+            HistoryEvent {
+                ts_unix_ms: 10,
+                actor_kind: HistoryActorKind::User,
+                actor_id: "user-default".to_string(),
+                profile_ref: "user:user-default@t0".to_string(),
+                kind: HistoryEventKind::TriggerUserMessage(UserMessageHistoryPayload {
+                    text: "show me the repo files".to_string(),
+                }),
+            },
+            HistoryEvent {
+                ts_unix_ms: 20,
+                actor_kind: HistoryActorKind::Task,
+                actor_id: "task-1".to_string(),
+                profile_ref: "agent:agent-default@v1".to_string(),
+                kind: HistoryEventKind::TriggerTaskDone(TaskDoneHistoryPayload {
+                    status: "succeeded".to_string(),
+                    result_preview: sample_preview("task://task-1/result"),
+                    lookup_action: "system__get_task_payload".to_string(),
+                }),
+            },
+            HistoryEvent {
+                ts_unix_ms: 21,
+                actor_kind: HistoryActorKind::Task,
+                actor_id: "task-1".to_string(),
+                profile_ref: "agent:agent-default@v1".to_string(),
+                kind: HistoryEventKind::TaskFinished(TaskFinishedHistoryPayload {
+                    canonical_action_id: "filesystem__list".to_string(),
+                    environment_id: "filesystem".to_string(),
+                    action_name: "list".to_string(),
+                    status: "succeeded".to_string(),
+                    result_preview: sample_preview("task://task-1/result"),
+                    lookup_action: "system__get_task_payload".to_string(),
+                }),
+            },
+        ]);
+
+        let bundle = build_agent_prompt_bundle(&snapshot, None);
+        let debug_prompt = bundle.as_debug_prompt();
+
+        assert!(
+            debug_prompt.contains("user_message user=user-default text=show me the repo files")
+        );
+        assert!(debug_prompt.contains(
+            "action_finished task_id=task-1 action=filesystem__list env=filesystem status=succeeded"
+        ));
+        assert!(!debug_prompt.contains("source=trigger_task_done"));
+    }
+
+    #[test]
+    fn bundle_includes_session_compaction_summaries() {
+        let mut snapshot = base_snapshot(vec![]);
+        snapshot.compaction = SessionCompactionSnapshot {
+            last_compacted_history_index: 24,
+            summary_blocks: vec![SummaryBlockRefSnapshot {
+                id: "history-summary-000024".to_string(),
+                source_range_start: 0,
+                source_range_end: 24,
+                summary_text: "history-summary-000024 source=[0,24) events=24 user_message=3 assistant_output=2 task_started=4 task_finished=4 task_done=4 refresh_profile=1 heartbeat=0 cron=0 statuses=[succeeded:4] actions=[filesystem__list] users=[user-default]".to_string(),
+                created_at_unix_ms: 1_765_000_000_000,
+            }],
+        };
+
+        let bundle = build_agent_prompt_bundle(&snapshot, None);
+        let debug_prompt = bundle.as_debug_prompt();
+
+        assert!(debug_prompt.contains("history-summary-000024 source=[0,24)"));
+        assert!(bundle.stats.compaction_applied);
+        assert!(
+            bundle
+                .stats
+                .compaction_reason
+                .contains("session_summary_blocks=1")
+        );
     }
 }

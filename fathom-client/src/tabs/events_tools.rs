@@ -33,9 +33,9 @@ impl ToolsEventsTab {
         matches!(
             event,
             EventRecord::Session {
-                kind: SessionEventRecordKind::AgentStream { phase, .. },
+                kind: SessionEventRecordKind::ToolCall { phase, .. },
                 ..
-            } if phase == "action.queued"
+            } if phase == "queued" || phase == "arguments.ready"
         ) || matches!(
             event,
             EventRecord::Session {
@@ -355,8 +355,13 @@ mod tests {
         let mut tab = ToolsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::AgentStream {
-                phase: "action.queued".to_string(),
+            kind: SessionEventRecordKind::ToolCall {
+                phase: "queued".to_string(),
+                call_key: "call-1".to_string(),
+                call_id: "fc_1".to_string(),
+                action_id: "filesystem__list".to_string(),
+                task_id: "task-1".to_string(),
+                args_preview: r#"{"path":"."}"#.to_string(),
                 detail: "queued action `filesystem__list` as task-1 (running)".to_string(),
             },
         });
@@ -384,6 +389,25 @@ mod tests {
             kind: SessionEventRecordKind::AgentStream {
                 phase: "openai.stream.event".to_string(),
                 detail: "response.completed".to_string(),
+            },
+        });
+
+        assert_eq!(tab.lines.line_count(), 0);
+    }
+
+    #[test]
+    fn filters_tool_argument_delta_events() {
+        let mut tab = ToolsEventsTab::new();
+        tab.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::ToolCall {
+                phase: "arguments.delta".to_string(),
+                call_key: "call-1".to_string(),
+                call_id: "fc_1".to_string(),
+                action_id: "filesystem__list".to_string(),
+                task_id: String::new(),
+                args_preview: r#"{"pat"#.to_string(),
+                detail: String::new(),
             },
         });
 

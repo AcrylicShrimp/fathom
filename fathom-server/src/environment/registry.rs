@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
 use serde::Serialize;
@@ -92,10 +92,25 @@ impl EnvironmentRegistry {
         default_registry().clone()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn openai_action_definitions(&self) -> Vec<Value> {
+        let environment_ids = self
+            .inner
+            .environments
+            .keys()
+            .map(|env_id| (*env_id).to_string())
+            .collect::<BTreeSet<_>>();
+        self.openai_action_definitions_for_environments(&environment_ids)
+    }
+
+    pub(crate) fn openai_action_definitions_for_environments(
+        &self,
+        environment_ids: &BTreeSet<String>,
+    ) -> Vec<Value> {
         self.inner
             .actions
             .values()
+            .filter(|entry| environment_ids.contains(entry.environment_id))
             .map(|entry| {
                 let spec = entry.action.spec();
                 json!({
@@ -188,12 +203,33 @@ impl EnvironmentRegistry {
         Some(canonical_action_id(&environment_id, &action_name))
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn validate(action_id: &str, args: &Value) -> Result<String, String> {
+        let environment_ids = default_registry()
+            .inner
+            .environments
+            .keys()
+            .map(|env_id| (*env_id).to_string())
+            .collect::<BTreeSet<_>>();
+        default_registry().validate_in_environments(action_id, args, &environment_ids)
+    }
+
+    pub(crate) fn validate_in_environments(
+        &self,
+        action_id: &str,
+        args: &Value,
+        environment_ids: &BTreeSet<String>,
+    ) -> Result<String, String> {
         let canonical_action_id = Self::canonicalize_action_id(action_id)
             .ok_or_else(|| format!("unknown action `{action_id}`"))?;
-        let Some(entry) = default_registry().inner.actions.get(&canonical_action_id) else {
+        let Some(entry) = self.inner.actions.get(&canonical_action_id) else {
             return Err(format!("unknown action `{action_id}`"));
         };
+        if !environment_ids.contains(entry.environment_id) {
+            return Err(format!(
+                "action `{canonical_action_id}` is not available in this session"
+            ));
+        }
         validate_reasoning_arg(&canonical_action_id, args)?;
         entry.action.validate(args)?;
         Ok(canonical_action_id)
@@ -477,6 +513,8 @@ fn register_environment(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::json;
 
     use super::{ActionTimeoutPolicy, EnvironmentRegistry};
@@ -604,6 +642,46 @@ mod tests {
                 .iter()
                 .any(|definition| definition["name"] == json!("jina__read_url"))
         );
+    }
+
+    #[test]
+    fn filtered_openai_definitions_only_include_allowed_environments() {
+        let registry = EnvironmentRegistry::new();
+        let definitions = registry.openai_action_definitions_for_environments(&BTreeSet::from([
+            "filesystem".to_string(),
+            "system".to_string(),
+        ]));
+
+        assert!(
+            definitions
+                .iter()
+                .any(|definition| definition["name"] == json!("filesystem__read"))
+        );
+        assert!(
+            definitions
+                .iter()
+                .any(|definition| definition["name"] == json!("system__get_context"))
+        );
+        assert!(
+            definitions
+                .iter()
+                .all(|definition| definition["name"] != json!("shell__run"))
+        );
+    }
+
+    #[test]
+    fn validate_in_environments_rejects_action_outside_allowed_session_set() {
+        let registry = EnvironmentRegistry::new();
+        let allowed = BTreeSet::from(["filesystem".to_string()]);
+
+        let error = registry
+            .validate_in_environments(
+                "shell__run",
+                &json!({"command":"pwd","reasoning":"inspect cwd"}),
+                &allowed,
+            )
+            .expect_err("shell action should be rejected when shell is not engaged");
+        assert!(error.contains("is not available in this session"));
     }
 
     #[test]

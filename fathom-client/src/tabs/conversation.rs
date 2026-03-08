@@ -10,15 +10,6 @@ use crate::view::{EventRecord, SessionEventRecordKind};
 const FINALIZED_STREAM_CACHE_SIZE: usize = 256;
 const LOCAL_USER_PREFIX: &str = "[local] -> ";
 const LOCAL_SEND_FAILED_PREFIX: &str = "[local] send failed: ";
-const INTERNAL_ASSISTANT_PREFIXES: [&str; 7] = [
-    "queued action `",
-    "dispatched action_call=",
-    "action_calls_dispatched=",
-    "no action call or assistant output generated on attempt ",
-    "openai request failed: ",
-    "turn failed [",
-    "agent produced no executable action call or assistant output",
-];
 
 pub(crate) struct ConversationTab {
     lines: LineBuffer,
@@ -122,9 +113,6 @@ impl ConversationTab {
     fn on_assistant_output(&mut self, content: &str, stream_id: &str) {
         let rendered = format!("assistant: {content}");
         if stream_id.is_empty() {
-            if self.is_internal_assistant_output(content) {
-                return;
-            }
             self.append_line(rendered);
             return;
         }
@@ -143,13 +131,6 @@ impl ConversationTab {
 
         self.active_streams.remove(stream_id);
         self.mark_finalized_stream(stream_id);
-    }
-
-    fn is_internal_assistant_output(&self, content: &str) -> bool {
-        INTERNAL_ASSISTANT_PREFIXES
-            .iter()
-            .any(|prefix| content.starts_with(prefix))
-            || content == "profile copies refreshed for this session"
     }
 }
 
@@ -300,22 +281,8 @@ mod tests {
     }
 
     #[test]
-    fn filters_internal_assistant_output_lines() {
+    fn keeps_plain_assistant_output_lines() {
         let mut tab = ConversationTab::new();
-        tab.on_event(&EventRecord::Session {
-            session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::AssistantOutput {
-                content: "queued action `filesystem__read` as task-1 (running)".to_string(),
-                stream_id: String::new(),
-            },
-        });
-        tab.on_event(&EventRecord::Session {
-            session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::AssistantOutput {
-                content: "action_calls_dispatched=1 assistant_outputs=0 on attempt 1".to_string(),
-                stream_id: String::new(),
-            },
-        });
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::AssistantOutput {
@@ -325,5 +292,20 @@ mod tests {
         });
 
         assert_eq!(tab.lines.text(), "assistant: hello human");
+    }
+
+    #[test]
+    fn ignores_system_notice_events() {
+        let mut tab = ConversationTab::new();
+        tab.on_event(&EventRecord::Session {
+            session_id: "s1".to_string(),
+            kind: SessionEventRecordKind::SystemNotice {
+                level: "info".to_string(),
+                code: "profile_refresh".to_string(),
+                message: "profile copies refreshed for this session".to_string(),
+            },
+        });
+
+        assert_eq!(tab.lines.line_count(), 0);
     }
 }

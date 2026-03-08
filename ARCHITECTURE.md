@@ -7,10 +7,10 @@ Fathom is a session-oriented agent runtime with a gRPC server and TUI client.
 - Each session is processed by a single actor task for deterministic ordering.
 - Clients can attach to one or more sessions and consume event streams.
 - Agent input is trigger-based, not direct message-based.
-- Agent intelligence is backed by OpenAI Responses API.
+- Agent intelligence flows through a provider-neutral model-adapter boundary; OpenAI Responses API is the current implementation.
 - Assistant user-facing output supports streaming from server to client.
 - Server synthesizes authoritative time context (UTC + server-local timezone) for agent turns.
-- Model-facing behavior is defined by context synthesis + history transformation.
+- Model-facing behavior is defined by turn snapshot synthesis + prompt assembly over typed history and compaction summaries.
 - Environment model currently includes `filesystem`, `brave_search`, `jina`, `shell`, and built-in `system`.
 - Server writes structured diagnostics JSON logs under `.fathom/diagnostics/` for turn/invocation/task tracing.
 
@@ -53,13 +53,27 @@ Turn cut behavior is snapshot-based:
 ### Agent Turn
 Per turn:
 
-1. Consume trigger snapshot.
-2. Build prompt context from profile copies + trigger snapshot + recent history.
-3. Invoke OpenAI Responses API in streaming mode with action calling (`env__action`) and native assistant output.
-4. Stream assistant text deltas into `AssistantStream` events.
-5. Dispatch action calls immediately as background tasks.
-6. Emit session events.
-7. Flush trigger snapshot and assistant outputs into history atomically.
+1. `TurnCoordinator` opens a turn only when the barrier condition is satisfied:
+   - trigger queue is non-empty
+   - no in-flight actions remain
+2. All queued triggers are drained into one turn snapshot.
+3. Trigger preprocessing runs first:
+   - `RefreshProfile` is handled on the session side
+   - profile refresh emits `ProfileRefreshed` plus `SystemNotice`
+   - remaining triggers become agent-facing triggers
+4. `run_agent_invocation` builds one `TurnSnapshot` and one prompt bundle for the attempt.
+5. `AgentOrchestrator` runs semantic attempts:
+   - the initial prompt bundle is reused for diagnostics
+   - one semantic retry is allowed for recoverable invalid tool-call errors
+6. `ModelAdapter` streams provider output as typed `ModelDeltaEvent` items.
+7. `TurnDeltaTransport` translates model deltas into `AgentStream`, `AssistantStream`, and tool-call argument lifecycle events.
+8. `TurnToolDispatcher` handles validated `ActionInvocation` events:
+   - queue background tasks
+   - emit queued `ToolCall`
+   - record dispatch diagnostics
+9. Final assistant outputs are emitted as canonical `AssistantOutput` events.
+10. Trigger snapshot and assistant outputs are flushed into typed history atomically.
+11. Invocation and turn diagnostics are written through the invocation journal.
 
 ### Task
 Tasks are background jobs created by agent actions.
@@ -98,11 +112,13 @@ Tasks are background jobs created by agent actions.
   - User-facing messages come from native assistant model output (not a special action).
   - Streaming uses `AssistantStream`; finalized content uses matching `AssistantOutput(stream_id=...)`.
 - History transformation contract:
+  - history uses typed event variants, not raw JSON lines or stringly payload parsing
   - `task_started` and `task_finished` are recorded as distinct history events.
   - each task history entry includes `canonical_action_id`, `environment_id`, and `action_name`.
   - Task args/results are stored in history as head/tail previews with truncation metadata and lookup references.
   - Agent can query payload chunks with `system__get_task_payload` and use offset paging (`offset`, `limit`, `next_offset`).
   - Resolved payload chunks are injected into prompt context through an ephemeral lookup buffer.
+  - older history can be compacted into deterministic session summary blocks that are injected ahead of the live history window during prompt assembly
   - Ephemeral lookup buffer is cleared only when the session reaches quiescence:
     - assistant output emitted
     - no new action calls dispatched
@@ -163,6 +179,8 @@ Each session publishes a stream of `SessionEvent`:
 - `AssistantStream`
 - `TaskStateChanged`
 - `ProfileRefreshed`
+- `SystemNotice`
+- `ToolCall`
 - `AgentStream`
 - `TurnFailure`
 
@@ -171,6 +189,13 @@ Each session publishes a stream of `SessionEvent`:
 - `stream_id` for correlation
 - `delta` text chunk
 - `done` lifecycle marker
+
+`SystemNotice` is used for internal session-side notices that should not appear as assistant chat content.
+
+`ToolCall` is the first-class tool lifecycle stream for model-originated tool execution and currently includes:
+- argument deltas
+- finalized argument payloads
+- queued task mapping
 
 Client-side dedup behavior:
 - streamed assistant text is rendered progressively
@@ -186,7 +211,11 @@ Client-side dedup behavior:
   - session registry
   - per-session actor loop
 - Layered internal modules:
-  - `agent/*`: model orchestration, prompt rendering
+  - `agent/*`: model orchestration, prompt rendering, provider adapters
+    - `agent/prompt_assembler.rs`: builds the canonical prompt bundle for one attempt
+    - `agent/model_adapter.rs`: provider-neutral streaming model interface
+    - `agent/openai.rs`: OpenAI Responses API adapter implementation
+    - `agent/tool_catalog.rs`: session-scoped provider-visible tool catalog derived from engaged environments
     - prompt/system context includes activated environment summaries (`id`, `name`, short description)
     - mutable environment snapshots are not injected directly
   - `runtime/context_snapshot.rs`: turn-time context synthesis (runtime/session/participants/engaged envs/in-flight actions)
@@ -194,21 +223,27 @@ Client-side dedup behavior:
     - `environment/registry.rs`: composes environments and canonical action registry
     - `environment/actor.rs`: per-environment child actor runtime with in-order commit
     - `environment/system/*`: built-in privileged system environment actions (`system__*`)
-- `session/*`: deterministic session actor + action-task orchestration
-    - barrier scheduling: triggers are drained only when no in-flight actions exist
+- `session/*`: deterministic session actor + turn orchestration
+  - barrier scheduling: triggers are drained only when no in-flight actions exist
+  - `session/engine/turn/coordinator.rs`: turn gating, trigger drain, preprocessing, and finalization
+  - `session/engine/turn/invocation.rs`: invocation execution and result finalization
+  - `session/engine/turn/journal.rs`: invocation and turn diagnostics records
+  - `session/engine/delta_transport.rs`: translates `ModelDeltaEvent` into session events and assistant streaming
+  - `session/engine/tool_dispatch.rs`: action-task queueing and queued tool-call emission
   - `session/engine/assistant_stream.rs`: native assistant text streaming and batching
   - `runtime/diagnostics.rs`: structured JSON diagnostic sink
     - `sessions/<session_id>/events.jsonl` for coarse execution timeline (turns/invocations/tasks)
     - `sessions/<session_id>/invocations/invocation-<n>.json` for full per-invocation synthesized context + prompt
-    - excludes high-frequency OpenAI stream delta events from diagnostic note capture
-  - `history/*`: structured history line transformation and head/tail preview synthesis
+    - excludes high-frequency provider stream delta events from diagnostic note capture
+  - `history/*`: typed history transformation, payload preview synthesis, and deterministic session compaction
   - `system_env/*`: runtime/profile/session/task discovery action execution
     - includes environment discovery (`system__describe_environment`) for deeper docs/capabilities/recipes
     - `system__get_context` returns authoritative runtime/session context snapshots
-- OpenAI-backed `AgentOrchestrator` with:
-  - server-defined action registry sourced from `Environment + Action` contracts
-  - streaming Responses API integration
-  - retry strategy with backoff/jitter and `Retry-After` support
+- `AgentOrchestrator` with:
+  - session-scoped tool visibility sourced from engaged environments only
+  - provider-neutral model adapter boundary
+  - semantic retry strategy for recoverable invalid tool calls
+  - compaction-aware prompt stats and invocation diagnostics
 
 ### Environment Contracts
 - `fathom-env`:

@@ -5,11 +5,13 @@ use futures_util::StreamExt;
 use reqwest::header::RETRY_AFTER;
 use serde_json::{Value, json};
 
+use crate::agent::SessionToolCatalog;
+use crate::agent::model_adapter::{ModelAdapter, ModelAdapterFuture, ModelEventSink};
 use crate::agent::retry::RetryPolicy;
 use crate::agent::types::{
-    ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, PromptMessage, StreamNote,
+    ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, ModelDeltaEvent,
+    ModelInvocationOutcome, PromptMessage, StreamNote,
 };
-use crate::environment::EnvironmentRegistry;
 
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-5.2-codex";
@@ -23,21 +25,14 @@ struct PartialActionCall {
     arguments: String,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct OpenAiStreamOutcome {
-    pub(crate) action_call_count: usize,
-    pub(crate) assistant_outputs: Vec<String>,
-    pub(crate) diagnostics: Vec<String>,
-}
-
 #[derive(Clone)]
-pub(crate) struct OpenAiClient {
+pub(crate) struct OpenAiModelAdapter {
     http: reqwest::Client,
     api_key: Option<String>,
     retry_policy: RetryPolicy,
 }
 
-impl OpenAiClient {
+impl OpenAiModelAdapter {
     pub(crate) fn new() -> Result<Self, String> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
@@ -55,25 +50,14 @@ impl OpenAiClient {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn stream_actions<FS, FA, FD, FN, FT, FC>(
+    async fn stream_actions<F>(
         &self,
         prompt_messages: &[PromptMessage],
-        environment_registry: &EnvironmentRegistry,
-        mut on_stream: FS,
-        mut on_action: FA,
-        mut on_action_args_delta: FD,
-        mut on_action_args_done: FN,
-        mut on_assistant_delta: FT,
-        mut on_assistant_done: FC,
-    ) -> Result<OpenAiStreamOutcome, String>
+        tool_catalog: &SessionToolCatalog,
+        mut on_event: F,
+    ) -> Result<ModelInvocationOutcome, String>
     where
-        FS: FnMut(StreamNote),
-        FA: FnMut(ActionInvocation),
-        FD: FnMut(ActionArgDeltaNote),
-        FN: FnMut(ActionArgDoneNote),
-        FT: FnMut(String),
-        FC: FnMut(String),
+        F: FnMut(ModelDeltaEvent) + Send,
     {
         let Some(api_key) = self.api_key.as_deref() else {
             return Err("OPENAI_API_KEY is required but not configured".to_string());
@@ -85,10 +69,10 @@ impl OpenAiClient {
         let mut last_error = String::new();
 
         while attempts <= max_retries {
-            on_stream(StreamNote {
+            on_event(ModelDeltaEvent::StreamNote(StreamNote {
                 phase: "openai.request.start".to_string(),
                 detail: format!("attempt={} effort={reasoning_effort}", attempts + 1),
-            });
+            }));
 
             let input_messages = prompt_messages
                 .iter()
@@ -109,7 +93,7 @@ impl OpenAiClient {
                 "stream": true,
                 "input": input_messages,
                 "reasoning": { "effort": reasoning_effort },
-                "tools": environment_registry.openai_action_definitions(),
+                "tools": tool_catalog.openai_action_definitions(),
                 "tool_choice": "auto"
             });
 
@@ -124,15 +108,7 @@ impl OpenAiClient {
             match response {
                 Ok(response) if response.status().is_success() => {
                     let result = self
-                        .parse_stream(
-                            response,
-                            &mut on_stream,
-                            &mut on_action,
-                            &mut on_action_args_delta,
-                            &mut on_action_args_done,
-                            &mut on_assistant_delta,
-                            &mut on_assistant_done,
-                        )
+                        .parse_stream(response, tool_catalog, &mut on_event)
                         .await;
                     match result {
                         Ok(outcome) => return Ok(outcome),
@@ -145,13 +121,13 @@ impl OpenAiClient {
                                 break;
                             }
                             let delay = self.retry_policy.compute_delay(attempts, None);
-                            on_stream(StreamNote {
+                            on_event(ModelDeltaEvent::StreamNote(StreamNote {
                                 phase: "openai.request.retry".to_string(),
                                 detail: format!(
                                     "stream_parse_error; waiting {}ms before retry",
                                     delay.as_millis()
                                 ),
-                            });
+                            }));
                             tokio::time::sleep(delay).await;
                             attempts += 1;
                         }
@@ -169,14 +145,14 @@ impl OpenAiClient {
 
                     if should_retry_status(status.as_u16()) && attempts < max_retries {
                         let delay = self.retry_policy.compute_delay(attempts, retry_after);
-                        on_stream(StreamNote {
+                        on_event(ModelDeltaEvent::StreamNote(StreamNote {
                             phase: "openai.request.retry".to_string(),
                             detail: format!(
                                 "status={} waiting {}ms before retry",
                                 status.as_u16(),
                                 delay.as_millis()
                             ),
-                        });
+                        }));
                         tokio::time::sleep(delay).await;
                         attempts += 1;
                         continue;
@@ -188,13 +164,13 @@ impl OpenAiClient {
                     last_error = format!("OpenAI transport error: {error}");
                     if should_retry_transport(&error) && attempts < max_retries {
                         let delay = self.retry_policy.compute_delay(attempts, None);
-                        on_stream(StreamNote {
+                        on_event(ModelDeltaEvent::StreamNote(StreamNote {
                             phase: "openai.request.retry".to_string(),
                             detail: format!(
                                 "transport_error waiting {}ms before retry",
                                 delay.as_millis()
                             ),
-                        });
+                        }));
                         tokio::time::sleep(delay).await;
                         attempts += 1;
                         continue;
@@ -208,29 +184,19 @@ impl OpenAiClient {
         Err(last_error)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn parse_stream<FS, FA, FD, FN, FT, FC>(
+    async fn parse_stream<F>(
         &self,
         response: reqwest::Response,
-        on_stream: &mut FS,
-        on_action: &mut FA,
-        on_action_args_delta: &mut FD,
-        on_action_args_done: &mut FN,
-        on_assistant_delta: &mut FT,
-        on_assistant_done: &mut FC,
-    ) -> Result<OpenAiStreamOutcome, String>
+        tool_catalog: &SessionToolCatalog,
+        on_event: &mut F,
+    ) -> Result<ModelInvocationOutcome, String>
     where
-        FS: FnMut(StreamNote),
-        FA: FnMut(ActionInvocation),
-        FD: FnMut(ActionArgDeltaNote),
-        FN: FnMut(ActionArgDoneNote),
-        FT: FnMut(String),
-        FC: FnMut(String),
+        F: FnMut(ModelDeltaEvent) + Send,
     {
         let mut stream = response.bytes_stream();
         let mut line_buffer = String::new();
         let mut partial_calls: HashMap<String, PartialActionCall> = HashMap::new();
-        let mut dispatched_keys: HashSet<String> = HashSet::new();
+        let mut dispatched_keys = HashSet::new();
         let mut action_call_count = 0usize;
         let mut diagnostics = Vec::new();
         let mut active_assistant_output = String::new();
@@ -254,9 +220,9 @@ impl OpenAiClient {
                     flush_assistant_output(
                         &mut active_assistant_output,
                         &mut assistant_outputs,
-                        on_assistant_done,
+                        on_event,
                     );
-                    return Ok(OpenAiStreamOutcome {
+                    return Ok(ModelInvocationOutcome {
                         action_call_count,
                         assistant_outputs,
                         diagnostics,
@@ -267,12 +233,8 @@ impl OpenAiClient {
                     .map_err(|error| format!("invalid stream json payload: {error}"))?;
                 handle_stream_event(
                     value,
-                    on_stream,
-                    on_action,
-                    on_action_args_delta,
-                    on_action_args_done,
-                    on_assistant_delta,
-                    on_assistant_done,
+                    tool_catalog,
+                    on_event,
                     &mut partial_calls,
                     &mut dispatched_keys,
                     &mut action_call_count,
@@ -286,10 +248,10 @@ impl OpenAiClient {
         flush_assistant_output(
             &mut active_assistant_output,
             &mut assistant_outputs,
-            on_assistant_done,
+            on_event,
         );
 
-        Ok(OpenAiStreamOutcome {
+        Ok(ModelInvocationOutcome {
             action_call_count,
             assistant_outputs,
             diagnostics,
@@ -297,15 +259,29 @@ impl OpenAiClient {
     }
 }
 
+impl ModelAdapter for OpenAiModelAdapter {
+    fn provider_name(&self) -> &'static str {
+        "openai"
+    }
+
+    fn stream_prompt<'a>(
+        &'a self,
+        prompt_messages: &'a [PromptMessage],
+        tool_catalog: &'a SessionToolCatalog,
+        on_event: &'a mut ModelEventSink<'a>,
+    ) -> ModelAdapterFuture<'a> {
+        Box::pin(async move {
+            self.stream_actions(prompt_messages, tool_catalog, on_event)
+                .await
+        })
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn handle_stream_event<FS, FA, FD, FN, FT, FC>(
+fn handle_stream_event<F>(
     value: Value,
-    on_stream: &mut FS,
-    on_action: &mut FA,
-    on_action_args_delta: &mut FD,
-    on_action_args_done: &mut FN,
-    on_assistant_delta: &mut FT,
-    on_assistant_done: &mut FC,
+    tool_catalog: &SessionToolCatalog,
+    on_event: &mut F,
     partial_calls: &mut HashMap<String, PartialActionCall>,
     dispatched_keys: &mut HashSet<String>,
     action_call_count: &mut usize,
@@ -314,29 +290,25 @@ fn handle_stream_event<FS, FA, FD, FN, FT, FC>(
     assistant_outputs: &mut Vec<String>,
 ) -> Result<(), String>
 where
-    FS: FnMut(StreamNote),
-    FA: FnMut(ActionInvocation),
-    FD: FnMut(ActionArgDeltaNote),
-    FN: FnMut(ActionArgDoneNote),
-    FT: FnMut(String),
-    FC: FnMut(String),
+    F: FnMut(ModelDeltaEvent) + Send,
 {
     let event_type = value
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
 
-    on_stream(StreamNote {
+    on_event(ModelDeltaEvent::StreamNote(StreamNote {
         phase: "openai.stream.event".to_string(),
         detail: event_type.to_string(),
-    });
+    }));
 
     match event_type {
         "response.output_item.added" | "response.output_item.done" => {
             if let Some(item) = value.get("item") {
                 maybe_finalize_item(
                     item,
-                    on_action,
+                    tool_catalog,
+                    on_event,
                     partial_calls,
                     dispatched_keys,
                     action_call_count,
@@ -344,8 +316,7 @@ where
                 )?;
                 maybe_capture_assistant_from_item(
                     item,
-                    on_assistant_delta,
-                    on_assistant_done,
+                    on_event,
                     active_assistant_output,
                     assistant_outputs,
                 );
@@ -358,7 +329,7 @@ where
                 .unwrap_or_default();
             if !delta.is_empty() {
                 active_assistant_output.push_str(delta);
-                on_assistant_delta(delta.to_string());
+                on_event(ModelDeltaEvent::AssistantTextDelta(delta.to_string()));
             }
         }
         "response.output_text.done" => {
@@ -368,16 +339,11 @@ where
                 .unwrap_or_default()
                 .to_string();
             if text.is_empty() {
-                flush_assistant_output(
-                    active_assistant_output,
-                    assistant_outputs,
-                    on_assistant_done,
-                );
+                flush_assistant_output(active_assistant_output, assistant_outputs, on_event);
             } else {
                 finalize_assistant_output(
                     text,
-                    on_assistant_delta,
-                    on_assistant_done,
+                    on_event,
                     active_assistant_output,
                     assistant_outputs,
                 );
@@ -408,12 +374,12 @@ where
             partial.arguments.push_str(delta);
 
             if !delta.is_empty() {
-                on_action_args_delta(ActionArgDeltaNote {
+                on_event(ModelDeltaEvent::ActionArgsDelta(ActionArgDeltaNote {
                     call_key: key,
                     call_id: partial.call_id.clone(),
                     action_id: partial.name.clone(),
                     args_delta: delta.to_string(),
-                });
+                }));
             }
         }
         "response.function_call_arguments.done" => {
@@ -441,20 +407,21 @@ where
             }
             partial.arguments = arguments.to_string();
 
-            on_action_args_done(ActionArgDoneNote {
+            on_event(ModelDeltaEvent::ActionArgsDone(ActionArgDoneNote {
                 call_key: key.clone(),
                 call_id: partial.call_id.clone(),
                 action_id: partial.name.clone(),
                 args_json: partial.arguments.clone(),
-            });
+            }));
 
             if let Some(name) = partial.name.clone() {
                 maybe_dispatch_partial(
+                    tool_catalog,
                     key,
                     name,
                     partial.arguments.clone(),
                     partial.call_id.clone(),
-                    on_action,
+                    on_event,
                     dispatched_keys,
                     action_call_count,
                     diagnostics,
@@ -470,17 +437,17 @@ where
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn maybe_finalize_item<FA>(
+fn maybe_finalize_item<F>(
     item: &Value,
-    on_action: &mut FA,
+    tool_catalog: &SessionToolCatalog,
+    on_event: &mut F,
     partial_calls: &mut HashMap<String, PartialActionCall>,
     dispatched_keys: &mut HashSet<String>,
     action_call_count: &mut usize,
     diagnostics: &mut Vec<String>,
 ) -> Result<(), String>
 where
-    FA: FnMut(ActionInvocation),
+    F: FnMut(ModelDeltaEvent) + Send,
 {
     if item.get("type").and_then(Value::as_str) != Some("function_call") {
         return Ok(());
@@ -515,11 +482,12 @@ where
 
     if let Some(name) = entry.name.clone() {
         maybe_dispatch_partial(
+            tool_catalog,
             key,
             name,
             entry.arguments.clone(),
             entry.call_id.clone(),
-            on_action,
+            on_event,
             dispatched_keys,
             action_call_count,
             diagnostics,
@@ -530,18 +498,19 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn maybe_dispatch_partial<FA>(
+fn maybe_dispatch_partial<F>(
+    tool_catalog: &SessionToolCatalog,
     key: String,
     raw_action_id: String,
     arguments_raw: String,
     call_id: Option<String>,
-    on_action: &mut FA,
+    on_event: &mut F,
     dispatched_keys: &mut HashSet<String>,
     action_call_count: &mut usize,
     diagnostics: &mut Vec<String>,
 ) -> Result<(), String>
 where
-    FA: FnMut(ActionInvocation),
+    F: FnMut(ModelDeltaEvent) + Send,
 {
     if arguments_raw.trim().is_empty() {
         return Ok(());
@@ -558,8 +527,9 @@ where
         )
     })?;
 
-    let canonical_action_id =
-        EnvironmentRegistry::validate(&raw_action_id, &args_value).map_err(|error| {
+    let canonical_action_id = tool_catalog
+        .validate_action(&raw_action_id, &args_value)
+        .map_err(|error| {
             format!(
                 "action `{raw_action_id}` validation failed: {error}; args={}",
                 truncate_for_log(&arguments_raw)
@@ -569,12 +539,12 @@ where
     let args_json = serde_json::to_string(&args_value)
         .map_err(|error| format!("failed to canonicalize action args: {error}"))?;
 
-    on_action(ActionInvocation {
+    on_event(ModelDeltaEvent::ActionInvocation(ActionInvocation {
         action_id: canonical_action_id.clone(),
         args_json,
         call_key: key.clone(),
         call_id: call_id.clone(),
-    });
+    }));
 
     diagnostics.push(format!(
         "dispatched action_call={} name={canonical_action_id}",
@@ -586,15 +556,13 @@ where
     Ok(())
 }
 
-fn maybe_capture_assistant_from_item<FT, FC>(
+fn maybe_capture_assistant_from_item<F>(
     item: &Value,
-    on_assistant_delta: &mut FT,
-    on_assistant_done: &mut FC,
+    on_event: &mut F,
     active_assistant_output: &mut String,
     assistant_outputs: &mut Vec<String>,
 ) where
-    FT: FnMut(String),
-    FC: FnMut(String),
+    F: FnMut(ModelDeltaEvent) + Send,
 {
     if item.get("type").and_then(Value::as_str) != Some("message") {
         return;
@@ -605,13 +573,7 @@ fn maybe_capture_assistant_from_item<FT, FC>(
         return;
     }
 
-    finalize_assistant_output(
-        text,
-        on_assistant_delta,
-        on_assistant_done,
-        active_assistant_output,
-        assistant_outputs,
-    );
+    finalize_assistant_output(text, on_event, active_assistant_output, assistant_outputs);
 }
 
 fn extract_message_text(item: &Value) -> String {
@@ -635,76 +597,59 @@ fn extract_message_text(item: &Value) -> String {
         .join("")
 }
 
-fn finalize_assistant_output<FT, FC>(
+fn finalize_assistant_output<F>(
     text: String,
-    on_assistant_delta: &mut FT,
-    on_assistant_done: &mut FC,
+    on_event: &mut F,
     active_assistant_output: &mut String,
     assistant_outputs: &mut Vec<String>,
 ) where
-    FT: FnMut(String),
-    FC: FnMut(String),
+    F: FnMut(ModelDeltaEvent) + Send,
 {
     if text.starts_with(active_assistant_output.as_str()) {
         let delta = text[active_assistant_output.len()..].to_string();
         if !delta.is_empty() {
-            on_assistant_delta(delta.clone());
+            on_event(ModelDeltaEvent::AssistantTextDelta(delta.clone()));
             active_assistant_output.push_str(&delta);
         }
     } else {
         if !active_assistant_output.is_empty() {
-            push_assistant_output(
-                assistant_outputs,
-                active_assistant_output,
-                on_assistant_done,
-            );
+            push_assistant_output(assistant_outputs, active_assistant_output, on_event);
             active_assistant_output.clear();
         }
         if !text.is_empty() {
-            on_assistant_delta(text.clone());
+            on_event(ModelDeltaEvent::AssistantTextDelta(text.clone()));
             active_assistant_output.push_str(&text);
         }
     }
 
-    flush_assistant_output(
-        active_assistant_output,
-        assistant_outputs,
-        on_assistant_done,
-    );
+    flush_assistant_output(active_assistant_output, assistant_outputs, on_event);
 }
 
-fn flush_assistant_output<FC>(
+fn flush_assistant_output<F>(
     active_assistant_output: &mut String,
     assistant_outputs: &mut Vec<String>,
-    on_assistant_done: &mut FC,
+    on_event: &mut F,
 ) where
-    FC: FnMut(String),
+    F: FnMut(ModelDeltaEvent) + Send,
 {
     if active_assistant_output.trim().is_empty() {
         active_assistant_output.clear();
         return;
     }
 
-    push_assistant_output(
-        assistant_outputs,
-        active_assistant_output,
-        on_assistant_done,
-    );
+    push_assistant_output(assistant_outputs, active_assistant_output, on_event);
     active_assistant_output.clear();
 }
 
-fn push_assistant_output<FC>(
-    assistant_outputs: &mut Vec<String>,
-    text: &str,
-    on_assistant_done: &mut FC,
-) where
-    FC: FnMut(String),
+fn push_assistant_output<F>(assistant_outputs: &mut Vec<String>, text: &str, on_event: &mut F)
+where
+    F: FnMut(ModelDeltaEvent) + Send,
 {
     let output = text.to_string();
     if assistant_outputs.last().is_some_and(|last| last == &output) {
         return;
     }
-    on_assistant_done(output.clone());
+    on_event(ModelDeltaEvent::AssistantTextDone(output.clone()));
     assistant_outputs.push(output);
 }
 
@@ -734,6 +679,7 @@ fn is_non_retryable_stream_error(error: &str) -> bool {
     error.contains("validation failed")
         || error.contains("invalid arguments JSON for action")
         || error.contains("unknown action `")
+        || error.contains("is not available in this session")
 }
 
 fn truncate_for_log(value: &str) -> String {

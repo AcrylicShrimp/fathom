@@ -130,6 +130,37 @@ message ProfileRefreshedEvent {
   uint64 agent_spec_version = 3;
 }
 
+enum SystemNoticeLevel {
+  SYSTEM_NOTICE_LEVEL_UNSPECIFIED = 0;
+  SYSTEM_NOTICE_LEVEL_INFO = 1;
+  SYSTEM_NOTICE_LEVEL_WARNING = 2;
+  SYSTEM_NOTICE_LEVEL_ERROR = 3;
+}
+
+message SystemNoticeEvent {
+  SystemNoticeLevel level = 1;
+  string code = 2;
+  string message = 3;
+}
+
+enum ToolCallPhase {
+  TOOL_CALL_PHASE_UNSPECIFIED = 0;
+  TOOL_CALL_PHASE_ARGUMENTS_DELTA = 1;
+  TOOL_CALL_PHASE_ARGUMENTS_READY = 2;
+  TOOL_CALL_PHASE_QUEUED = 3;
+}
+
+message ToolCallEvent {
+  ToolCallPhase phase = 1;
+  string call_key = 2;
+  string call_id = 3;
+  string action_id = 4;
+  string task_id = 5;
+  string args_delta = 6;
+  string args_json = 7;
+  string detail = 8;
+}
+
 message AgentStreamEvent {
   string phase = 1;
   string detail = 2;
@@ -163,6 +194,8 @@ message SessionEvent {
     AgentStreamEvent agent_stream = 16;
     TurnFailureEvent turn_failure = 17;
     AssistantStreamEvent assistant_stream = 18;
+    SystemNoticeEvent system_notice = 19;
+    ToolCallEvent tool_call = 20;
   }
 }
 

@@ -3,8 +3,9 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
-use crate::agent::{SessionCompactionSnapshot, SummaryBlockRefSnapshot};
+use crate::agent::SessionCompactionSnapshot;
 use crate::environment::EnvironmentCommittedAction;
+use crate::history::HistoryEvent;
 use crate::pb;
 use crate::session::payload_lookup::ResolvedPayloadLookup;
 use crate::util::now_unix_ms;
@@ -56,7 +57,7 @@ pub(crate) struct SessionState {
     pub(crate) agent_profile_copy: pb::AgentProfile,
     pub(crate) participant_user_profiles_copy: HashMap<String, pb::UserProfile>,
     pub(crate) trigger_queue: VecDeque<pb::Trigger>,
-    pub(crate) history: Vec<String>,
+    pub(crate) history: Vec<HistoryEvent>,
     pub(crate) tasks: HashMap<String, pb::Task>,
     pub(crate) engaged_environment_ids: BTreeSet<String>,
     pub(crate) environment_snapshots: HashMap<String, EnvironmentSnapshot>,
@@ -102,16 +103,7 @@ impl SessionState {
             next_agent_invocation_seq: 0,
             turn_seq: 0,
             turn_in_progress: false,
-            compaction: SessionCompactionSnapshot {
-                last_compacted_history_index: 0,
-                summary_blocks: vec![SummaryBlockRefSnapshot {
-                    id: "summary-bootstrap".to_string(),
-                    source_range_start: 0,
-                    source_range_end: 0,
-                    summary_text: "Compaction is modeled but not active yet.".to_string(),
-                    created_at_unix_ms: now_unix_ms(),
-                }],
-            },
+            compaction: SessionCompactionSnapshot::default(),
         }
     }
 
@@ -141,7 +133,8 @@ impl SessionState {
             agent_profile_copy: Some(self.agent_profile_copy.clone()),
             participant_user_profiles_copy,
             queued_trigger_count: self.trigger_queue.len() as u64,
-            history_entry_count: self.history.len() as u64,
+            history_entry_count: self.compaction.last_compacted_history_index
+                + self.history.len() as u64,
             pending_task_count,
             running_task_count,
         }

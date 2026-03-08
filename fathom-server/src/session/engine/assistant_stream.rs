@@ -1,4 +1,3 @@
-use crate::agent::{ActionArgDeltaNote, ActionArgDoneNote};
 use crate::pb;
 use crate::util::now_unix_ms;
 
@@ -19,20 +18,6 @@ impl TurnAssistantStreamEmitter {
             full_content: String::new(),
             last_flush_unix_ms: 0,
         }
-    }
-
-    pub(super) fn on_action_args_delta<F>(&mut self, _note: &ActionArgDeltaNote, _emit: F)
-    where
-        F: FnMut(pb::session_event::Kind),
-    {
-        // Action argument streaming is currently diagnostic-only.
-    }
-
-    pub(super) fn on_action_args_done<F>(&mut self, _note: &ActionArgDoneNote, _emit: F)
-    where
-        F: FnMut(pb::session_event::Kind),
-    {
-        // Action argument streaming is currently diagnostic-only.
     }
 
     pub(super) fn on_assistant_text_delta<F>(&mut self, delta: &str, mut emit: F)
