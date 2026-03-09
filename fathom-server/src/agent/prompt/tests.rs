@@ -126,18 +126,35 @@ fn bundle_contains_layered_messages_and_stats() {
     assert!(!bundle.diagnostics.stable_prefix_hash.is_empty());
 
     let debug_prompt = bundle.as_debug_prompt();
-    assert!(debug_prompt.contains("## Harness Contract"));
-    assert!(debug_prompt.contains("## Identity Envelope"));
-    assert!(debug_prompt.contains("## Session Baseline"));
-    assert!(debug_prompt.contains("filesystem__list [await_only]: List directory entries"));
-    assert!(
-        debug_prompt.contains(
-            "system__get_time [await_only] (discovery): Get current server time context."
-        )
-    );
+    assert!(debug_prompt.contains("# Harness Contract"));
+    assert!(debug_prompt.contains("# Identity Envelope"));
+    assert!(debug_prompt.contains("# Session Baseline"));
+    assert!(debug_prompt.contains("### Filesystem (`filesystem`)"));
+    assert!(debug_prompt.contains("- `filesystem__list` · `await_only`"));
+    assert!(debug_prompt.contains("- `system__get_time` · `await_only` · `discovery`"));
+    assert!(debug_prompt.contains("## Your Task"));
+    assert!(debug_prompt.contains("## Response vs Execution"));
+    assert!(debug_prompt.contains("## Execution Rules"));
+    assert!(debug_prompt.contains("## Evidence and Payloads"));
+    assert!(debug_prompt.contains("## Failure Handling"));
+    assert!(debug_prompt.contains("## Response Style"));
     assert!(debug_prompt.contains(
-        "For optional action arguments, omit fields you do not need; never send empty placeholder strings."
+        "- For optional arguments, omit fields you do not need and never send empty placeholder strings."
     ));
+    assert!(debug_prompt.contains(
+        "- `execution_rejected` means the runtime did not accept the requested execution; revise the request instead of assuming it ran."
+    ));
+    assert!(debug_prompt.contains(
+        "- Do not continue chaining actions for too long without responding to the user."
+    ));
+    assert!(debug_prompt.contains("## Identity Material"));
+    assert!(debug_prompt.contains("```md"));
+    assert!(debug_prompt.contains("## Identity"));
+    assert!(debug_prompt.contains("## Participant Envelope"));
+    assert!(debug_prompt.contains("### Participant Material"));
+    assert!(debug_prompt.contains("## user-default"));
+    assert!(debug_prompt.contains("#### Recipes"));
+    assert!(debug_prompt.contains("##### Find files"));
     assert!(!debug_prompt.contains("## Time Context"));
     assert!(debug_prompt.contains("## Event Transcript"));
     assert!(!debug_prompt.contains("## Turn Input"));

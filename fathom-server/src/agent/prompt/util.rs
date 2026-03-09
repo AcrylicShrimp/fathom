@@ -33,10 +33,6 @@ pub(super) fn truncate_inline(input: &str, max_chars: usize) -> String {
     format!("{prefix}...")
 }
 
-pub(super) fn serialize_pretty_json<T: serde::Serialize>(value: &T) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string())
-}
-
 pub(super) fn read_usize_env(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
