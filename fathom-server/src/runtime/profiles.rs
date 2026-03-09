@@ -1,6 +1,7 @@
 use tonic::Status;
 
 use super::Runtime;
+use crate::profile_material::validate_material_json_object;
 use crate::util::{default_agent_profile, default_user_profile, now_unix_ms};
 use fathom_protocol::pb;
 
@@ -54,6 +55,7 @@ impl Runtime {
         if profile.user_id.trim().is_empty() {
             return Err(Status::invalid_argument("profile.user_id is required"));
         }
+        validate_material_json_object(&profile.material_json).map_err(Status::invalid_argument)?;
         if profile.updated_at_unix_ms == 0 {
             profile.updated_at_unix_ms = now_unix_ms();
         }
@@ -73,6 +75,7 @@ impl Runtime {
         if profile.agent_id.trim().is_empty() {
             return Err(Status::invalid_argument("profile.agent_id is required"));
         }
+        validate_material_json_object(&profile.material_json).map_err(Status::invalid_argument)?;
 
         let mut profiles = self.inner.agent_profiles.write().await;
         let current_version = profiles

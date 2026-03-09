@@ -53,7 +53,7 @@ impl Environment for SystemEnvironment {
             EnvironmentRecipe {
                 title: "Refresh authoritative session context".to_string(),
                 steps: vec![
-                    "Call system__get_context to fetch runtime version, current time snapshot, activated environments, and session identity map.".to_string(),
+                    "Call system__get_context to fetch runtime version, current server time, activated environments, and session identity map.".to_string(),
                     "Use this before planning multi-step action sequences when context may have changed.".to_string(),
                     "Call system__get_time when you need fresher wall-clock data mid-turn.".to_string(),
                 ],

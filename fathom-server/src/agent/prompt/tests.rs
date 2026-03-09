@@ -44,13 +44,8 @@ fn base_input() -> PromptInput {
                     agent_profile.spec_version,
                     agent_profile.updated_at_unix_ms
                 ),
-                material: json!({
-                    "display_name": agent_profile.display_name.clone(),
-                    "soul_md": agent_profile.soul_md.clone(),
-                    "identity_md": agent_profile.identity_md.clone(),
-                    "agents_md": agent_profile.agents_md.clone(),
-                    "guidelines_md": agent_profile.guidelines_md.clone(),
-                }),
+                material: serde_json::from_str(&agent_profile.material_json)
+                    .expect("agent material json"),
             },
             session_baseline: SessionBaselineSnapshot {
                 session_anchor: SessionAnchorSnapshot {
@@ -102,9 +97,10 @@ fn base_input() -> PromptInput {
                             "user_id": "user-default",
                             "name": "User Default",
                             "nickname": "user-default",
-                            "preferences_json": "{}",
-                            "user_md": "USER.md",
-                            "long_term_memory_md": ""
+                            "preferences": {},
+                            "memory": {
+                                "long_term": ""
+                            }
                         }]
                     }),
                 },

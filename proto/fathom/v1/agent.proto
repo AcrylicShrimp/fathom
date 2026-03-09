@@ -34,24 +34,17 @@ enum RefreshScope {
 message AgentProfile {
   string agent_id = 1;
   string display_name = 2;
-  string agents_md = 3;
-  string soul_md = 4;
-  string identity_md = 5;
-  string guidelines_md = 6;
-  string code_of_conduct_md = 7;
-  string long_term_memory_md = 8;
-  uint64 spec_version = 9;
-  int64 updated_at_unix_ms = 10;
+  string material_json = 3;
+  uint64 spec_version = 4;
+  int64 updated_at_unix_ms = 5;
 }
 
 message UserProfile {
   string user_id = 1;
   string name = 2;
   string nickname = 3;
-  string preferences_json = 4;
-  string user_md = 5;
-  string long_term_memory_md = 6;
-  int64 updated_at_unix_ms = 7;
+  string material_json = 4;
+  int64 updated_at_unix_ms = 5;
 }
 
 message Execution {

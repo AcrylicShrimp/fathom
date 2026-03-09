@@ -55,12 +55,23 @@ pub async fn setup_default_session(server: &str) -> Result<ClientSession> {
             profile: Some(pb::AgentProfile {
                 agent_id: DEFAULT_AGENT_ID.to_string(),
                 display_name: "Fathom".to_string(),
-                agents_md: "# AGENTS.md\n".to_string(),
-                soul_md: "# SOUL.md\n".to_string(),
-                identity_md: "# IDENTITY.md\n".to_string(),
-                guidelines_md: "# Guidelines\n".to_string(),
-                code_of_conduct_md: "# Code Of Conduct\n".to_string(),
-                long_term_memory_md: "# Long-Term Agent Memory\n".to_string(),
+                material_json: serde_json::json!({
+                    "identity": {
+                        "agent_id": DEFAULT_AGENT_ID,
+                        "mission": "Help the user directly and choose the next useful action when needed."
+                    },
+                    "behavior": {
+                        "style": "pragmatic, clear, direct",
+                        "guidelines": [
+                            "Prefer deterministic behavior.",
+                            "Do not take harmful actions."
+                        ]
+                    },
+                    "memory": {
+                        "long_term": ""
+                    }
+                })
+                .to_string(),
                 spec_version: 1,
                 updated_at_unix_ms: now,
             }),
@@ -73,9 +84,16 @@ pub async fn setup_default_session(server: &str) -> Result<ClientSession> {
                 user_id: DEFAULT_USER_ID.to_string(),
                 name: "User".to_string(),
                 nickname: "user".to_string(),
-                preferences_json: "{}".to_string(),
-                user_md: "# USER.md\n".to_string(),
-                long_term_memory_md: "# Long-Term User Memory\n".to_string(),
+                material_json: serde_json::json!({
+                    "identity": {
+                        "user_id": DEFAULT_USER_ID
+                    },
+                    "preferences": {},
+                    "memory": {
+                        "long_term": ""
+                    }
+                })
+                .to_string(),
                 updated_at_unix_ms: now,
             }),
         })

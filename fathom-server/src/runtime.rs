@@ -1,6 +1,6 @@
-mod context_snapshot;
 mod diagnostics;
 mod ids;
+mod invocation_context;
 mod profiles;
 mod sessions;
 mod time_context;

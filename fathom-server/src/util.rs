@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::profile_material::{default_agent_material_json, default_user_material_json};
 use fathom_protocol::pb;
 
 pub(crate) fn now_unix_ms() -> i64 {
@@ -30,9 +31,7 @@ pub(crate) fn default_user_profile(user_id: &str) -> pb::UserProfile {
         user_id: user_id.to_string(),
         name: user_id.to_string(),
         nickname: user_id.to_string(),
-        preferences_json: "{}".to_string(),
-        user_md: format!("# USER.md\\n\\nid: {user_id}\\n"),
-        long_term_memory_md: "# Long-Term User Memory\\n".to_string(),
+        material_json: default_user_material_json(user_id),
         updated_at_unix_ms: now_unix_ms(),
     }
 }
@@ -41,12 +40,7 @@ pub(crate) fn default_agent_profile(agent_id: &str) -> pb::AgentProfile {
     pb::AgentProfile {
         agent_id: agent_id.to_string(),
         display_name: "Fathom".to_string(),
-        agents_md: "# AGENTS.md\\n\\nFollow repository and runtime rules.\\n".to_string(),
-        soul_md: "# SOUL.md\\n\\nPragmatic, clear, direct.\\n".to_string(),
-        identity_md: format!("# IDENTITY.md\\n\\nid: {agent_id}\\n"),
-        guidelines_md: "# Guidelines\\n\\nBe deterministic.\\n".to_string(),
-        code_of_conduct_md: "# Code Of Conduct\\n\\nNo harmful actions.\\n".to_string(),
-        long_term_memory_md: "# Long-Term Agent Memory\\n".to_string(),
+        material_json: default_agent_material_json(agent_id),
         spec_version: 1,
         updated_at_unix_ms: now_unix_ms(),
     }

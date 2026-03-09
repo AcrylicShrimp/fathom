@@ -1,17 +1,17 @@
 use chrono::{Local, SecondsFormat, Utc};
+use serde_json::{Value, json};
 
 use super::Runtime;
-use crate::agent::SystemTimeContext;
 
 const SERVER_CLOCK_SOURCE: &str = "server_clock";
 
 impl Runtime {
-    pub(crate) fn current_system_time_context(&self) -> SystemTimeContext {
+    pub(crate) fn current_system_time_context(&self) -> Value {
         build_current_system_time_context()
     }
 }
 
-fn build_current_system_time_context() -> SystemTimeContext {
+fn build_current_system_time_context() -> Value {
     let utc_now = Utc::now();
     let utc_rfc3339 = utc_now.to_rfc3339_opts(SecondsFormat::Millis, true);
 
@@ -35,26 +35,26 @@ fn build_system_time_context(
     local_rfc3339: String,
     local_utc_offset: String,
     local_timezone_name: Option<String>,
-) -> SystemTimeContext {
+) -> Value {
     if let Some(local_timezone_name) = normalize_timezone_name(local_timezone_name) {
-        return SystemTimeContext {
-            generated_at_unix_ms,
-            utc_rfc3339,
-            local_rfc3339,
-            local_timezone_name,
-            local_utc_offset: normalize_utc_offset(local_utc_offset),
-            time_source: SERVER_CLOCK_SOURCE.to_string(),
-        };
+        return json!({
+            "generated_at_unix_ms": generated_at_unix_ms,
+            "utc_rfc3339": utc_rfc3339,
+            "local_rfc3339": local_rfc3339,
+            "local_timezone_name": local_timezone_name,
+            "local_utc_offset": normalize_utc_offset(local_utc_offset),
+            "time_source": SERVER_CLOCK_SOURCE,
+        });
     }
 
-    SystemTimeContext {
-        generated_at_unix_ms,
-        utc_rfc3339: utc_rfc3339.clone(),
-        local_rfc3339: utc_rfc3339,
-        local_timezone_name: "UTC".to_string(),
-        local_utc_offset: "+00:00".to_string(),
-        time_source: SERVER_CLOCK_SOURCE.to_string(),
-    }
+    json!({
+        "generated_at_unix_ms": generated_at_unix_ms,
+        "utc_rfc3339": utc_rfc3339.clone(),
+        "local_rfc3339": utc_rfc3339,
+        "local_timezone_name": "UTC",
+        "local_utc_offset": "+00:00",
+        "time_source": SERVER_CLOCK_SOURCE,
+    })
 }
 
 fn normalize_timezone_name(value: Option<String>) -> Option<String> {
@@ -100,11 +100,27 @@ mod tests {
     fn current_time_context_uses_rfc3339_fields() {
         let context = build_current_system_time_context();
 
-        assert!(DateTime::parse_from_rfc3339(&context.utc_rfc3339).is_ok());
-        assert!(DateTime::parse_from_rfc3339(&context.local_rfc3339).is_ok());
-        assert!(!context.local_timezone_name.trim().is_empty());
-        assert!(!context.local_utc_offset.trim().is_empty());
-        assert_eq!(context.time_source, "server_clock");
+        assert!(
+            DateTime::parse_from_rfc3339(context["utc_rfc3339"].as_str().expect("utc")).is_ok()
+        );
+        assert!(
+            DateTime::parse_from_rfc3339(context["local_rfc3339"].as_str().expect("local")).is_ok()
+        );
+        assert!(
+            !context["local_timezone_name"]
+                .as_str()
+                .expect("tz")
+                .trim()
+                .is_empty()
+        );
+        assert!(
+            !context["local_utc_offset"]
+                .as_str()
+                .expect("offset")
+                .trim()
+                .is_empty()
+        );
+        assert_eq!(context["time_source"], "server_clock");
     }
 
     #[test]
@@ -118,9 +134,9 @@ mod tests {
             None,
         );
 
-        assert_eq!(context.utc_rfc3339, utc.clone());
-        assert_eq!(context.local_rfc3339, utc);
-        assert_eq!(context.local_timezone_name, "UTC");
-        assert_eq!(context.local_utc_offset, "+00:00");
+        assert_eq!(context["utc_rfc3339"], utc.clone());
+        assert_eq!(context["local_rfc3339"], utc);
+        assert_eq!(context["local_timezone_name"], "UTC");
+        assert_eq!(context["local_utc_offset"], "+00:00");
     }
 }

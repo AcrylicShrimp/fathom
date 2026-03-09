@@ -9,6 +9,7 @@ use tracing::info;
 mod agent;
 mod environment;
 mod history;
+mod profile_material;
 mod runtime;
 mod service;
 mod session;

@@ -9,12 +9,12 @@ mod types;
 #[cfg(test)]
 pub(crate) use types::{ActionArgDeltaNote, ActionArgDoneNote};
 pub(crate) use types::{
-    ActionInvocation, ActionModeSupportSnapshot, AgentTurnOutcome, CapabilityActionSnapshot,
-    CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
-    CompiledPrompt, HarnessContractSnapshot, IdentityEnvelopeSnapshot, ModelDeltaEvent,
-    ModelInvocationOutcome, ParticipantEnvelopeSnapshot, PromptMessage, ResolvedPayloadLookupHint,
-    SessionAnchorSnapshot, SessionBaselineSnapshot, SessionCompactionSnapshot, StreamNote,
-    SummaryBlockRefSnapshot, SystemTimeContext, TurnSnapshot,
+    ActionInvocation, ActionModeSupportSnapshot, AgentInvocationContext, AgentTurnOutcome,
+    CapabilityActionSnapshot, CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot,
+    CapabilitySurfaceSnapshot, CompiledPrompt, HarnessContractSnapshot, IdentityEnvelopeSnapshot,
+    ModelDeltaEvent, ModelInvocationOutcome, ParticipantEnvelopeSnapshot, PromptMessage,
+    ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot,
+    SessionCompactionSnapshot, StreamNote, SummaryBlockRefSnapshot,
 };
 
 use std::sync::Arc;
@@ -48,15 +48,15 @@ impl AgentOrchestrator {
 
     pub(crate) fn assemble_prompt_bundle(
         &self,
-        snapshot: &TurnSnapshot,
+        context: &AgentInvocationContext,
         retry_feedback: Option<&str>,
     ) -> CompiledPrompt {
-        let input = build_prompt_input(snapshot, retry_feedback);
+        let input = build_prompt_input(context, retry_feedback);
         self.prompt_compiler.compile(&input)
     }
 
-    fn session_action_catalog(&self, snapshot: &TurnSnapshot) -> SessionActionCatalog {
-        SessionActionCatalog::from_snapshot(self.environment_registry.clone(), snapshot)
+    fn session_action_catalog(&self, context: &AgentInvocationContext) -> SessionActionCatalog {
+        SessionActionCatalog::from_context(self.environment_registry.clone(), context)
     }
 
     fn from_parts(
@@ -82,7 +82,7 @@ impl AgentOrchestrator {
 
     pub(crate) async fn run_turn<F>(
         &self,
-        snapshot: &TurnSnapshot,
+        context: &AgentInvocationContext,
         initial_prompt_bundle: CompiledPrompt,
         mut on_event: F,
     ) -> AgentTurnOutcome
@@ -102,7 +102,7 @@ impl AgentOrchestrator {
 
         let mut diagnostics = Vec::new();
         let mut retry_feedback: Option<String> = None;
-        let action_catalog = self.session_action_catalog(snapshot);
+        let action_catalog = self.session_action_catalog(context);
 
         for semantic_attempt in 0..=1usize {
             on_event(ModelDeltaEvent::StreamNote(StreamNote {
@@ -113,7 +113,7 @@ impl AgentOrchestrator {
             let prompt_bundle = if semantic_attempt == 0 {
                 initial_prompt_bundle.clone()
             } else {
-                self.assemble_prompt_bundle(snapshot, retry_feedback.as_deref())
+                self.assemble_prompt_bundle(context, retry_feedback.as_deref())
             };
             on_event(ModelDeltaEvent::StreamNote(StreamNote {
                 phase: "agent.prompt.summary".to_string(),
@@ -248,10 +248,11 @@ mod tests {
     use super::model_adapter::{ModelAdapter, ModelAdapterFuture, ModelEventSink};
     use super::types::PromptDiagnostics;
     use super::{
-        AgentOrchestrator, CapabilityEnvironmentSnapshot, CapabilitySurfaceSnapshot,
-        CompiledPrompt, HarnessContractSnapshot, IdentityEnvelopeSnapshot, ModelDeltaEvent,
-        ModelInvocationOutcome, ParticipantEnvelopeSnapshot, PromptMessage, SessionAnchorSnapshot,
-        SessionBaselineSnapshot, SessionCompactionSnapshot, TurnSnapshot,
+        AgentInvocationContext, AgentOrchestrator, CapabilityEnvironmentSnapshot,
+        CapabilitySurfaceSnapshot, CompiledPrompt, HarnessContractSnapshot,
+        IdentityEnvelopeSnapshot, ModelDeltaEvent, ModelInvocationOutcome,
+        ParticipantEnvelopeSnapshot, PromptMessage, SessionAnchorSnapshot, SessionBaselineSnapshot,
+        SessionCompactionSnapshot,
     };
     use crate::util::default_agent_profile;
     use serde_json::json;
@@ -309,9 +310,9 @@ mod tests {
         }
     }
 
-    fn test_snapshot() -> TurnSnapshot {
+    fn test_context() -> AgentInvocationContext {
         let agent_profile = default_agent_profile("agent-default");
-        TurnSnapshot {
+        AgentInvocationContext {
             harness_contract: HarnessContractSnapshot {
                 runtime_version: "0.1.0".to_string(),
                 contract_schema_version: 1,
@@ -324,13 +325,8 @@ mod tests {
                     agent_profile.spec_version,
                     agent_profile.updated_at_unix_ms
                 ),
-                material: json!({
-                    "display_name": agent_profile.display_name.clone(),
-                    "soul_md": agent_profile.soul_md.clone(),
-                    "identity_md": agent_profile.identity_md.clone(),
-                    "agents_md": agent_profile.agents_md.clone(),
-                    "guidelines_md": agent_profile.guidelines_md.clone(),
-                }),
+                material: serde_json::from_str(&agent_profile.material_json)
+                    .expect("agent material json"),
             },
             session_baseline: SessionBaselineSnapshot {
                 session_anchor: SessionAnchorSnapshot {
@@ -391,7 +387,7 @@ mod tests {
             }),
         ]));
         let orchestrator = AgentOrchestrator::with_model_adapter(fake_adapter.clone());
-        let snapshot = test_snapshot();
+        let context = test_context();
         let initial_prompt_bundle = CompiledPrompt {
             messages: vec![PromptMessage::new(
                 "user",
@@ -407,7 +403,7 @@ mod tests {
         let mut events = Vec::<ModelDeltaEvent>::new();
 
         let outcome = orchestrator
-            .run_turn(&snapshot, initial_prompt_bundle, |event| events.push(event))
+            .run_turn(&context, initial_prompt_bundle, |event| events.push(event))
             .await;
 
         assert!(!outcome.failed);
@@ -437,10 +433,10 @@ mod tests {
         let orchestrator = AgentOrchestrator::with_model_adapter(Arc::new(
             FakeModelAdapter::unavailable("missing API key"),
         ));
-        let snapshot = test_snapshot();
+        let context = test_context();
 
         let outcome = orchestrator
-            .run_turn(&snapshot, CompiledPrompt::default(), |_| {})
+            .run_turn(&context, CompiledPrompt::default(), |_| {})
             .await;
 
         assert!(outcome.failed);

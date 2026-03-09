@@ -38,7 +38,7 @@ pub(crate) struct PromptInput {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TurnSnapshot {
+pub(crate) struct AgentInvocationContext {
     pub(crate) harness_contract: HarnessContractSnapshot,
     pub(crate) identity_envelope: IdentityEnvelopeSnapshot,
     pub(crate) session_baseline: SessionBaselineSnapshot,
@@ -215,16 +215,6 @@ pub(crate) enum PromptEvent {
     Heartbeat,
     Cron(PromptCron),
     RefreshProfile(PromptRefreshProfile),
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct SystemTimeContext {
-    pub(crate) generated_at_unix_ms: i64,
-    pub(crate) utc_rfc3339: String,
-    pub(crate) local_rfc3339: String,
-    pub(crate) local_timezone_name: String,
-    pub(crate) local_utc_offset: String,
-    pub(crate) time_source: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

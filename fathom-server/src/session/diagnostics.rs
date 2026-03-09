@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::agent::TurnSnapshot;
+use crate::agent::AgentInvocationContext;
 use fathom_protocol::execution_status_label;
 use fathom_protocol::pb;
 
@@ -59,24 +59,24 @@ pub(crate) fn trigger_to_json(trigger: &pb::Trigger) -> Value {
     })
 }
 
-pub(crate) fn turn_snapshot_to_json(snapshot: &TurnSnapshot) -> Value {
-    let triggers = snapshot
+pub(crate) fn agent_invocation_context_to_json(context: &AgentInvocationContext) -> Value {
+    let triggers = context
         .triggers
         .iter()
         .map(trigger_to_json)
         .collect::<Vec<_>>();
 
     json!({
-        "harness_contract": serde_json::to_value(&snapshot.harness_contract)
+        "harness_contract": serde_json::to_value(&context.harness_contract)
             .unwrap_or_else(|_| json!({"error": "failed_to_serialize_harness_contract"})),
-        "identity_envelope": serde_json::to_value(&snapshot.identity_envelope)
+        "identity_envelope": serde_json::to_value(&context.identity_envelope)
             .unwrap_or_else(|_| json!({"error": "failed_to_serialize_identity_envelope"})),
-        "session_baseline": serde_json::to_value(&snapshot.session_baseline)
+        "session_baseline": serde_json::to_value(&context.session_baseline)
             .unwrap_or_else(|_| json!({"error": "failed_to_serialize_session_baseline"})),
-        "resolved_payload_lookups": snapshot.resolved_payload_lookups,
+        "resolved_payload_lookups": context.resolved_payload_lookups,
         "triggers": triggers,
-        "recent_history": snapshot.recent_history,
-        "compaction": serde_json::to_value(&snapshot.compaction)
+        "recent_history": context.recent_history,
+        "compaction": serde_json::to_value(&context.compaction)
             .unwrap_or_else(|_| json!({"error": "failed_to_serialize_compaction"})),
     })
 }

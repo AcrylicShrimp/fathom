@@ -1,22 +1,23 @@
 use super::Runtime;
 use crate::agent::{
-    ActionModeSupportSnapshot, CapabilityActionSnapshot, CapabilityEnvironmentSnapshot,
-    CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot, HarnessContractSnapshot,
-    IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot, ResolvedPayloadLookupHint,
-    SessionAnchorSnapshot, SessionBaselineSnapshot, TurnSnapshot,
+    ActionModeSupportSnapshot, AgentInvocationContext, CapabilityActionSnapshot,
+    CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
+    HarnessContractSnapshot, IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot,
+    ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot,
 };
 use crate::environment::EnvironmentRegistry;
+use crate::profile_material::{agent_identity_material, participant_profile_material};
 use crate::session::SessionState;
 use fathom_env::ActionModeSupport;
 use fathom_protocol::pb;
 use serde_json::json;
 
 impl Runtime {
-    pub(crate) fn build_turn_snapshot(
+    pub(crate) fn build_agent_invocation_context(
         &self,
         state: &SessionState,
         triggers: &[pb::Trigger],
-    ) -> TurnSnapshot {
+    ) -> AgentInvocationContext {
         const HISTORY_WINDOW_SIZE: usize = 80;
         let recent_history = if state.history.len() > HISTORY_WINDOW_SIZE {
             state.history[state.history.len() - HISTORY_WINDOW_SIZE..].to_vec()
@@ -41,7 +42,7 @@ impl Runtime {
             })
             .collect::<Vec<_>>();
 
-        TurnSnapshot {
+        AgentInvocationContext {
             harness_contract: self.build_harness_contract_snapshot(),
             identity_envelope: self.build_identity_envelope_snapshot(state),
             session_baseline: self.build_session_baseline_snapshot(state),
@@ -68,15 +69,7 @@ impl Runtime {
                 state.agent_profile_copy.spec_version,
                 state.agent_profile_copy.updated_at_unix_ms
             ),
-            material: json!({
-                "display_name": state.agent_profile_copy.display_name.clone(),
-                "soul_md": state.agent_profile_copy.soul_md.clone(),
-                "identity_md": state.agent_profile_copy.identity_md.clone(),
-                "agents_md": state.agent_profile_copy.agents_md.clone(),
-                "guidelines_md": state.agent_profile_copy.guidelines_md.clone(),
-                "code_of_conduct_md": state.agent_profile_copy.code_of_conduct_md.clone(),
-                "long_term_memory_md": state.agent_profile_copy.long_term_memory_md.clone(),
-            }),
+            material: agent_identity_material(&state.agent_profile_copy),
         }
     }
 
@@ -138,16 +131,7 @@ impl Runtime {
             .participant_user_ids
             .iter()
             .filter_map(|user_id| state.participant_user_profiles_copy.get(user_id))
-            .map(|profile| {
-                json!({
-                    "user_id": profile.user_id.clone(),
-                    "name": profile.name.clone(),
-                    "nickname": profile.nickname.clone(),
-                    "preferences_json": profile.preferences_json.clone(),
-                    "user_md": profile.user_md.clone(),
-                    "long_term_memory_md": profile.long_term_memory_md.clone(),
-                })
-            })
+            .map(participant_profile_material)
             .collect::<Vec<_>>();
         ParticipantEnvelopeSnapshot {
             schema_version: 1,
@@ -196,7 +180,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn turn_snapshot_builds_stable_prefix_layers() {
+    fn agent_invocation_context_builds_stable_prefix_layers() {
         let runtime = Runtime::new(2, 10);
         let user_id = "user-a".to_string();
         let state = SessionState::new(
@@ -213,21 +197,21 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
         );
 
-        let snapshot = runtime.build_turn_snapshot(&state, &[]);
-        assert_eq!(snapshot.harness_contract.contract_schema_version, 1);
+        let context = runtime.build_agent_invocation_context(&state, &[]);
+        assert_eq!(context.harness_contract.contract_schema_version, 1);
         assert_eq!(
-            snapshot.identity_envelope.source_revision,
+            context.identity_envelope.source_revision,
             format!(
                 "agent-a@spec:{}@updated:{}",
                 state.agent_profile_copy.spec_version, state.agent_profile_copy.updated_at_unix_ms
             )
         );
         assert_eq!(
-            snapshot.session_baseline.session_anchor.started_at_unix_ms,
+            context.session_baseline.session_anchor.started_at_unix_ms,
             state.created_at_unix_ms
         );
         assert_eq!(
-            snapshot
+            context
                 .session_baseline
                 .participant_envelope
                 .source_revision,
@@ -243,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_snapshot_includes_capability_surface_with_mode_support() {
+    fn agent_invocation_context_includes_capability_surface_with_mode_support() {
         let runtime = Runtime::new(2, 10);
         let user_id = "user-a".to_string();
         let state = SessionState::new(
@@ -260,16 +244,16 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
         );
 
-        let snapshot = runtime.build_turn_snapshot(&state, &[]);
+        let context = runtime.build_agent_invocation_context(&state, &[]);
         assert!(
-            !snapshot
+            !context
                 .session_baseline
                 .capability_surface
                 .environments
                 .is_empty()
         );
         assert!(
-            snapshot
+            context
                 .session_baseline
                 .capability_surface
                 .environments
@@ -277,7 +261,7 @@ mod tests {
                 .all(|environment| !environment.actions.is_empty())
         );
         assert!(
-            snapshot
+            context
                 .session_baseline
                 .capability_surface
                 .environments
@@ -286,7 +270,7 @@ mod tests {
                 .any(|action| action.mode_support == ActionModeSupportSnapshot::AwaitOrDetach)
         );
         assert!(
-            snapshot
+            context
                 .session_baseline
                 .capability_surface
                 .environments
@@ -300,7 +284,8 @@ mod tests {
     }
 
     #[test]
-    fn turn_snapshot_rebuilds_stable_prefix_from_authoritative_state_even_with_compaction() {
+    fn agent_invocation_context_rebuilds_stable_prefix_from_authoritative_state_even_with_compaction()
+     {
         let runtime = Runtime::new(2, 10);
         let user_id = "user-a".to_string();
         let mut state = SessionState::new(
@@ -336,17 +321,17 @@ mod tests {
             }],
         };
 
-        let snapshot = runtime.build_turn_snapshot(&state, &[]);
+        let context = runtime.build_agent_invocation_context(&state, &[]);
 
         assert_eq!(
-            snapshot.identity_envelope.material["display_name"],
+            context.identity_envelope.material["display_name"],
             json!("Updated Agent")
         );
         assert_eq!(
-            snapshot.session_baseline.participant_envelope.material["participants"][0]["name"],
+            context.session_baseline.participant_envelope.material["participants"][0]["name"],
             json!("Updated User")
         );
-        let environment_ids = snapshot
+        let environment_ids = context
             .session_baseline
             .capability_surface
             .environments

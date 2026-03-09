@@ -26,16 +26,16 @@ pub(super) async fn run_agent_invocation(
     prepared: &mut PreparedTurn,
 ) -> AgentTurnSummary {
     let assistant_output_start_len = prepared.assistant_outputs.len();
-    let snapshot = runtime.build_turn_snapshot(state, &prepared.agent_triggers);
+    let context = runtime.build_agent_invocation_context(state, &prepared.agent_triggers);
     let orchestrator = runtime.agent_orchestrator();
-    let prompt_bundle = orchestrator.assemble_prompt_bundle(&snapshot, None);
+    let prompt_bundle = orchestrator.assemble_prompt_bundle(&context, None);
 
     write_invocation_context(
         runtime,
         state,
         turn_id,
         invocation_seq,
-        &snapshot,
+        &context,
         &prompt_bundle,
     );
     append_invocation_started_record(runtime, state, turn_id, invocation_seq);
@@ -44,13 +44,9 @@ pub(super) async fn run_agent_invocation(
         let mut delta_transport =
             TurnDeltaTransport::new(runtime, state, events_tx, environment_handles, turn_id);
         let outcome = orchestrator
-            .run_turn(
-                &snapshot,
-                prompt_bundle.clone(),
-                |event: ModelDeltaEvent| {
-                    delta_transport.handle_model_event(event);
-                },
-            )
+            .run_turn(&context, prompt_bundle.clone(), |event: ModelDeltaEvent| {
+                delta_transport.handle_model_event(event);
+            })
             .await;
         let stream_notes = delta_transport.invocation_stream_notes().to_vec();
         let action_dispatches = delta_transport.action_dispatches().to_vec();

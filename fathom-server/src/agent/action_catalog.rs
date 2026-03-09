@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::environment::EnvironmentRegistry;
 
-use super::types::TurnSnapshot;
+use super::types::AgentInvocationContext;
 
 #[derive(Clone)]
 pub(crate) struct SessionActionCatalog {
@@ -13,10 +13,13 @@ pub(crate) struct SessionActionCatalog {
 }
 
 impl SessionActionCatalog {
-    pub(crate) fn from_snapshot(registry: EnvironmentRegistry, snapshot: &TurnSnapshot) -> Self {
+    pub(crate) fn from_context(
+        registry: EnvironmentRegistry,
+        context: &AgentInvocationContext,
+    ) -> Self {
         Self {
             registry,
-            engaged_environment_ids: snapshot
+            engaged_environment_ids: context
                 .session_baseline
                 .capability_surface
                 .environments
@@ -41,17 +44,18 @@ impl SessionActionCatalog {
 mod tests {
     use crate::agent::SessionActionCatalog;
     use crate::agent::types::{
-        CapabilityActionSnapshot, CapabilityEnvironmentSnapshot, CapabilitySurfaceSnapshot,
-        HarnessContractSnapshot, IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot,
-        SessionAnchorSnapshot, SessionBaselineSnapshot, SessionCompactionSnapshot, TurnSnapshot,
+        AgentInvocationContext, CapabilityActionSnapshot, CapabilityEnvironmentSnapshot,
+        CapabilitySurfaceSnapshot, HarnessContractSnapshot, IdentityEnvelopeSnapshot,
+        ParticipantEnvelopeSnapshot, SessionAnchorSnapshot, SessionBaselineSnapshot,
+        SessionCompactionSnapshot,
     };
     use crate::environment::EnvironmentRegistry;
     use serde_json::json;
 
-    fn snapshot_with_environments(
+    fn context_with_environments(
         environments: Vec<CapabilityEnvironmentSnapshot>,
-    ) -> TurnSnapshot {
-        TurnSnapshot {
+    ) -> AgentInvocationContext {
+        AgentInvocationContext {
             harness_contract: HarnessContractSnapshot {
                 runtime_version: "0.1.0".to_string(),
                 contract_schema_version: 1,
@@ -81,8 +85,8 @@ mod tests {
     }
 
     #[test]
-    fn action_catalog_limits_openai_definitions_to_snapshot_environments() {
-        let snapshot = snapshot_with_environments(vec![CapabilityEnvironmentSnapshot {
+    fn action_catalog_limits_openai_definitions_to_context_environments() {
+        let context = context_with_environments(vec![CapabilityEnvironmentSnapshot {
             id: "filesystem".to_string(),
             name: "Filesystem".to_string(),
             description: "Filesystem".to_string(),
@@ -95,7 +99,7 @@ mod tests {
             recipes: vec![],
         }]);
 
-        let catalog = SessionActionCatalog::from_snapshot(EnvironmentRegistry::new(), &snapshot);
+        let catalog = SessionActionCatalog::from_context(EnvironmentRegistry::new(), &context);
         let definitions = catalog.openai_action_definitions();
         let names = definitions
             .iter()
@@ -108,8 +112,8 @@ mod tests {
     }
 
     #[test]
-    fn action_catalog_rejects_actions_outside_snapshot_environments() {
-        let snapshot = snapshot_with_environments(vec![CapabilityEnvironmentSnapshot {
+    fn action_catalog_rejects_actions_outside_context_environments() {
+        let context = context_with_environments(vec![CapabilityEnvironmentSnapshot {
             id: "filesystem".to_string(),
             name: "Filesystem".to_string(),
             description: "Filesystem".to_string(),
@@ -122,7 +126,7 @@ mod tests {
             recipes: vec![],
         }]);
 
-        let catalog = SessionActionCatalog::from_snapshot(EnvironmentRegistry::new(), &snapshot);
+        let catalog = SessionActionCatalog::from_context(EnvironmentRegistry::new(), &context);
         let error = catalog
             .validate_action(
                 "shell__run",

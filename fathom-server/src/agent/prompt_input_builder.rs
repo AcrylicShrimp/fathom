@@ -1,28 +1,28 @@
 use crate::agent::types::{
-    PromptAssistantOutput, PromptCron, PromptEvent, PromptExecutionDetached, PromptExecutionFailed,
-    PromptExecutionRejected, PromptExecutionRequested, PromptExecutionSucceeded, PromptInput,
-    PromptPayloadLookupAvailable, PromptRefreshProfile, PromptStablePrefix, PromptUserMessage,
-    TurnSnapshot,
+    AgentInvocationContext, PromptAssistantOutput, PromptCron, PromptEvent,
+    PromptExecutionDetached, PromptExecutionFailed, PromptExecutionRejected,
+    PromptExecutionRequested, PromptExecutionSucceeded, PromptInput, PromptPayloadLookupAvailable,
+    PromptRefreshProfile, PromptStablePrefix, PromptUserMessage,
 };
 use crate::history::build_payload_preview;
 use crate::history::{HistoryEvent, HistoryEventKind};
 use fathom_protocol::pb;
 
 pub(crate) fn build_prompt_input(
-    snapshot: &TurnSnapshot,
+    context: &AgentInvocationContext,
     retry_feedback: Option<&str>,
 ) -> PromptInput {
-    let transcript_events = snapshot
+    let transcript_events = context
         .recent_history
         .iter()
         .filter_map(prompt_event_from_history_event)
         .collect::<Vec<_>>();
-    let mut pending_events = snapshot
+    let mut pending_events = context
         .triggers
         .iter()
         .filter_map(prompt_event_from_trigger)
         .collect::<Vec<_>>();
-    pending_events.extend(snapshot.resolved_payload_lookups.iter().map(|lookup| {
+    pending_events.extend(context.resolved_payload_lookups.iter().map(|lookup| {
         PromptEvent::PayloadLookupAvailable(PromptPayloadLookupAvailable {
             lookup_execution_id: lookup.lookup_execution_id.clone(),
             execution_id: lookup.execution_id.clone(),
@@ -44,13 +44,13 @@ pub(crate) fn build_prompt_input(
 
     PromptInput {
         stable_prefix: PromptStablePrefix {
-            harness_contract: snapshot.harness_contract.clone(),
-            identity_envelope: snapshot.identity_envelope.clone(),
-            session_baseline: snapshot.session_baseline.clone(),
+            harness_contract: context.harness_contract.clone(),
+            identity_envelope: context.identity_envelope.clone(),
+            session_baseline: context.session_baseline.clone(),
         },
         transcript_events,
         pending_events,
-        compaction_blocks: snapshot.compaction.summary_blocks.clone(),
+        compaction_blocks: context.compaction.summary_blocks.clone(),
     }
 }
 
@@ -211,11 +211,11 @@ fn prompt_event_from_execution_update(update: &pb::ExecutionUpdateTrigger) -> Op
 mod tests {
     use crate::agent::prompt_input_builder::build_prompt_input;
     use crate::agent::types::{
-        ActionModeSupportSnapshot, CapabilityActionSnapshot, CapabilityEnvironmentSnapshot,
-        CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot, HarnessContractSnapshot,
-        IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot, PromptEvent,
-        ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot,
-        SessionCompactionSnapshot, TurnSnapshot,
+        ActionModeSupportSnapshot, AgentInvocationContext, CapabilityActionSnapshot,
+        CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
+        HarnessContractSnapshot, IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot,
+        PromptEvent, ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot,
+        SessionCompactionSnapshot,
     };
     use crate::history::HistoryEvent;
     use crate::history::schema::{HistoryActorKind, HistoryEventKind, UserMessageHistoryPayload};
@@ -223,9 +223,9 @@ mod tests {
     use fathom_protocol::pb;
     use serde_json::json;
 
-    fn base_snapshot(recent_history: Vec<HistoryEvent>) -> TurnSnapshot {
+    fn base_context(recent_history: Vec<HistoryEvent>) -> AgentInvocationContext {
         let agent_profile = default_agent_profile("agent-default");
-        TurnSnapshot {
+        AgentInvocationContext {
             harness_contract: HarnessContractSnapshot {
                 runtime_version: "0.1.0".to_string(),
                 contract_schema_version: 1,
@@ -238,13 +238,8 @@ mod tests {
                     agent_profile.spec_version,
                     agent_profile.updated_at_unix_ms
                 ),
-                material: json!({
-                    "display_name": agent_profile.display_name.clone(),
-                    "soul_md": agent_profile.soul_md.clone(),
-                    "identity_md": agent_profile.identity_md.clone(),
-                    "agents_md": agent_profile.agents_md.clone(),
-                    "guidelines_md": agent_profile.guidelines_md.clone(),
-                }),
+                material: serde_json::from_str(&agent_profile.material_json)
+                    .expect("agent material json"),
             },
             session_baseline: SessionBaselineSnapshot {
                 session_anchor: SessionAnchorSnapshot {
@@ -281,9 +276,10 @@ mod tests {
                             "user_id": "user-default",
                             "name": "User Default",
                             "nickname": "user-default",
-                            "preferences_json": "{}",
-                            "user_md": "USER.md",
-                            "long_term_memory_md": ""
+                            "preferences": {},
+                            "memory": {
+                                "long_term": ""
+                            }
                         }]
                     }),
                 },
@@ -297,7 +293,7 @@ mod tests {
 
     #[test]
     fn build_prompt_input_normalizes_transcript_and_pending_events() {
-        let mut snapshot = base_snapshot(vec![HistoryEvent {
+        let mut context = base_context(vec![HistoryEvent {
             ts_unix_ms: 10,
             actor_kind: HistoryActorKind::User,
             actor_id: "user-default".to_string(),
@@ -306,12 +302,12 @@ mod tests {
                 text: "hello".to_string(),
             }),
         }]);
-        snapshot.triggers = vec![pb::Trigger {
+        context.triggers = vec![pb::Trigger {
             trigger_id: "trigger-1".to_string(),
             created_at_unix_ms: 1_765_000_000_100,
             kind: Some(pb::trigger::Kind::Heartbeat(pb::HeartbeatTrigger {})),
         }];
-        snapshot.resolved_payload_lookups = vec![ResolvedPayloadLookupHint {
+        context.resolved_payload_lookups = vec![ResolvedPayloadLookupHint {
             lookup_execution_id: "lookup-1".to_string(),
             execution_id: "execution-1".to_string(),
             part: "result".to_string(),
@@ -324,7 +320,7 @@ mod tests {
             injected_omitted_bytes: 0,
         }];
 
-        let input = build_prompt_input(&snapshot, Some("retry now"));
+        let input = build_prompt_input(&context, Some("retry now"));
 
         assert_eq!(input.transcript_events.len(), 1);
         assert!(matches!(
@@ -354,8 +350,8 @@ mod tests {
 
     #[test]
     fn build_prompt_input_preserves_execution_update_trigger_order_and_normalizes_variants() {
-        let mut snapshot = base_snapshot(vec![]);
-        snapshot.triggers = vec![
+        let mut context = base_context(vec![]);
+        context.triggers = vec![
             pb::Trigger {
                 trigger_id: "trigger-1".to_string(),
                 created_at_unix_ms: 1_765_000_000_100,
@@ -397,7 +393,7 @@ mod tests {
             },
         ];
 
-        let input = build_prompt_input(&snapshot, None);
+        let input = build_prompt_input(&context, None);
 
         assert_eq!(input.pending_events.len(), 3);
         assert!(matches!(

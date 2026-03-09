@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 
+use crate::profile_material::{agent_identity_material, participant_profile_material};
 use crate::runtime::Runtime;
 use fathom_protocol::pb;
 
@@ -100,12 +101,7 @@ fn agent_full(profile: pb::AgentProfile) -> Value {
     json!({
         "agent_id": profile.agent_id,
         "display_name": profile.display_name,
-        "agents_md": profile.agents_md,
-        "soul_md": profile.soul_md,
-        "identity_md": profile.identity_md,
-        "guidelines_md": profile.guidelines_md,
-        "code_of_conduct_md": profile.code_of_conduct_md,
-        "long_term_memory_md": profile.long_term_memory_md,
+        "material": agent_identity_material(&profile),
         "spec_version": profile.spec_version,
         "updated_at_unix_ms": profile.updated_at_unix_ms,
     })
@@ -116,9 +112,7 @@ fn user_full(profile: pb::UserProfile) -> Value {
         "user_id": profile.user_id,
         "name": profile.name,
         "nickname": profile.nickname,
-        "preferences_json": profile.preferences_json,
-        "user_md": profile.user_md,
-        "long_term_memory_md": profile.long_term_memory_md,
+        "material": participant_profile_material(&profile),
         "updated_at_unix_ms": profile.updated_at_unix_ms,
     })
 }
