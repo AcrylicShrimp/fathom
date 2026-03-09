@@ -1,4 +1,4 @@
-use fathom_env::ActionSpec;
+use fathom_env::{ActionModeSupport, ActionSpec};
 use serde_json::Value;
 
 pub(super) const SYSTEM_ENVIRONMENT_ID: &str = "system";
@@ -18,6 +18,7 @@ pub(super) fn system_spec(
         description,
         input_schema,
         discovery: true,
+        mode_support: ActionModeSupport::AwaitOnly,
         max_timeout_ms: SYSTEM_ACTION_MAX_TIMEOUT_MS,
         desired_timeout_ms: Some(SYSTEM_ACTION_DESIRED_TIMEOUT_MS),
     }

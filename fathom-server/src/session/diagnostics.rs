@@ -61,11 +61,6 @@ pub(crate) fn trigger_to_json(trigger: &pb::Trigger) -> Value {
 }
 
 pub(crate) fn turn_snapshot_to_json(snapshot: &TurnSnapshot) -> Value {
-    let participant_profiles = snapshot
-        .participant_profiles
-        .iter()
-        .map(user_profile_to_json)
-        .collect::<Vec<_>>();
     let triggers = snapshot
         .triggers
         .iter()
@@ -75,41 +70,18 @@ pub(crate) fn turn_snapshot_to_json(snapshot: &TurnSnapshot) -> Value {
     json!({
         "session_id": snapshot.session_id,
         "turn_id": snapshot.turn_id,
-        "system_context": serde_json::to_value(&snapshot.system_context)
-            .unwrap_or_else(|_| json!({"error": "failed_to_serialize_system_context"})),
-        "agent_profile": agent_profile_to_json(&snapshot.agent_profile),
-        "participant_profiles": participant_profiles,
+        "harness_contract": serde_json::to_value(&snapshot.harness_contract)
+            .unwrap_or_else(|_| json!({"error": "failed_to_serialize_harness_contract"})),
+        "identity_envelope": serde_json::to_value(&snapshot.identity_envelope)
+            .unwrap_or_else(|_| json!({"error": "failed_to_serialize_identity_envelope"})),
+        "session_baseline": serde_json::to_value(&snapshot.session_baseline)
+            .unwrap_or_else(|_| json!({"error": "failed_to_serialize_session_baseline"})),
+        "in_flight_actions": serde_json::to_value(&snapshot.in_flight_actions)
+            .unwrap_or_else(|_| json!({"error": "failed_to_serialize_in_flight_actions"})),
         "resolved_payload_lookups": snapshot.resolved_payload_lookups,
         "triggers": triggers,
         "recent_history": snapshot.recent_history,
         "compaction": serde_json::to_value(&snapshot.compaction)
             .unwrap_or_else(|_| json!({"error": "failed_to_serialize_compaction"})),
-    })
-}
-
-pub(crate) fn user_profile_to_json(profile: &pb::UserProfile) -> Value {
-    json!({
-        "user_id": profile.user_id,
-        "name": profile.name,
-        "nickname": profile.nickname,
-        "preferences_json": profile.preferences_json,
-        "user_md": profile.user_md,
-        "long_term_memory_md": profile.long_term_memory_md,
-        "updated_at_unix_ms": profile.updated_at_unix_ms,
-    })
-}
-
-fn agent_profile_to_json(profile: &pb::AgentProfile) -> Value {
-    json!({
-        "agent_id": profile.agent_id,
-        "display_name": profile.display_name,
-        "soul_md": profile.soul_md,
-        "identity_md": profile.identity_md,
-        "agents_md": profile.agents_md,
-        "guidelines_md": profile.guidelines_md,
-        "code_of_conduct_md": profile.code_of_conduct_md,
-        "long_term_memory_md": profile.long_term_memory_md,
-        "spec_version": profile.spec_version,
-        "updated_at_unix_ms": profile.updated_at_unix_ms,
     })
 }

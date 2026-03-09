@@ -28,6 +28,7 @@ pub(crate) fn describe_environment(env_id: &str) -> Option<Value> {
                 "name": action.name,
                 "description": action.description,
                 "discovery": action.discovery,
+                "mode_support": action.mode_support.as_str(),
                 "input_schema": action.input_schema,
             })
         }).collect::<Vec<_>>(),

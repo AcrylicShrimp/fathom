@@ -1,4 +1,4 @@
-use fathom_env::{Action, ActionSpec};
+use fathom_env::{Action, ActionModeSupport, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::validate::{args_object, optional_boolean, optional_u64, require_relative_path};
@@ -29,6 +29,7 @@ impl Action for FsListAction {
                 "additionalProperties": false
             }),
             discovery: false,
+            mode_support: ActionModeSupport::AwaitOnly,
             max_timeout_ms: FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
             desired_timeout_ms: Some(FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS),
         }

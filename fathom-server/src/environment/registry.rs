@@ -9,8 +9,8 @@ use crate::session::task_context::TaskExecutionContext;
 use crate::util::now_unix_ms;
 
 use fathom_env::{
-    Action, ActionOutcome, Environment, EnvironmentSnapshot, FinalizedAction, TransitionResult,
-    canonical_action_id, parse_action_id,
+    Action, ActionModeSupport, ActionOutcome, Environment, EnvironmentSnapshot, FinalizedAction,
+    TransitionResult, canonical_action_id, parse_action_id,
 };
 
 use super::system::SystemEnvironment;
@@ -84,6 +84,7 @@ pub(crate) struct EnvironmentActionSummary {
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) discovery: bool,
+    pub(crate) mode_support: ActionModeSupport,
     pub(crate) input_schema: Value,
 }
 
@@ -405,6 +406,7 @@ impl EnvironmentRegistry {
                     name: spec.action_name.to_string(),
                     description: spec.description.to_string(),
                     discovery: spec.discovery,
+                    mode_support: spec.mode_support,
                     input_schema: spec.input_schema,
                 }
             })

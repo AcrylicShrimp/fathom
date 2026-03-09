@@ -1,4 +1,4 @@
-use fathom_env::{Action, ActionSpec};
+use fathom_env::{Action, ActionModeSupport, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::validate::{args_object, optional_u64, require_non_empty_string};
@@ -27,6 +27,7 @@ impl Action for BraveWebSearchAction {
                 "additionalProperties": false
             }),
             discovery: false,
+            mode_support: ActionModeSupport::AwaitOnly,
             max_timeout_ms: BRAVE_SEARCH_ACTION_MAX_TIMEOUT_MS,
             desired_timeout_ms: Some(BRAVE_SEARCH_ACTION_DESIRED_TIMEOUT_MS),
         }

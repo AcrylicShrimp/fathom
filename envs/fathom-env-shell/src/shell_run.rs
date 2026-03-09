@@ -1,4 +1,4 @@
-use fathom_env::{Action, ActionSpec};
+use fathom_env::{Action, ActionModeSupport, ActionSpec};
 use serde_json::{Value, json};
 
 use crate::SHELL_ENVIRONMENT_ID;
@@ -33,6 +33,7 @@ impl Action for ShellRunAction {
                 "additionalProperties": false
             }),
             discovery: false,
+            mode_support: ActionModeSupport::AwaitOnly,
             max_timeout_ms: ACTION_MAX_TIMEOUT_MS,
             desired_timeout_ms: Some(ACTION_DESIRED_TIMEOUT_MS),
         }

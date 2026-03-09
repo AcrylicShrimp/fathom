@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::history::HistoryEvent;
 use crate::pb;
@@ -26,9 +26,10 @@ pub(crate) struct SessionCompactionSnapshot {
 pub(crate) struct TurnSnapshot {
     pub(crate) session_id: String,
     pub(crate) turn_id: u64,
-    pub(crate) system_context: SystemContextSnapshot,
-    pub(crate) agent_profile: pb::AgentProfile,
-    pub(crate) participant_profiles: Vec<pb::UserProfile>,
+    pub(crate) harness_contract: HarnessContractSnapshot,
+    pub(crate) identity_envelope: IdentityEnvelopeSnapshot,
+    pub(crate) session_baseline: SessionBaselineSnapshot,
+    pub(crate) in_flight_actions: Vec<InFlightActionHint>,
     pub(crate) resolved_payload_lookups: Vec<ResolvedPayloadLookupHint>,
     pub(crate) triggers: Vec<pb::Trigger>,
     pub(crate) recent_history: Vec<HistoryEvent>,
@@ -36,34 +37,80 @@ pub(crate) struct TurnSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct SystemContextSnapshot {
+pub(crate) struct HarnessContractSnapshot {
     pub(crate) runtime_version: String,
-    pub(crate) time_context: SystemTimeContext,
-    pub(crate) activated_environments: Vec<ActivatedEnvironmentHint>,
-    pub(crate) session_identity: SessionIdentityMapSnapshot,
+    pub(crate) contract_schema_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ActivatedEnvironmentHint {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) actions: Vec<ActivatedEnvironmentActionHint>,
-    pub(crate) recipes: Vec<ActivatedEnvironmentRecipeHint>,
+pub(crate) struct IdentityEnvelopeSnapshot {
+    pub(crate) schema_version: u32,
+    pub(crate) source_revision: String,
+    pub(crate) material: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ActivatedEnvironmentActionHint {
+pub(crate) struct SessionBaselineSnapshot {
+    pub(crate) session_anchor: SessionAnchorSnapshot,
+    pub(crate) capability_surface: CapabilitySurfaceSnapshot,
+    pub(crate) participant_envelope: ParticipantEnvelopeSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SessionAnchorSnapshot {
+    pub(crate) session_id: String,
+    pub(crate) started_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CapabilitySurfaceSnapshot {
+    pub(crate) environments: Vec<CapabilityEnvironmentSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CapabilityEnvironmentSnapshot {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) description: String,
+    pub(crate) tools: Vec<CapabilityToolSnapshot>,
+    pub(crate) recipes: Vec<CapabilityRecipeSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ToolModeSupport {
+    AwaitOnly,
+    AwaitOrDetach,
+}
+
+impl ToolModeSupport {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitOnly => "await_only",
+            Self::AwaitOrDetach => "await_or_detach",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CapabilityToolSnapshot {
+    pub(crate) tool_name: String,
+    pub(crate) description: String,
+    pub(crate) mode_support: ToolModeSupport,
     pub(crate) discovery: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ActivatedEnvironmentRecipeHint {
+pub(crate) struct CapabilityRecipeSnapshot {
     pub(crate) title: String,
     pub(crate) steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ParticipantEnvelopeSnapshot {
+    pub(crate) schema_version: u32,
+    pub(crate) source_revision: String,
+    pub(crate) material: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,17 +121,6 @@ pub(crate) struct SystemTimeContext {
     pub(crate) local_timezone_name: String,
     pub(crate) local_utc_offset: String,
     pub(crate) time_source: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct SessionIdentityMapSnapshot {
-    pub(crate) session_id: String,
-    pub(crate) active_agent_id: String,
-    pub(crate) participant_user_ids: Vec<String>,
-    pub(crate) active_agent_spec_version: u64,
-    pub(crate) participant_user_updated_at: BTreeMap<String, i64>,
-    pub(crate) engaged_environment_ids: Vec<String>,
-    pub(crate) in_flight_actions: Vec<InFlightActionHint>,
 }
 
 #[derive(Debug, Clone, Serialize)]

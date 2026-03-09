@@ -7,11 +7,12 @@ mod tool_catalog;
 mod types;
 
 pub(crate) use types::{
-    ActionInvocation, ActivatedEnvironmentActionHint, ActivatedEnvironmentHint,
-    ActivatedEnvironmentRecipeHint, AgentTurnOutcome, InFlightActionHint, ModelDeltaEvent,
-    ModelInvocationOutcome, PromptMessage, PromptMessageBundle, ResolvedPayloadLookupHint,
-    SessionCompactionSnapshot, SessionIdentityMapSnapshot, StreamNote, SummaryBlockRefSnapshot,
-    SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
+    ActionInvocation, AgentTurnOutcome, CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot,
+    CapabilitySurfaceSnapshot, CapabilityToolSnapshot, HarnessContractSnapshot,
+    IdentityEnvelopeSnapshot, InFlightActionHint, ModelDeltaEvent, ModelInvocationOutcome,
+    ParticipantEnvelopeSnapshot, PromptMessage, PromptMessageBundle, ResolvedPayloadLookupHint,
+    SessionAnchorSnapshot, SessionBaselineSnapshot, SessionCompactionSnapshot, StreamNote,
+    SummaryBlockRefSnapshot, SystemTimeContext, ToolModeSupport, TurnSnapshot,
 };
 
 use std::sync::Arc;
@@ -236,18 +237,20 @@ fn is_optional_string_validation_error(error: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, VecDeque};
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
     use super::build_retry_feedback;
     use super::model_adapter::{ModelAdapter, ModelAdapterFuture, ModelEventSink};
     use super::types::PromptBuildStats;
     use super::{
-        ActivatedEnvironmentHint, AgentOrchestrator, ModelDeltaEvent, ModelInvocationOutcome,
-        PromptMessage, PromptMessageBundle, SessionCompactionSnapshot, SessionIdentityMapSnapshot,
-        SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
+        AgentOrchestrator, CapabilityEnvironmentSnapshot, CapabilitySurfaceSnapshot,
+        HarnessContractSnapshot, IdentityEnvelopeSnapshot, ModelDeltaEvent, ModelInvocationOutcome,
+        ParticipantEnvelopeSnapshot, PromptMessage, PromptMessageBundle, SessionAnchorSnapshot,
+        SessionBaselineSnapshot, SessionCompactionSnapshot, TurnSnapshot,
     };
     use crate::util::default_agent_profile;
+    use serde_json::json;
 
     struct FakeModelAdapter {
         availability_error: Option<String>,
@@ -303,42 +306,52 @@ mod tests {
     }
 
     fn test_snapshot() -> TurnSnapshot {
+        let agent_profile = default_agent_profile("agent-default");
         TurnSnapshot {
             session_id: "session-1".to_string(),
             turn_id: 1,
-            system_context: SystemContextSnapshot {
+            harness_contract: HarnessContractSnapshot {
                 runtime_version: "0.1.0".to_string(),
-                time_context: SystemTimeContext {
-                    generated_at_unix_ms: 1_765_000_000_000,
-                    utc_rfc3339: "2026-02-16T00:00:00.000Z".to_string(),
-                    local_rfc3339: "2026-02-16T09:00:00.000+09:00".to_string(),
-                    local_timezone_name: "Asia/Seoul".to_string(),
-                    local_utc_offset: "+09:00".to_string(),
-                    time_source: "server_clock".to_string(),
-                },
-                activated_environments: vec![ActivatedEnvironmentHint {
-                    id: "filesystem".to_string(),
-                    name: "Filesystem".to_string(),
-                    description: "Stateful filesystem environment rooted at a base path."
-                        .to_string(),
-                    actions: vec![],
-                    recipes: vec![],
-                }],
-                session_identity: SessionIdentityMapSnapshot {
+                contract_schema_version: 1,
+            },
+            identity_envelope: IdentityEnvelopeSnapshot {
+                schema_version: 1,
+                source_revision: format!(
+                    "{}@spec:{}@updated:{}",
+                    &agent_profile.agent_id,
+                    agent_profile.spec_version,
+                    agent_profile.updated_at_unix_ms
+                ),
+                material: json!({
+                    "display_name": agent_profile.display_name.clone(),
+                    "soul_md": agent_profile.soul_md.clone(),
+                    "identity_md": agent_profile.identity_md.clone(),
+                    "agents_md": agent_profile.agents_md.clone(),
+                    "guidelines_md": agent_profile.guidelines_md.clone(),
+                }),
+            },
+            session_baseline: SessionBaselineSnapshot {
+                session_anchor: SessionAnchorSnapshot {
                     session_id: "session-1".to_string(),
-                    active_agent_id: "agent-default".to_string(),
-                    participant_user_ids: vec!["user-default".to_string()],
-                    active_agent_spec_version: 1,
-                    participant_user_updated_at: BTreeMap::from([(
-                        "user-default".to_string(),
-                        1_765_000_000_000,
-                    )]),
-                    engaged_environment_ids: vec!["filesystem".to_string()],
-                    in_flight_actions: vec![],
+                    started_at_unix_ms: 1_765_000_000_000,
+                },
+                capability_surface: CapabilitySurfaceSnapshot {
+                    environments: vec![CapabilityEnvironmentSnapshot {
+                        id: "filesystem".to_string(),
+                        name: "Filesystem".to_string(),
+                        description: "Stateful filesystem environment rooted at a base path."
+                            .to_string(),
+                        tools: vec![],
+                        recipes: vec![],
+                    }],
+                },
+                participant_envelope: ParticipantEnvelopeSnapshot {
+                    schema_version: 1,
+                    source_revision: "user-default@1765000000000".to_string(),
+                    material: json!({"participants": []}),
                 },
             },
-            agent_profile: default_agent_profile("agent-default"),
-            participant_profiles: vec![],
+            in_flight_actions: vec![],
             resolved_payload_lookups: vec![],
             triggers: vec![],
             recent_history: vec![],

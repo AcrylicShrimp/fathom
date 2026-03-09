@@ -12,7 +12,6 @@ const DEFAULT_CONTEXT_LIMIT_TOKENS: usize = 128_000;
 const DEFAULT_SOFT_CONTEXT_RATIO: f64 = 0.70;
 const DEFAULT_HARD_CONTEXT_RATIO: f64 = 0.85;
 const TIMELINE_SECTION_MAX_TOKENS: usize = 2_500;
-const LOOKUP_SECTION_MAX_TOKENS: usize = 2_000;
 const MIN_TIMELINE_EVENTS_AFTER_COMPACTION: usize = 18;
 const MIN_TIMELINE_EVENTS_AFTER_HARD_TRIM: usize = 8;
 const COMPACTION_BATCH_EVENTS: usize = 12;
@@ -52,21 +51,19 @@ pub(crate) fn build_agent_prompt_bundle(
     snapshot: &TurnSnapshot,
     retry_feedback: Option<&str>,
 ) -> PromptMessageBundle {
-    let core_policy = build_core_policy_block();
-    let env_catalog = build_environment_catalog_block(snapshot);
-    let identity_context = build_identity_context_block(snapshot);
-    let current_turn = build_current_turn_block(snapshot, retry_feedback);
+    let harness_contract = build_harness_contract_block(snapshot);
+    let identity_envelope = build_identity_envelope_block(snapshot);
+    let session_baseline = build_session_baseline_block(snapshot);
+    let tail_event_lines = build_tail_event_lines(snapshot, retry_feedback);
 
     let timeline = build_canonical_timeline(snapshot);
     let (session_summary_lines, session_summary_count) =
         build_session_compaction_summaries(snapshot);
-    let lookup_lines = build_resolved_lookup_lines(snapshot);
 
-    let non_timeline_estimated = estimate_tokens(&core_policy)
-        + estimate_tokens(&env_catalog)
-        + estimate_tokens(&identity_context)
-        + estimate_tokens(&current_turn)
-        + estimate_tokens(&lookup_lines.join("\n"));
+    let non_timeline_estimated = estimate_tokens(&harness_contract)
+        + estimate_tokens(&identity_envelope)
+        + estimate_tokens(&session_baseline)
+        + estimate_tokens(&tail_event_lines.join("\n"));
     let (timeline_events, summary_lines, compaction_reason, compacted_events) = compact_timeline(
         &timeline.events,
         &session_summary_lines,
@@ -74,53 +71,38 @@ pub(crate) fn build_agent_prompt_bundle(
         non_timeline_estimated,
     );
 
-    let timeline_lines = render_timeline_lines(&summary_lines, &timeline_events);
-    let timeline_messages = chunk_section_messages(
-        "timeline_window",
-        "## Conversation Timeline (canonical)",
-        &timeline_lines,
+    let event_lines =
+        render_event_transcript_lines(&summary_lines, &timeline_events, &tail_event_lines);
+    let event_messages = chunk_section_messages(
+        "event_transcript",
+        "## Event Transcript",
+        &event_lines,
         TIMELINE_SECTION_MAX_TOKENS,
-    );
-    let lookup_messages = chunk_section_messages(
-        "resolved_payload_lookups",
-        "## Resolved Payload Lookups (ephemeral)",
-        &lookup_lines,
-        LOOKUP_SECTION_MAX_TOKENS,
     );
 
     let mut bundle = PromptMessageBundle::default();
     push_message(
         &mut bundle,
         "system",
-        "core_policy",
-        core_policy,
+        "harness_contract",
+        harness_contract,
         estimate_tokens,
     );
     push_message(
         &mut bundle,
         "system",
-        "env_catalog",
-        env_catalog,
+        "identity_envelope",
+        identity_envelope,
         estimate_tokens,
     );
     push_message(
         &mut bundle,
         "system",
-        "identity_context",
-        identity_context,
+        "session_baseline",
+        session_baseline,
         estimate_tokens,
     );
-    for (label, content) in timeline_messages {
-        push_message(&mut bundle, "user", &label, content, estimate_tokens);
-    }
-    push_message(
-        &mut bundle,
-        "user",
-        "current_turn_triggers",
-        current_turn,
-        estimate_tokens,
-    );
-    for (label, content) in lookup_messages {
+    for (label, content) in event_messages {
         push_message(&mut bundle, "user", &label, content, estimate_tokens);
     }
 
@@ -160,242 +142,171 @@ fn push_message<F>(
     bundle.stats.per_message.push(stat);
 }
 
-fn build_core_policy_block() -> String {
+fn build_harness_contract_block(snapshot: &TurnSnapshot) -> String {
     [
-        "You are Fathom's session agent.",
-        "You may emit assistant text and/or action calls.",
-        "When calling actions, use canonical action ids in the format env__action.",
-        "Every action call must include a concise `reasoning` field that explains why the call is necessary now.",
-        "Use only actions listed under Engaged Environments for this session.",
-        "If you need more context, prefer discovery actions listed below.",
-        "All actions are server-managed background jobs and emit task_done triggers after commit.",
-        "Task_done triggers are scheduler signals; rely on canonical action_started/action_finished timeline entries for history reasoning.",
-        "Use Resolved Payload Lookups when present before issuing additional payload fetches.",
-        "For optional action arguments, omit fields you do not need; never send empty placeholder strings.",
-        "Action input schemas are enforced by the runtime; provide exact argument shapes.",
-        "Avoid unbounded tool chaining. When evidence is sufficient, provide a direct assistant report to the user.",
+        "## Harness Contract".to_string(),
+        format!(
+            "runtime_version: {}",
+            snapshot.harness_contract.runtime_version
+        ),
+        format!(
+            "contract_schema_version: {}",
+            snapshot.harness_contract.contract_schema_version
+        ),
+        String::new(),
+        "You may emit assistant text and/or tool calls in the same turn.".to_string(),
+        "Use only tools listed in the Session Baseline capability surface.".to_string(),
+        "Use canonical tool names in the format env__action.".to_string(),
+        "Every tool call must include a concise `reasoning` field that explains why the call is necessary now.".to_string(),
+        "Tool calls default to `await` semantics.".to_string(),
+        "Request `detach` only when a tool's `mode_support` is `await_or_detach`.".to_string(),
+        "If a tool is `await_only`, requesting `detach` will be rejected.".to_string(),
+        "Use Resolved Payload Lookups when present before issuing additional payload fetches.".to_string(),
+        "Do not assume current time unless a tool result or event provides it explicitly.".to_string(),
+        "Do not assume live environment state unless a tool result or event provides it explicitly.".to_string(),
+        "Action input schemas are enforced by the runtime; provide exact argument shapes.".to_string(),
+        "For optional action arguments, omit fields you do not need; never send empty placeholder strings.".to_string(),
+        "Avoid unbounded tool chaining. When evidence is sufficient, provide a direct assistant report to the user.".to_string(),
     ]
     .join("\n")
 }
 
-fn build_environment_catalog_block(snapshot: &TurnSnapshot) -> String {
-    let mut lines = vec!["## Engaged Environments and Actions".to_string()];
-    let mut environments = snapshot.system_context.activated_environments.clone();
+fn build_identity_envelope_block(snapshot: &TurnSnapshot) -> String {
+    let lines = [
+        "## Identity Envelope".to_string(),
+        format!(
+            "schema_version: {}",
+            snapshot.identity_envelope.schema_version
+        ),
+        format!(
+            "source_revision: {}",
+            snapshot.identity_envelope.source_revision
+        ),
+        "material_json:".to_string(),
+        serialize_pretty_json(&snapshot.identity_envelope.material),
+    ];
+    lines.join("\n")
+}
+
+fn build_session_baseline_block(snapshot: &TurnSnapshot) -> String {
+    let mut lines = vec![
+        "## Session Baseline".to_string(),
+        "### Session Anchor".to_string(),
+        format!(
+            "session_id: {}",
+            snapshot.session_baseline.session_anchor.session_id
+        ),
+        format!(
+            "started_at_unix_ms: {}",
+            snapshot.session_baseline.session_anchor.started_at_unix_ms
+        ),
+        String::new(),
+        "### Capability Surface".to_string(),
+    ];
+    let mut environments = snapshot
+        .session_baseline
+        .capability_surface
+        .environments
+        .clone();
     environments.sort_by(|a, b| a.id.cmp(&b.id));
     if environments.is_empty() {
         lines.push("(none)".to_string());
-        return lines.join("\n");
-    }
-
-    for environment in environments {
-        lines.push(format!(
-            "- id={} name={} description={}",
-            environment.id, environment.name, environment.description
-        ));
-        let mut actions = environment.actions;
-        actions.sort_by(|a, b| a.id.cmp(&b.id));
-        if actions.is_empty() {
-            lines.push("  actions: (none)".to_string());
-        } else {
-            lines.push("  actions:".to_string());
-            for action in actions {
-                if action.discovery {
-                    lines.push(format!(
-                        "  - {} (discovery): {}",
-                        action.id, action.description
-                    ));
-                } else {
-                    lines.push(format!("  - {}: {}", action.id, action.description));
-                }
-            }
-        }
-
-        let mut recipes = environment.recipes;
-        recipes.sort_by(|a, b| a.title.cmp(&b.title));
-        if recipes.is_empty() {
-            lines.push("  recipes: (none)".to_string());
-        } else {
-            lines.push("  recipes:".to_string());
-            for recipe in recipes {
-                lines.push(format!("  - {}:", recipe.title));
-                for step in recipe.steps {
-                    lines.push(format!("    - {}", step));
-                }
-            }
-        }
-    }
-    lines.join("\n")
-}
-
-fn build_identity_context_block(snapshot: &TurnSnapshot) -> String {
-    let mut lines = vec![
-        "## Identity Context".to_string(),
-        format!(
-            "runtime_version: {}",
-            snapshot.system_context.runtime_version
-        ),
-        format!(
-            "session_id: {}",
-            snapshot.system_context.session_identity.session_id
-        ),
-        format!(
-            "active_agent_id: {}",
-            snapshot.system_context.session_identity.active_agent_id
-        ),
-        format!(
-            "active_agent_spec_version: {}",
-            snapshot
-                .system_context
-                .session_identity
-                .active_agent_spec_version
-        ),
-        format!(
-            "participant_user_ids: {}",
-            snapshot
-                .system_context
-                .session_identity
-                .participant_user_ids
-                .join(",")
-        ),
-        format!(
-            "participant_user_updated_at: {}",
-            serialize_inline_json(
-                &snapshot
-                    .system_context
-                    .session_identity
-                    .participant_user_updated_at
-            )
-        ),
-        format!(
-            "engaged_environment_ids: {}",
-            snapshot
-                .system_context
-                .session_identity
-                .engaged_environment_ids
-                .join(",")
-        ),
-        String::new(),
-        "## Agent Profile Copy".to_string(),
-        format!("display_name: {}", snapshot.agent_profile.display_name),
-        "SOUL.md:".to_string(),
-        snapshot.agent_profile.soul_md.clone(),
-        "IDENTITY.md:".to_string(),
-        snapshot.agent_profile.identity_md.clone(),
-        "AGENTS.md:".to_string(),
-        snapshot.agent_profile.agents_md.clone(),
-        "guidelines:".to_string(),
-        snapshot.agent_profile.guidelines_md.clone(),
-        String::new(),
-        "## Participant User Profiles".to_string(),
-    ];
-
-    if snapshot.participant_profiles.is_empty() {
-        lines.push("(none)".to_string());
     } else {
-        let mut profiles = snapshot.participant_profiles.clone();
-        profiles.sort_by(|a, b| a.user_id.cmp(&b.user_id));
-        for profile in profiles {
-            lines.push(format!("- user_id: {}", profile.user_id));
-            lines.push(format!("  name: {}", profile.name));
-            lines.push(format!("  nickname: {}", profile.nickname));
-            lines.push(format!("  preferences_json: {}", profile.preferences_json));
-            lines.push("  USER.md:".to_string());
-            lines.push(profile.user_md);
-        }
-    }
-    lines.join("\n")
-}
-
-fn build_current_turn_block(snapshot: &TurnSnapshot, retry_feedback: Option<&str>) -> String {
-    let mut lines = vec![
-        "## Session".to_string(),
-        format!("session_id: {}", snapshot.session_id),
-        format!("turn_id: {}", snapshot.turn_id),
-        String::new(),
-        "## Time Context".to_string(),
-        format!(
-            "utc_rfc3339: {}",
-            snapshot.system_context.time_context.utc_rfc3339
-        ),
-        format!(
-            "local_rfc3339: {}",
-            snapshot.system_context.time_context.local_rfc3339
-        ),
-        format!(
-            "local_timezone_name: {}",
-            snapshot.system_context.time_context.local_timezone_name
-        ),
-        format!(
-            "local_utc_offset: {}",
-            snapshot.system_context.time_context.local_utc_offset
-        ),
-        format!(
-            "generated_at_unix_ms: {}",
-            snapshot.system_context.time_context.generated_at_unix_ms
-        ),
-        format!(
-            "time_source: {}",
-            snapshot.system_context.time_context.time_source
-        ),
-        String::new(),
-        "## In-Flight Actions".to_string(),
-    ];
-
-    if snapshot
-        .system_context
-        .session_identity
-        .in_flight_actions
-        .is_empty()
-    {
-        lines.push("(none)".to_string());
-    } else {
-        let mut actions = snapshot
-            .system_context
-            .session_identity
-            .in_flight_actions
-            .clone();
-        actions.sort_by(|a, b| {
-            a.environment_id
-                .cmp(&b.environment_id)
-                .then(a.env_seq.cmp(&b.env_seq))
-                .then(a.task_id.cmp(&b.task_id))
-        });
-        for action in actions {
+        for environment in environments {
             lines.push(format!(
-                "- task={} seq={} id={} env={} status={} submitted_at={} args_preview={}",
-                action.task_id,
-                action.env_seq,
-                action.canonical_action_id,
-                action.environment_id,
-                action.status,
-                action.submitted_at_unix_ms,
-                truncate_inline(&action.args_preview, MAX_INLINE_TEXT_CHARS)
+                "- id={} name={} description={}",
+                environment.id, environment.name, environment.description
             ));
+            let mut tools = environment.tools;
+            tools.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+            if tools.is_empty() {
+                lines.push("  tools: (none)".to_string());
+            } else {
+                lines.push("  tools:".to_string());
+                for tool in tools {
+                    if tool.discovery {
+                        lines.push(format!(
+                            "  - {} [{}] (discovery): {}",
+                            tool.tool_name,
+                            tool.mode_support.as_str(),
+                            tool.description
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "  - {} [{}]: {}",
+                            tool.tool_name,
+                            tool.mode_support.as_str(),
+                            tool.description
+                        ));
+                    }
+                }
+            }
+
+            let mut recipes = environment.recipes;
+            recipes.sort_by(|a, b| a.title.cmp(&b.title));
+            if recipes.is_empty() {
+                lines.push("  recipes: (none)".to_string());
+            } else {
+                lines.push("  recipes:".to_string());
+                for recipe in recipes {
+                    lines.push(format!("  - {}:", recipe.title));
+                    for step in recipe.steps {
+                        lines.push(format!("    - {}", step));
+                    }
+                }
+            }
         }
     }
 
     lines.push(String::new());
-    lines.push("## Current Turn Triggers".to_string());
-    if snapshot.triggers.is_empty() {
-        lines.push("(none)".to_string());
-    } else {
-        for trigger in &snapshot.triggers {
-            lines.push(format!("- {}", trigger_text_compact(trigger)));
-        }
-    }
-
-    if let Some(feedback) = retry_feedback {
-        lines.push(String::new());
-        lines.push("## Retry Feedback".to_string());
-        lines.push(feedback.to_string());
-    }
+    lines.push("### Participant Envelope".to_string());
+    lines.push(format!(
+        "schema_version: {}",
+        snapshot
+            .session_baseline
+            .participant_envelope
+            .schema_version
+    ));
+    lines.push(format!(
+        "source_revision: {}",
+        snapshot
+            .session_baseline
+            .participant_envelope
+            .source_revision
+    ));
+    lines.push("material_json:".to_string());
+    lines.push(serialize_pretty_json(
+        &snapshot.session_baseline.participant_envelope.material,
+    ));
 
     lines.join("\n")
 }
 
-fn build_resolved_lookup_lines(snapshot: &TurnSnapshot) -> Vec<String> {
+fn build_tail_event_lines(snapshot: &TurnSnapshot, retry_feedback: Option<&str>) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for trigger in &snapshot.triggers {
+        lines.push(format!("pending_trigger {}", trigger_text_compact(trigger)));
+    }
+    lines.extend(build_resolved_lookup_event_lines(snapshot));
+
+    if let Some(feedback) = retry_feedback {
+        lines.push(format!(
+            "retry_feedback {}",
+            truncate_inline(feedback, MAX_LOOKUP_PAYLOAD_CHARS)
+        ));
+    }
+
+    if lines.is_empty() {
+        lines.push("event_log_empty".to_string());
+    }
+
+    lines
+}
+
+fn build_resolved_lookup_event_lines(snapshot: &TurnSnapshot) -> Vec<String> {
     if snapshot.resolved_payload_lookups.is_empty() {
-        return vec!["(none)".to_string()];
+        return Vec::new();
     }
 
     let mut dedup =
@@ -410,7 +321,7 @@ fn build_resolved_lookup_lines(snapshot: &TurnSnapshot) -> Vec<String> {
     let mut lines = Vec::new();
     for (_, lookup) in dedup {
         lines.push(format!(
-            "- lookup_task_id={} task_id={} part={} offset={} next_offset={} full_bytes={} source_truncated={} injected_truncated={} injected_omitted_bytes={}",
+            "resolved_payload_lookup lookup_task_id={} task_id={} part={} offset={} next_offset={} full_bytes={} source_truncated={} injected_truncated={} injected_omitted_bytes={}",
             lookup.lookup_task_id,
             lookup.task_id,
             lookup.part,
@@ -425,7 +336,7 @@ fn build_resolved_lookup_lines(snapshot: &TurnSnapshot) -> Vec<String> {
             lookup.injected_omitted_bytes
         ));
         lines.push(format!(
-            "  payload_chunk: {}",
+            "payload_chunk {}",
             truncate_inline(&lookup.payload_chunk, MAX_LOOKUP_PAYLOAD_CHARS)
         ));
     }
@@ -750,7 +661,11 @@ fn summarize_timeline_batch(index: usize, batch: &[TimelineEvent]) -> String {
     )
 }
 
-fn render_timeline_lines(summaries: &[String], events: &[TimelineEvent]) -> Vec<String> {
+fn render_event_transcript_lines(
+    summaries: &[String],
+    events: &[TimelineEvent],
+    tail_event_lines: &[String],
+) -> Vec<String> {
     let mut lines = Vec::new();
     if !summaries.is_empty() {
         lines.push("### Compaction Summaries".to_string());
@@ -761,17 +676,25 @@ fn render_timeline_lines(summaries: &[String], events: &[TimelineEvent]) -> Vec<
     }
 
     if events.is_empty() {
-        lines.push("(empty)".to_string());
+        lines.push("history_events=(none)".to_string());
     } else {
         for event in events {
             lines.push(event.line.clone());
+        }
+    }
+
+    if !tail_event_lines.is_empty() {
+        lines.push(String::new());
+        lines.push("### Pending Events".to_string());
+        for line in tail_event_lines {
+            lines.push(line.clone());
         }
     }
     lines
 }
 
 fn estimate_timeline_tokens(summaries: &[String], events: &[TimelineEvent]) -> usize {
-    let lines = render_timeline_lines(summaries, events);
+    let lines = render_event_transcript_lines(summaries, events, &[]);
     estimate_tokens(&lines.join("\n"))
 }
 
@@ -910,8 +833,8 @@ fn truncate_inline(input: &str, max_chars: usize) -> String {
     format!("{prefix}...")
 }
 
-fn serialize_inline_json<T: serde::Serialize>(value: &T) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+fn serialize_pretty_json<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn read_usize_env(name: &str, default: usize) -> usize {
@@ -932,12 +855,12 @@ fn read_ratio_env(name: &str, default: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use crate::agent::{
-        ActivatedEnvironmentActionHint, ActivatedEnvironmentHint, ActivatedEnvironmentRecipeHint,
-        SessionCompactionSnapshot, SessionIdentityMapSnapshot, SummaryBlockRefSnapshot,
-        SystemContextSnapshot, SystemTimeContext, TurnSnapshot,
+        CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
+        CapabilityToolSnapshot, HarnessContractSnapshot, IdentityEnvelopeSnapshot,
+        ParticipantEnvelopeSnapshot, ResolvedPayloadLookupHint, SessionAnchorSnapshot,
+        SessionBaselineSnapshot, SessionCompactionSnapshot, SummaryBlockRefSnapshot,
+        ToolModeSupport, TurnSnapshot,
     };
     use crate::history::HistoryEvent;
     use crate::history::PayloadPreview;
@@ -945,7 +868,9 @@ mod tests {
         HistoryActorKind, HistoryEventKind, TaskDoneHistoryPayload, TaskFinishedHistoryPayload,
         UserMessageHistoryPayload,
     };
+    use crate::pb;
     use crate::util::default_agent_profile;
+    use serde_json::json;
 
     use super::build_agent_prompt_bundle;
 
@@ -963,68 +888,88 @@ mod tests {
     }
 
     fn base_snapshot(recent_history: Vec<HistoryEvent>) -> TurnSnapshot {
+        let agent_profile = default_agent_profile("agent-default");
         TurnSnapshot {
             session_id: "session-1".to_string(),
             turn_id: 1,
-            system_context: SystemContextSnapshot {
+            harness_contract: HarnessContractSnapshot {
                 runtime_version: "0.1.0".to_string(),
-                time_context: SystemTimeContext {
-                    generated_at_unix_ms: 1_765_000_000_000,
-                    utc_rfc3339: "2026-02-16T00:00:00.000Z".to_string(),
-                    local_rfc3339: "2026-02-16T09:00:00.000+09:00".to_string(),
-                    local_timezone_name: "Asia/Seoul".to_string(),
-                    local_utc_offset: "+09:00".to_string(),
-                    time_source: "server_clock".to_string(),
-                },
-                activated_environments: vec![
-                    ActivatedEnvironmentHint {
-                        id: "filesystem".to_string(),
-                        name: "Filesystem".to_string(),
-                        description: "Stateful filesystem environment rooted at a base path."
-                            .to_string(),
-                        actions: vec![ActivatedEnvironmentActionHint {
-                            id: "filesystem__list".to_string(),
-                            name: "list".to_string(),
-                            description: "List directory entries for a non-empty relative path."
-                                .to_string(),
-                            discovery: false,
-                        }],
-                        recipes: vec![ActivatedEnvironmentRecipeHint {
-                            title: "Find files".to_string(),
-                            steps: vec![
-                                "Call filesystem__list with path '.'.".to_string(),
-                                "Call filesystem__read for selected files.".to_string(),
-                            ],
-                        }],
-                    },
-                    ActivatedEnvironmentHint {
-                        id: "system".to_string(),
-                        name: "System".to_string(),
-                        description: "Inspect runtime context and metadata.".to_string(),
-                        actions: vec![ActivatedEnvironmentActionHint {
-                            id: "system__get_time".to_string(),
-                            name: "get_time".to_string(),
-                            description: "Get current server time context.".to_string(),
-                            discovery: true,
-                        }],
-                        recipes: vec![],
-                    },
-                ],
-                session_identity: SessionIdentityMapSnapshot {
+                contract_schema_version: 1,
+            },
+            identity_envelope: IdentityEnvelopeSnapshot {
+                schema_version: 1,
+                source_revision: format!(
+                    "{}@spec:{}@updated:{}",
+                    &agent_profile.agent_id,
+                    agent_profile.spec_version,
+                    agent_profile.updated_at_unix_ms
+                ),
+                material: json!({
+                    "display_name": agent_profile.display_name.clone(),
+                    "soul_md": agent_profile.soul_md.clone(),
+                    "identity_md": agent_profile.identity_md.clone(),
+                    "agents_md": agent_profile.agents_md.clone(),
+                    "guidelines_md": agent_profile.guidelines_md.clone(),
+                }),
+            },
+            session_baseline: SessionBaselineSnapshot {
+                session_anchor: SessionAnchorSnapshot {
                     session_id: "session-1".to_string(),
-                    active_agent_id: "agent-default".to_string(),
-                    participant_user_ids: vec!["user-default".to_string()],
-                    active_agent_spec_version: 1,
-                    participant_user_updated_at: BTreeMap::from([(
-                        "user-default".to_string(),
-                        1_765_000_000_000,
-                    )]),
-                    engaged_environment_ids: vec!["filesystem".to_string(), "system".to_string()],
-                    in_flight_actions: vec![],
+                    started_at_unix_ms: 1_765_000_000_000,
+                },
+                capability_surface: CapabilitySurfaceSnapshot {
+                    environments: vec![
+                        CapabilityEnvironmentSnapshot {
+                            id: "filesystem".to_string(),
+                            name: "Filesystem".to_string(),
+                            description: "Stateful filesystem environment rooted at a base path."
+                                .to_string(),
+                            tools: vec![CapabilityToolSnapshot {
+                                tool_name: "filesystem__list".to_string(),
+                                description:
+                                    "List directory entries for a non-empty relative path."
+                                        .to_string(),
+                                mode_support: ToolModeSupport::AwaitOnly,
+                                discovery: false,
+                            }],
+                            recipes: vec![CapabilityRecipeSnapshot {
+                                title: "Find files".to_string(),
+                                steps: vec![
+                                    "Call filesystem__list with path '.'.".to_string(),
+                                    "Call filesystem__read for selected files.".to_string(),
+                                ],
+                            }],
+                        },
+                        CapabilityEnvironmentSnapshot {
+                            id: "system".to_string(),
+                            name: "System".to_string(),
+                            description: "Inspect runtime context and metadata.".to_string(),
+                            tools: vec![CapabilityToolSnapshot {
+                                tool_name: "system__get_time".to_string(),
+                                description: "Get current server time context.".to_string(),
+                                mode_support: ToolModeSupport::AwaitOnly,
+                                discovery: true,
+                            }],
+                            recipes: vec![],
+                        },
+                    ],
+                },
+                participant_envelope: ParticipantEnvelopeSnapshot {
+                    schema_version: 1,
+                    source_revision: "user-default@1765000000000".to_string(),
+                    material: json!({
+                        "participants": [{
+                            "user_id": "user-default",
+                            "name": "User Default",
+                            "nickname": "user-default",
+                            "preferences_json": "{}",
+                            "user_md": "USER.md",
+                            "long_term_memory_md": ""
+                        }]
+                    }),
                 },
             },
-            agent_profile: default_agent_profile("agent-default"),
-            participant_profiles: vec![],
+            in_flight_actions: vec![],
             resolved_payload_lookups: vec![],
             triggers: vec![],
             recent_history,
@@ -1037,21 +982,99 @@ mod tests {
         let snapshot = base_snapshot(vec![]);
 
         let bundle = build_agent_prompt_bundle(&snapshot, None);
-        assert!(bundle.messages.len() >= 5);
+        assert!(bundle.messages.len() >= 4);
         assert_eq!(bundle.stats.messages_count, bundle.messages.len());
         assert!(bundle.stats.estimated_prompt_tokens > 0);
         assert!(!bundle.stats.stable_prefix_hash.is_empty());
 
         let debug_prompt = bundle.as_debug_prompt();
-        assert!(debug_prompt.contains("## Engaged Environments and Actions"));
-        assert!(debug_prompt.contains("filesystem__list: List directory entries"));
-        assert!(
-            debug_prompt.contains("system__get_time (discovery): Get current server time context.")
-        );
+        assert!(debug_prompt.contains("## Harness Contract"));
+        assert!(debug_prompt.contains("## Identity Envelope"));
+        assert!(debug_prompt.contains("## Session Baseline"));
+        assert!(debug_prompt.contains("filesystem__list [await_only]: List directory entries"));
+        assert!(debug_prompt.contains(
+            "system__get_time [await_only] (discovery): Get current server time context."
+        ));
         assert!(debug_prompt.contains(
             "For optional action arguments, omit fields you do not need; never send empty placeholder strings."
         ));
-        assert!(debug_prompt.contains("## Conversation Timeline (canonical)"));
+        assert!(!debug_prompt.contains("## Time Context"));
+        assert!(debug_prompt.contains("## Event Transcript"));
+        assert!(!debug_prompt.contains("## Turn Input"));
+        assert!(!debug_prompt.contains("## Resolved Payload Lookups"));
+    }
+
+    #[test]
+    fn stable_prefix_hash_is_unchanged_by_turn_tail_changes() {
+        let snapshot = base_snapshot(vec![]);
+        let bundle = build_agent_prompt_bundle(&snapshot, None);
+
+        let mut next_turn = snapshot.clone();
+        next_turn.turn_id = 2;
+        next_turn.triggers = vec![pb::Trigger {
+            trigger_id: "trigger-1".to_string(),
+            created_at_unix_ms: 1_765_000_000_100,
+            kind: Some(pb::trigger::Kind::UserMessage(pb::UserMessageTrigger {
+                user_id: "user-default".to_string(),
+                text: "what changed?".to_string(),
+            })),
+        }];
+        next_turn.resolved_payload_lookups = vec![ResolvedPayloadLookupHint {
+            lookup_task_id: "lookup-1".to_string(),
+            task_id: "task-1".to_string(),
+            part: "result".to_string(),
+            offset: 0,
+            next_offset: Some(120),
+            full_bytes: 1024,
+            source_truncated: true,
+            payload_chunk: "{\"ok\":true}".to_string(),
+            injected_truncated: false,
+            injected_omitted_bytes: 0,
+        }];
+        let next_bundle = build_agent_prompt_bundle(&next_turn, Some("retry with better args"));
+
+        assert_eq!(
+            bundle.stats.stable_prefix_hash,
+            next_bundle.stats.stable_prefix_hash
+        );
+    }
+
+    #[test]
+    fn event_transcript_includes_pending_triggers_and_lookup_availability() {
+        let mut snapshot = base_snapshot(vec![]);
+        snapshot.triggers = vec![pb::Trigger {
+            trigger_id: "trigger-1".to_string(),
+            created_at_unix_ms: 1_765_000_000_100,
+            kind: Some(pb::trigger::Kind::UserMessage(pb::UserMessageTrigger {
+                user_id: "user-default".to_string(),
+                text: "inspect the payload".to_string(),
+            })),
+        }];
+        snapshot.resolved_payload_lookups = vec![ResolvedPayloadLookupHint {
+            lookup_task_id: "lookup-1".to_string(),
+            task_id: "task-1".to_string(),
+            part: "result".to_string(),
+            offset: 0,
+            next_offset: Some(120),
+            full_bytes: 1024,
+            source_truncated: true,
+            payload_chunk: "{\"ok\":true}".to_string(),
+            injected_truncated: false,
+            injected_omitted_bytes: 0,
+        }];
+
+        let bundle = build_agent_prompt_bundle(&snapshot, None);
+        let debug_prompt = bundle.as_debug_prompt();
+
+        assert!(
+            debug_prompt.contains(
+                "pending_trigger user_message user=user-default text=inspect the payload"
+            )
+        );
+        assert!(debug_prompt.contains(
+            "resolved_payload_lookup lookup_task_id=lookup-1 task_id=task-1 part=result offset=0"
+        ));
+        assert!(debug_prompt.contains("payload_chunk {\"ok\":true}"));
     }
 
     #[test]

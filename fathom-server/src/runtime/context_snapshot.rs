@@ -1,14 +1,15 @@
-use std::collections::BTreeMap;
-
 use super::Runtime;
 use crate::agent::{
-    ActivatedEnvironmentActionHint, ActivatedEnvironmentHint, ActivatedEnvironmentRecipeHint,
-    InFlightActionHint, ResolvedPayloadLookupHint, SessionIdentityMapSnapshot,
-    SystemContextSnapshot, TurnSnapshot,
+    CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
+    CapabilityToolSnapshot, HarnessContractSnapshot, IdentityEnvelopeSnapshot, InFlightActionHint,
+    ParticipantEnvelopeSnapshot, ResolvedPayloadLookupHint, SessionAnchorSnapshot,
+    SessionBaselineSnapshot, ToolModeSupport, TurnSnapshot,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::pb;
 use crate::session::SessionState;
+use fathom_env::ActionModeSupport;
+use serde_json::json;
 
 impl Runtime {
     pub(crate) fn build_turn_snapshot(
@@ -24,11 +25,6 @@ impl Runtime {
             state.history.clone()
         };
 
-        let participant_profiles = state
-            .participant_user_ids
-            .iter()
-            .filter_map(|id| state.participant_user_profiles_copy.get(id).cloned())
-            .collect::<Vec<_>>();
         let resolved_payload_lookups = state
             .pending_payload_lookups
             .iter()
@@ -49,9 +45,10 @@ impl Runtime {
         TurnSnapshot {
             session_id: state.session_id.clone(),
             turn_id,
-            system_context: self.build_system_context_snapshot(state),
-            agent_profile: state.agent_profile_copy.clone(),
-            participant_profiles,
+            harness_contract: self.build_harness_contract_snapshot(),
+            identity_envelope: self.build_identity_envelope_snapshot(state),
+            session_baseline: self.build_session_baseline_snapshot(state),
+            in_flight_actions: self.build_in_flight_action_hints(state),
             resolved_payload_lookups,
             triggers: triggers.to_vec(),
             recent_history,
@@ -59,55 +56,112 @@ impl Runtime {
         }
     }
 
-    fn build_system_context_snapshot(&self, state: &SessionState) -> SystemContextSnapshot {
-        let participant_user_updated_at = state
-            .participant_user_ids
-            .iter()
-            .map(|user_id| {
-                let updated_at = state
-                    .participant_user_profiles_copy
-                    .get(user_id)
-                    .map(|profile| profile.updated_at_unix_ms)
-                    .unwrap_or_default();
-                (user_id.clone(), updated_at)
-            })
-            .collect::<BTreeMap<_, _>>();
+    fn build_harness_contract_snapshot(&self) -> HarnessContractSnapshot {
+        HarnessContractSnapshot {
+            runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+            contract_schema_version: 1,
+        }
+    }
 
-        let activated_environment_ids = state
+    fn build_identity_envelope_snapshot(&self, state: &SessionState) -> IdentityEnvelopeSnapshot {
+        IdentityEnvelopeSnapshot {
+            schema_version: 1,
+            source_revision: format!(
+                "{}@spec:{}@updated:{}",
+                &state.agent_profile_copy.agent_id,
+                state.agent_profile_copy.spec_version,
+                state.agent_profile_copy.updated_at_unix_ms
+            ),
+            material: json!({
+                "display_name": state.agent_profile_copy.display_name.clone(),
+                "soul_md": state.agent_profile_copy.soul_md.clone(),
+                "identity_md": state.agent_profile_copy.identity_md.clone(),
+                "agents_md": state.agent_profile_copy.agents_md.clone(),
+                "guidelines_md": state.agent_profile_copy.guidelines_md.clone(),
+                "code_of_conduct_md": state.agent_profile_copy.code_of_conduct_md.clone(),
+                "long_term_memory_md": state.agent_profile_copy.long_term_memory_md.clone(),
+            }),
+        }
+    }
+
+    fn build_session_baseline_snapshot(&self, state: &SessionState) -> SessionBaselineSnapshot {
+        SessionBaselineSnapshot {
+            session_anchor: SessionAnchorSnapshot {
+                session_id: state.session_id.clone(),
+                started_at_unix_ms: state.created_at_unix_ms,
+            },
+            capability_surface: self.build_capability_surface_snapshot(state),
+            participant_envelope: self.build_participant_envelope_snapshot(state),
+        }
+    }
+
+    fn build_capability_surface_snapshot(&self, state: &SessionState) -> CapabilitySurfaceSnapshot {
+        let mut environments = state
             .engaged_environment_ids
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        let activated_environments = activated_environment_ids
             .iter()
             .filter_map(|environment_id| {
                 let environment = EnvironmentRegistry::environment_summary(environment_id)?;
-                let actions = EnvironmentRegistry::environment_action_summaries(environment_id)?
+                let mut tools = EnvironmentRegistry::environment_action_summaries(environment_id)?
                     .into_iter()
-                    .map(|action| ActivatedEnvironmentActionHint {
-                        id: action.id,
-                        name: action.name,
+                    .map(|action| CapabilityToolSnapshot {
+                        tool_name: action.id,
                         description: action.description,
+                        mode_support: map_mode_support(action.mode_support),
                         discovery: action.discovery,
                     })
                     .collect::<Vec<_>>();
-                let recipes = environment
+                tools.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+                let mut recipes = environment
                     .recipes
                     .into_iter()
-                    .map(|recipe| ActivatedEnvironmentRecipeHint {
+                    .map(|recipe| CapabilityRecipeSnapshot {
                         title: recipe.title,
                         steps: recipe.steps,
                     })
                     .collect::<Vec<_>>();
-                Some(ActivatedEnvironmentHint {
+                recipes.sort_by(|a, b| a.title.cmp(&b.title));
+                Some(CapabilityEnvironmentSnapshot {
                     id: environment.id,
                     name: environment.name,
                     description: environment.description,
-                    actions,
+                    tools,
                     recipes,
                 })
             })
             .collect::<Vec<_>>();
+        environments.sort_by(|a, b| a.id.cmp(&b.id));
+        CapabilitySurfaceSnapshot { environments }
+    }
+
+    fn build_participant_envelope_snapshot(
+        &self,
+        state: &SessionState,
+    ) -> ParticipantEnvelopeSnapshot {
+        let participants = state
+            .participant_user_ids
+            .iter()
+            .filter_map(|user_id| state.participant_user_profiles_copy.get(user_id))
+            .map(|profile| {
+                json!({
+                    "user_id": profile.user_id.clone(),
+                    "name": profile.name.clone(),
+                    "nickname": profile.nickname.clone(),
+                    "preferences_json": profile.preferences_json.clone(),
+                    "user_md": profile.user_md.clone(),
+                    "long_term_memory_md": profile.long_term_memory_md.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        ParticipantEnvelopeSnapshot {
+            schema_version: 1,
+            source_revision: participant_envelope_source_revision(state),
+            material: json!({
+                "participants": participants,
+            }),
+        }
+    }
+
+    fn build_in_flight_action_hints(&self, state: &SessionState) -> Vec<InFlightActionHint> {
         let in_flight_actions = state
             .in_flight_actions
             .values()
@@ -129,21 +183,30 @@ impl Runtime {
                 .then(a.env_seq.cmp(&b.env_seq))
                 .then(a.task_id.cmp(&b.task_id))
         });
+        in_flight_actions
+    }
+}
 
-        SystemContextSnapshot {
-            runtime_version: env!("CARGO_PKG_VERSION").to_string(),
-            time_context: self.current_system_time_context(),
-            activated_environments,
-            session_identity: SessionIdentityMapSnapshot {
-                session_id: state.session_id.clone(),
-                active_agent_id: state.agent_id.clone(),
-                participant_user_ids: state.participant_user_ids.clone(),
-                active_agent_spec_version: state.agent_profile_copy.spec_version,
-                participant_user_updated_at,
-                engaged_environment_ids: state.engaged_environment_ids.iter().cloned().collect(),
-                in_flight_actions,
-            },
-        }
+fn participant_envelope_source_revision(state: &SessionState) -> String {
+    state
+        .participant_user_ids
+        .iter()
+        .map(|user_id| {
+            let updated_at = state
+                .participant_user_profiles_copy
+                .get(user_id)
+                .map(|profile| profile.updated_at_unix_ms)
+                .unwrap_or_default();
+            format!("{user_id}@{updated_at}")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn map_mode_support(mode_support: ActionModeSupport) -> ToolModeSupport {
+    match mode_support {
+        ActionModeSupport::AwaitOnly => ToolModeSupport::AwaitOnly,
+        ActionModeSupport::AwaitOrDetach => ToolModeSupport::AwaitOrDetach,
     }
 }
 
@@ -152,12 +215,13 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::Runtime;
+    use crate::agent::ToolModeSupport;
     use crate::environment::EnvironmentRegistry;
     use crate::session::SessionState;
     use crate::util::{default_agent_profile, default_user_profile};
 
     #[test]
-    fn turn_snapshot_includes_time_context() {
+    fn turn_snapshot_builds_stable_prefix_layers() {
         let runtime = Runtime::new(2, 10);
         let user_id = "user-a".to_string();
         let state = SessionState::new(
@@ -175,17 +239,36 @@ mod tests {
         );
 
         let snapshot = runtime.build_turn_snapshot(&state, 1, &[]);
-        let time_context = snapshot.system_context.time_context;
-
-        assert!(!time_context.utc_rfc3339.trim().is_empty());
-        assert!(!time_context.local_rfc3339.trim().is_empty());
-        assert!(!time_context.local_timezone_name.trim().is_empty());
-        assert!(!time_context.local_utc_offset.trim().is_empty());
-        assert_eq!(time_context.time_source, "server_clock");
+        assert_eq!(snapshot.harness_contract.contract_schema_version, 1);
+        assert_eq!(
+            snapshot.identity_envelope.source_revision,
+            format!(
+                "agent-a@spec:{}@updated:{}",
+                state.agent_profile_copy.spec_version, state.agent_profile_copy.updated_at_unix_ms
+            )
+        );
+        assert_eq!(
+            snapshot.session_baseline.session_anchor.started_at_unix_ms,
+            state.created_at_unix_ms
+        );
+        assert_eq!(
+            snapshot
+                .session_baseline
+                .participant_envelope
+                .source_revision,
+            format!(
+                "user-a@{}",
+                state
+                    .participant_user_profiles_copy
+                    .get("user-a")
+                    .expect("participant profile")
+                    .updated_at_unix_ms
+            )
+        );
     }
 
     #[test]
-    fn turn_snapshot_includes_engaged_environment_actions() {
+    fn turn_snapshot_includes_capability_surface_with_mode_support() {
         let runtime = Runtime::new(2, 10);
         let user_id = "user-a".to_string();
         let state = SessionState::new(
@@ -203,13 +286,29 @@ mod tests {
         );
 
         let snapshot = runtime.build_turn_snapshot(&state, 1, &[]);
-        assert!(!snapshot.system_context.activated_environments.is_empty());
+        assert!(
+            !snapshot
+                .session_baseline
+                .capability_surface
+                .environments
+                .is_empty()
+        );
         assert!(
             snapshot
-                .system_context
-                .activated_environments
+                .session_baseline
+                .capability_surface
+                .environments
                 .iter()
-                .all(|environment| !environment.actions.is_empty())
+                .all(|environment| !environment.tools.is_empty())
+        );
+        assert!(
+            snapshot
+                .session_baseline
+                .capability_surface
+                .environments
+                .iter()
+                .flat_map(|environment| environment.tools.iter())
+                .all(|tool| tool.mode_support == ToolModeSupport::AwaitOnly)
         );
     }
 }

@@ -17,11 +17,11 @@ impl SessionToolCatalog {
         Self {
             registry,
             engaged_environment_ids: snapshot
-                .system_context
-                .session_identity
-                .engaged_environment_ids
+                .session_baseline
+                .capability_surface
+                .environments
                 .iter()
-                .cloned()
+                .map(|environment| environment.id.clone())
                 .collect(),
         }
     }

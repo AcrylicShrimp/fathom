@@ -3,7 +3,7 @@ mod environment;
 mod naming;
 mod outcome;
 
-pub use action::{Action, ActionSpec};
+pub use action::{Action, ActionModeSupport, ActionSpec};
 pub use environment::{
     Environment, EnvironmentRecipe, EnvironmentSnapshot, EnvironmentSpec, FinalizedAction,
     TransitionResult,
