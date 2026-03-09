@@ -351,4 +351,79 @@ mod tests {
                 .any(|event| matches!(event, PromptEvent::RetryFeedback(_)))
         );
     }
+
+    #[test]
+    fn build_prompt_input_preserves_execution_update_trigger_order_and_normalizes_variants() {
+        let mut snapshot = base_snapshot(vec![]);
+        snapshot.triggers = vec![
+            pb::Trigger {
+                trigger_id: "trigger-1".to_string(),
+                created_at_unix_ms: 1_765_000_000_100,
+                kind: Some(pb::trigger::Kind::ExecutionUpdate(
+                    pb::ExecutionUpdateTrigger {
+                        execution_id: "execution-1".to_string(),
+                        action_id: "filesystem__list".to_string(),
+                        kind: pb::ExecutionUpdateKind::AwaitedExecutionSucceeded as i32,
+                        message: String::new(),
+                        payload_message: "{\"entries\":[\"src\"]}".to_string(),
+                    },
+                )),
+            },
+            pb::Trigger {
+                trigger_id: "trigger-2".to_string(),
+                created_at_unix_ms: 1_765_000_000_200,
+                kind: Some(pb::trigger::Kind::ExecutionUpdate(
+                    pb::ExecutionUpdateTrigger {
+                        execution_id: "execution-2".to_string(),
+                        action_id: "shell__run".to_string(),
+                        kind: pb::ExecutionUpdateKind::DetachedExecutionFailed as i32,
+                        message: "process exited with status 1".to_string(),
+                        payload_message: "stderr: boom".to_string(),
+                    },
+                )),
+            },
+            pb::Trigger {
+                trigger_id: "trigger-3".to_string(),
+                created_at_unix_ms: 1_765_000_000_300,
+                kind: Some(pb::trigger::Kind::ExecutionUpdate(
+                    pb::ExecutionUpdateTrigger {
+                        execution_id: "execution-3".to_string(),
+                        action_id: "shell__run".to_string(),
+                        kind: pb::ExecutionUpdateKind::ExecutionRejected as i32,
+                        message: "detach is not allowed for shell__run".to_string(),
+                        payload_message: String::new(),
+                    },
+                )),
+            },
+        ];
+
+        let input = build_prompt_input(&snapshot, None);
+
+        assert_eq!(input.pending_events.len(), 3);
+        assert!(matches!(
+            input.pending_events.first(),
+            Some(PromptEvent::AwaitedExecutionSucceeded(item))
+                if item.execution_id == "execution-1"
+                    && item.action_id == "filesystem__list"
+                    && item.payload_preview.lookup_ref == "execution://execution-1/result"
+                    && item.payload_preview.head.contains("\"src\"")
+        ));
+        assert!(matches!(
+            input.pending_events.get(1),
+            Some(PromptEvent::DetachedExecutionFailed(item))
+                if item.execution_id == "execution-2"
+                    && item.action_id == "shell__run"
+                    && item.message == "process exited with status 1"
+                    && item.payload_preview.as_ref().is_some_and(|preview|
+                        preview.lookup_ref == "execution://execution-2/result"
+                            && preview.head.contains("stderr: boom"))
+        ));
+        assert!(matches!(
+            input.pending_events.get(2),
+            Some(PromptEvent::ExecutionRejected(item))
+                if item.execution_id == "execution-3"
+                    && item.action_id == "shell__run"
+                    && item.message == "detach is not allowed for shell__run"
+        ));
+    }
 }

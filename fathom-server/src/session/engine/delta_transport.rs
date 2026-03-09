@@ -128,3 +128,116 @@ impl<'a> TurnDeltaTransport<'a> {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeSet, HashMap};
+
+    use tokio::sync::broadcast;
+
+    use super::TurnDeltaTransport;
+    use crate::agent::{ActionArgDeltaNote, ActionArgDoneNote, ModelDeltaEvent, StreamNote};
+    use crate::environment::EnvironmentActorHandle;
+    use crate::environment::EnvironmentRegistry;
+    use crate::runtime::Runtime;
+    use crate::session::SessionState;
+    use crate::util::{default_agent_profile, default_user_profile};
+    use fathom_protocol::pb;
+
+    fn test_state() -> SessionState {
+        let user_id = "user-a".to_string();
+        SessionState::new(
+            "session-1".to_string(),
+            "agent-a".to_string(),
+            vec![user_id.clone()],
+            default_agent_profile("agent-a"),
+            HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
+            EnvironmentRegistry::default_engaged_environment_ids()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            EnvironmentRegistry::initial_environment_snapshots()
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
+        )
+    }
+
+    #[test]
+    fn delta_transport_preserves_event_order_for_stream_notes_argument_updates_and_text_streams() {
+        let runtime = Runtime::new(2, 10);
+        let (events_tx, mut events_rx) = broadcast::channel(32);
+        let mut state = test_state();
+        let environment_handles = HashMap::<String, EnvironmentActorHandle>::new();
+        let mut transport =
+            TurnDeltaTransport::new(&runtime, &mut state, &events_tx, &environment_handles, 7);
+
+        transport.handle_model_event(ModelDeltaEvent::StreamNote(StreamNote {
+            phase: "agent.test".to_string(),
+            detail: "begin".to_string(),
+        }));
+        transport.handle_model_event(ModelDeltaEvent::ActionArgsDelta(ActionArgDeltaNote {
+            call_key: "call-key-1".to_string(),
+            call_id: Some("call-id-1".to_string()),
+            action_id: Some("filesystem__read".to_string()),
+            args_delta: "{\"path\":\"".to_string(),
+        }));
+        transport.handle_model_event(ModelDeltaEvent::ActionArgsDone(ActionArgDoneNote {
+            call_key: "call-key-1".to_string(),
+            call_id: Some("call-id-1".to_string()),
+            action_id: Some("filesystem__read".to_string()),
+            args_json: "{\"path\":\"Cargo.toml\",\"reasoning\":\"inspect manifest\"}".to_string(),
+        }));
+        transport.handle_model_event(ModelDeltaEvent::AssistantTextDelta("hel".to_string()));
+        transport.handle_model_event(ModelDeltaEvent::AssistantTextDone("hello".to_string()));
+
+        let mut events = Vec::new();
+        while let Ok(event) = events_rx.try_recv() {
+            events.push(event);
+        }
+
+        assert!(matches!(
+            events.first().and_then(|event| event.kind.as_ref()),
+            Some(pb::session_event::Kind::AgentStream(pb::AgentStreamEvent { phase, detail, .. }))
+                if phase == "agent.test" && detail == "begin"
+        ));
+        assert!(matches!(
+            events.get(1).and_then(|event| event.kind.as_ref()),
+            Some(pb::session_event::Kind::ExecutionUpdate(pb::ExecutionUpdateEvent { phase, call_key, action_id, args_delta, .. }))
+                if *phase == pb::ExecutionUpdatePhase::ArgumentsDelta as i32
+                    && call_key == "call-key-1"
+                    && action_id == "filesystem__read"
+                    && args_delta == "{\"path\":\""
+        ));
+        assert!(matches!(
+            events.get(2).and_then(|event| event.kind.as_ref()),
+            Some(pb::session_event::Kind::ExecutionUpdate(pb::ExecutionUpdateEvent { phase, call_key, action_id, args_json, .. }))
+                if *phase == pb::ExecutionUpdatePhase::ArgumentsReady as i32
+                    && call_key == "call-key-1"
+                    && action_id == "filesystem__read"
+                    && args_json.contains("\"Cargo.toml\"")
+        ));
+
+        let assistant_streams = events
+            .iter()
+            .filter_map(|event| match event.kind.as_ref() {
+                Some(pb::session_event::Kind::AssistantStream(item)) => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(assistant_streams.len(), 3);
+        assert_eq!(assistant_streams[0].stream_id, "7:assistant");
+        assert_eq!(assistant_streams[0].delta, "hel");
+        assert!(!assistant_streams[0].done);
+        assert_eq!(assistant_streams[1].stream_id, "7:assistant");
+        assert_eq!(assistant_streams[1].delta, "lo");
+        assert!(!assistant_streams[1].done);
+        assert_eq!(assistant_streams[2].stream_id, "7:assistant");
+        assert!(assistant_streams[2].delta.is_empty());
+        assert!(assistant_streams[2].done);
+
+        let outputs = transport.drain_streamed_assistant_outputs();
+        assert_eq!(
+            outputs,
+            vec![("7:assistant".to_string(), "hello".to_string())]
+        );
+    }
+}

@@ -6,6 +6,8 @@ mod prompt_input_builder;
 mod retry;
 mod types;
 
+#[cfg(test)]
+pub(crate) use types::{ActionArgDeltaNote, ActionArgDoneNote};
 pub(crate) use types::{
     ActionInvocation, ActionModeSupportSnapshot, AgentTurnOutcome, CapabilityActionSnapshot,
     CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
