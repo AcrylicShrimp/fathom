@@ -44,34 +44,33 @@ impl SessionActionCatalog {
 mod tests {
     use crate::agent::SessionActionCatalog;
     use crate::agent::types::{
-        AgentInvocationContext, CapabilityActionSnapshot, CapabilityEnvironmentSnapshot,
-        CapabilitySurfaceSnapshot, HarnessContractSnapshot, IdentityEnvelopeSnapshot,
-        ParticipantEnvelopeSnapshot, SessionAnchorSnapshot, SessionBaselineSnapshot,
-        SessionCompactionSnapshot,
+        AgentInvocationContext, CapabilityAction, CapabilityEnvironment, CapabilitySurface,
+        HarnessContract, IdentityEnvelope, ParticipantEnvelope, SessionAnchor, SessionBaseline,
+        SessionCompaction,
     };
     use crate::environment::EnvironmentRegistry;
     use serde_json::json;
 
     fn context_with_environments(
-        environments: Vec<CapabilityEnvironmentSnapshot>,
+        environments: Vec<CapabilityEnvironment>,
     ) -> AgentInvocationContext {
         AgentInvocationContext {
-            harness_contract: HarnessContractSnapshot {
+            harness_contract: HarnessContract {
                 runtime_version: "0.1.0".to_string(),
                 contract_schema_version: 1,
             },
-            identity_envelope: IdentityEnvelopeSnapshot {
+            identity_envelope: IdentityEnvelope {
                 schema_version: 1,
                 source_revision: "agent-default@spec:1@updated:1".to_string(),
                 material: json!({"display_name": "Agent Default"}),
             },
-            session_baseline: SessionBaselineSnapshot {
-                session_anchor: SessionAnchorSnapshot {
+            session_baseline: SessionBaseline {
+                session_anchor: SessionAnchor {
                     session_id: "session-1".to_string(),
                     started_at_unix_ms: 1,
                 },
-                capability_surface: CapabilitySurfaceSnapshot { environments },
-                participant_envelope: ParticipantEnvelopeSnapshot {
+                capability_surface: CapabilitySurface { environments },
+                participant_envelope: ParticipantEnvelope {
                     schema_version: 1,
                     source_revision: "user-default@1".to_string(),
                     material: json!({"participants": []}),
@@ -80,20 +79,20 @@ mod tests {
             resolved_payload_lookups: vec![],
             triggers: vec![],
             recent_history: vec![],
-            compaction: SessionCompactionSnapshot::default(),
+            compaction: SessionCompaction::default(),
         }
     }
 
     #[test]
     fn action_catalog_limits_openai_definitions_to_context_environments() {
-        let context = context_with_environments(vec![CapabilityEnvironmentSnapshot {
+        let context = context_with_environments(vec![CapabilityEnvironment {
             id: "filesystem".to_string(),
             name: "Filesystem".to_string(),
             description: "Filesystem".to_string(),
-            actions: vec![CapabilityActionSnapshot {
+            actions: vec![CapabilityAction {
                 action_id: "filesystem__list".to_string(),
                 description: "List files".to_string(),
-                mode_support: crate::agent::ActionModeSupportSnapshot::AwaitOnly,
+                mode_support: crate::agent::ActionModeSupportContract::AwaitOnly,
                 discovery: false,
             }],
             recipes: vec![],
@@ -113,14 +112,14 @@ mod tests {
 
     #[test]
     fn action_catalog_rejects_actions_outside_context_environments() {
-        let context = context_with_environments(vec![CapabilityEnvironmentSnapshot {
+        let context = context_with_environments(vec![CapabilityEnvironment {
             id: "filesystem".to_string(),
             name: "Filesystem".to_string(),
             description: "Filesystem".to_string(),
-            actions: vec![CapabilityActionSnapshot {
+            actions: vec![CapabilityAction {
                 action_id: "filesystem__list".to_string(),
                 description: "List files".to_string(),
-                mode_support: crate::agent::ActionModeSupportSnapshot::AwaitOnly,
+                mode_support: crate::agent::ActionModeSupportContract::AwaitOnly,
                 discovery: false,
             }],
             recipes: vec![],

@@ -5,7 +5,37 @@ use crate::agent::{ModelDeltaEvent, ModelInvocationOutcome, PromptMessage, Sessi
 
 pub(crate) type ModelEventSink<'a> = dyn FnMut(ModelDeltaEvent) + Send + 'a;
 pub(crate) type ModelAdapterFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<ModelInvocationOutcome, String>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<ModelInvocationOutcome, ModelAdapterError>> + Send + 'a>>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModelAdapterError {
+    message: String,
+    semantic_retryable: bool,
+}
+
+impl ModelAdapterError {
+    pub(crate) fn non_retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            semantic_retryable: false,
+        }
+    }
+
+    pub(crate) fn semantic_retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            semantic_retryable: true,
+        }
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) fn is_semantic_retryable(&self) -> bool {
+        self.semantic_retryable
+    }
+}
 
 pub(crate) trait ModelAdapter: Send + Sync {
     fn provider_name(&self) -> &'static str;
@@ -52,6 +82,6 @@ impl ModelAdapter for UnavailableModelAdapter {
         _on_event: &'a mut ModelEventSink<'a>,
     ) -> ModelAdapterFuture<'a> {
         let error = self.init_error.clone();
-        Box::pin(async move { Err(error) })
+        Box::pin(async move { Err(ModelAdapterError::non_retryable(error)) })
     }
 }

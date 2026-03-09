@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
-use crate::agent::SessionCompactionSnapshot;
+use crate::agent::SessionCompaction;
 use crate::environment::{EnvironmentCommittedAction, RequestedExecutionMode};
 use crate::history::HistoryEvent;
 use crate::session::payload_lookup::ResolvedPayloadLookup;
@@ -63,7 +63,7 @@ pub(crate) struct SessionState {
     pub(crate) next_agent_invocation_seq: u64,
     pub(crate) turn_seq: u64,
     pub(crate) turn_in_progress: bool,
-    pub(crate) compaction: SessionCompactionSnapshot,
+    pub(crate) compaction: SessionCompaction,
 }
 
 impl SessionState {
@@ -100,7 +100,7 @@ impl SessionState {
             next_agent_invocation_seq: 0,
             turn_seq: 0,
             turn_in_progress: false,
-            compaction: SessionCompactionSnapshot::default(),
+            compaction: SessionCompaction::default(),
         }
     }
 

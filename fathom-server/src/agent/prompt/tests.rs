@@ -4,10 +4,9 @@ use crate::agent::types::{
     PromptUserMessage,
 };
 use crate::agent::{
-    ActionModeSupportSnapshot, CapabilityActionSnapshot, CapabilityEnvironmentSnapshot,
-    CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot, CompiledPrompt, HarnessContractSnapshot,
-    IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot, SessionAnchorSnapshot,
-    SessionBaselineSnapshot, SummaryBlockRefSnapshot,
+    ActionModeSupportContract, CapabilityAction, CapabilityEnvironment, CapabilityRecipe,
+    CapabilitySurface, CompiledPrompt, HarnessContract, IdentityEnvelope, ParticipantEnvelope,
+    SessionAnchor, SessionBaseline, SummaryBlockRef,
 };
 use crate::history::PayloadPreview;
 use crate::util::default_agent_profile;
@@ -32,11 +31,11 @@ fn base_input() -> PromptInput {
     let agent_profile = default_agent_profile("agent-default");
     PromptInput {
         stable_prefix: PromptStablePrefix {
-            harness_contract: HarnessContractSnapshot {
+            harness_contract: HarnessContract {
                 runtime_version: "0.1.0".to_string(),
                 contract_schema_version: 1,
             },
-            identity_envelope: IdentityEnvelopeSnapshot {
+            identity_envelope: IdentityEnvelope {
                 schema_version: 1,
                 source_revision: format!(
                     "{}@spec:{}@updated:{}",
@@ -47,27 +46,27 @@ fn base_input() -> PromptInput {
                 material: serde_json::from_str(&agent_profile.material_json)
                     .expect("agent material json"),
             },
-            session_baseline: SessionBaselineSnapshot {
-                session_anchor: SessionAnchorSnapshot {
+            session_baseline: SessionBaseline {
+                session_anchor: SessionAnchor {
                     session_id: "session-1".to_string(),
                     started_at_unix_ms: 1_765_000_000_000,
                 },
-                capability_surface: CapabilitySurfaceSnapshot {
+                capability_surface: CapabilitySurface {
                     environments: vec![
-                        CapabilityEnvironmentSnapshot {
+                        CapabilityEnvironment {
                             id: "filesystem".to_string(),
                             name: "Filesystem".to_string(),
                             description: "Stateful filesystem environment rooted at a base path."
                                 .to_string(),
-                            actions: vec![CapabilityActionSnapshot {
+                            actions: vec![CapabilityAction {
                                 action_id: "filesystem__list".to_string(),
                                 description:
                                     "List directory entries for a non-empty relative path."
                                         .to_string(),
-                                mode_support: ActionModeSupportSnapshot::AwaitOnly,
+                                mode_support: ActionModeSupportContract::AwaitOnly,
                                 discovery: false,
                             }],
-                            recipes: vec![CapabilityRecipeSnapshot {
+                            recipes: vec![CapabilityRecipe {
                                 title: "Find files".to_string(),
                                 steps: vec![
                                     "Call filesystem__list with path '.'.".to_string(),
@@ -75,21 +74,21 @@ fn base_input() -> PromptInput {
                                 ],
                             }],
                         },
-                        CapabilityEnvironmentSnapshot {
+                        CapabilityEnvironment {
                             id: "system".to_string(),
                             name: "System".to_string(),
                             description: "Inspect runtime context and metadata.".to_string(),
-                            actions: vec![CapabilityActionSnapshot {
+                            actions: vec![CapabilityAction {
                                 action_id: "system__get_time".to_string(),
                                 description: "Get current server time context.".to_string(),
-                                mode_support: ActionModeSupportSnapshot::AwaitOnly,
+                                mode_support: ActionModeSupportContract::AwaitOnly,
                                 discovery: true,
                             }],
                             recipes: vec![],
                         },
                     ],
                 },
-                participant_envelope: ParticipantEnvelopeSnapshot {
+                participant_envelope: ParticipantEnvelope {
                     schema_version: 1,
                     source_revision: "user-default@1765000000000".to_string(),
                     material: json!({
@@ -287,7 +286,7 @@ fn transcript_preserves_execution_event_order() {
 #[test]
 fn bundle_includes_session_compaction_summaries() {
     let mut input = base_input();
-    input.compaction_blocks = vec![SummaryBlockRefSnapshot {
+    input.compaction_blocks = vec![SummaryBlockRef {
         id: "history-summary-000024".to_string(),
         source_range_start: 0,
         source_range_end: 24,

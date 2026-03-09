@@ -6,7 +6,9 @@ use reqwest::header::RETRY_AFTER;
 use serde_json::{Value, json};
 
 use crate::agent::SessionActionCatalog;
-use crate::agent::model_adapter::{ModelAdapter, ModelAdapterFuture, ModelEventSink};
+use crate::agent::model_adapter::{
+    ModelAdapter, ModelAdapterError, ModelAdapterFuture, ModelEventSink,
+};
 use crate::agent::retry::RetryPolicy;
 use crate::agent::types::{
     ActionArgDeltaNote, ActionArgDoneNote, ActionInvocation, ModelDeltaEvent,
@@ -55,18 +57,20 @@ impl OpenAiModelAdapter {
         prompt_messages: &[PromptMessage],
         action_catalog: &SessionActionCatalog,
         mut on_event: F,
-    ) -> Result<ModelInvocationOutcome, String>
+    ) -> Result<ModelInvocationOutcome, ModelAdapterError>
     where
         F: FnMut(ModelDeltaEvent) + Send,
     {
         let Some(api_key) = self.api_key.as_deref() else {
-            return Err("OPENAI_API_KEY is required but not configured".to_string());
+            return Err(ModelAdapterError::non_retryable(
+                "OPENAI_API_KEY is required but not configured",
+            ));
         };
 
         let mut attempts = 0usize;
         let reasoning_effort = DEFAULT_REASONING_EFFORT;
         let max_retries = self.retry_policy.max_retries();
-        let mut last_error = String::new();
+        let mut last_error: Option<ModelAdapterError> = None;
 
         while attempts <= max_retries {
             on_event(ModelDeltaEvent::StreamNote(StreamNote {
@@ -113,10 +117,10 @@ impl OpenAiModelAdapter {
                     match result {
                         Ok(outcome) => return Ok(outcome),
                         Err(error) => {
-                            if is_non_retryable_stream_error(&error) {
+                            if error.is_semantic_retryable() {
                                 return Err(error);
                             }
-                            last_error = error;
+                            last_error = Some(error);
                             if attempts >= max_retries {
                                 break;
                             }
@@ -137,11 +141,11 @@ impl OpenAiModelAdapter {
                     let status = response.status();
                     let retry_after = parse_retry_after(response.headers());
                     let text = response.text().await.unwrap_or_default();
-                    last_error = format!(
+                    last_error = Some(ModelAdapterError::non_retryable(format!(
                         "OpenAI request failed: status={} body={}",
                         status.as_u16(),
                         truncate_for_log(&text)
-                    );
+                    )));
 
                     if should_retry_status(status.as_u16()) && attempts < max_retries {
                         let delay = self.retry_policy.compute_delay(attempts, retry_after);
@@ -161,7 +165,9 @@ impl OpenAiModelAdapter {
                     break;
                 }
                 Err(error) => {
-                    last_error = format!("OpenAI transport error: {error}");
+                    last_error = Some(ModelAdapterError::non_retryable(format!(
+                        "OpenAI transport error: {error}"
+                    )));
                     if should_retry_transport(&error) && attempts < max_retries {
                         let delay = self.retry_policy.compute_delay(attempts, None);
                         on_event(ModelDeltaEvent::StreamNote(StreamNote {
@@ -181,7 +187,9 @@ impl OpenAiModelAdapter {
             }
         }
 
-        Err(last_error)
+        Err(last_error.unwrap_or_else(|| {
+            ModelAdapterError::non_retryable("OpenAI request failed without an error payload")
+        }))
     }
 
     async fn parse_stream<F>(
@@ -189,7 +197,7 @@ impl OpenAiModelAdapter {
         response: reqwest::Response,
         action_catalog: &SessionActionCatalog,
         on_event: &mut F,
-    ) -> Result<ModelInvocationOutcome, String>
+    ) -> Result<ModelInvocationOutcome, ModelAdapterError>
     where
         F: FnMut(ModelDeltaEvent) + Send,
     {
@@ -203,7 +211,9 @@ impl OpenAiModelAdapter {
         let mut assistant_outputs = Vec::new();
 
         while let Some(chunk_result) = stream.next().await {
-            let bytes = chunk_result.map_err(|error| format!("stream chunk error: {error}"))?;
+            let bytes = chunk_result.map_err(|error| {
+                ModelAdapterError::non_retryable(format!("stream chunk error: {error}"))
+            })?;
             line_buffer.push_str(&String::from_utf8_lossy(&bytes));
 
             while let Some(newline_index) = line_buffer.find('\n') {
@@ -229,8 +239,11 @@ impl OpenAiModelAdapter {
                     });
                 }
 
-                let value: Value = serde_json::from_str(payload)
-                    .map_err(|error| format!("invalid stream json payload: {error}"))?;
+                let value: Value = serde_json::from_str(payload).map_err(|error| {
+                    ModelAdapterError::non_retryable(format!(
+                        "invalid stream json payload: {error}"
+                    ))
+                })?;
                 handle_stream_event(
                     value,
                     action_catalog,
@@ -288,7 +301,7 @@ fn handle_stream_event<F>(
     diagnostics: &mut Vec<String>,
     active_assistant_output: &mut String,
     assistant_outputs: &mut Vec<String>,
-) -> Result<(), String>
+) -> Result<(), ModelAdapterError>
 where
     F: FnMut(ModelDeltaEvent) + Send,
 {
@@ -429,7 +442,9 @@ where
             }
         }
         "response.error" => {
-            return Err(format!("OpenAI stream error payload: {value}"));
+            return Err(ModelAdapterError::non_retryable(format!(
+                "OpenAI stream error payload: {value}"
+            )));
         }
         _ => {}
     }
@@ -445,7 +460,7 @@ fn maybe_finalize_item<F>(
     dispatched_keys: &mut HashSet<String>,
     action_call_count: &mut usize,
     diagnostics: &mut Vec<String>,
-) -> Result<(), String>
+) -> Result<(), ModelAdapterError>
 where
     F: FnMut(ModelDeltaEvent) + Send,
 {
@@ -508,7 +523,7 @@ fn maybe_dispatch_partial<F>(
     dispatched_keys: &mut HashSet<String>,
     action_call_count: &mut usize,
     diagnostics: &mut Vec<String>,
-) -> Result<(), String>
+) -> Result<(), ModelAdapterError>
 where
     F: FnMut(ModelDeltaEvent) + Send,
 {
@@ -522,22 +537,23 @@ where
     }
 
     let args_value: Value = serde_json::from_str(&arguments_raw).map_err(|error| {
-        format!(
+        ModelAdapterError::semantic_retryable(format!(
             "invalid arguments JSON for action `{raw_action_id}`: {error}; payload={arguments_raw}"
-        )
+        ))
     })?;
 
     let canonical_action_id = action_catalog
         .validate_action(&raw_action_id, &args_value)
         .map_err(|error| {
-            format!(
+            ModelAdapterError::semantic_retryable(format!(
                 "action `{raw_action_id}` validation failed: {error}; args={}",
                 truncate_for_log(&arguments_raw)
-            )
+            ))
         })?;
 
-    let args_json = serde_json::to_string(&args_value)
-        .map_err(|error| format!("failed to canonicalize action args: {error}"))?;
+    let args_json = serde_json::to_string(&args_value).map_err(|error| {
+        ModelAdapterError::non_retryable(format!("failed to canonicalize action args: {error}"))
+    })?;
 
     on_event(ModelDeltaEvent::ActionInvocation(ActionInvocation {
         action_id: canonical_action_id.clone(),
@@ -673,13 +689,6 @@ fn should_retry_status(status: u16) -> bool {
 
 fn should_retry_transport(error: &reqwest::Error) -> bool {
     error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
-}
-
-fn is_non_retryable_stream_error(error: &str) -> bool {
-    error.contains("validation failed")
-        || error.contains("invalid arguments JSON for action")
-        || error.contains("unknown action `")
-        || error.contains("is not available in this session")
 }
 
 fn truncate_for_log(value: &str) -> String {

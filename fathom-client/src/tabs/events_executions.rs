@@ -54,12 +54,6 @@ impl ExecutionsEventsTab {
         ) || matches!(
             event,
             EventRecord::Session {
-                kind: SessionEventRecordKind::AgentStream { phase, detail },
-                ..
-            } if phase == "agent.diagnostic" && is_action_validation_error(detail)
-        ) || matches!(
-            event,
-            EventRecord::Session {
                 kind: SessionEventRecordKind::TurnFailure { .. },
                 ..
             }
@@ -214,12 +208,6 @@ impl ExecutionsEventsTab {
 
         Text::from(lines)
     }
-}
-
-fn is_action_validation_error(detail: &str) -> bool {
-    detail.contains("validation failed")
-        || detail.contains("invalid arguments JSON for action")
-        || detail.contains("unknown action `")
 }
 
 fn is_ctrl_enter_like(key: &KeyEvent) -> bool {
@@ -426,22 +414,6 @@ mod tests {
         });
 
         assert_eq!(tab.lines.line_count(), 0);
-    }
-
-    #[test]
-    fn keeps_validation_failure_diagnostics() {
-        let mut tab = ExecutionsEventsTab::new();
-        tab.on_event(&EventRecord::Session {
-            session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::AgentStream {
-                phase: "agent.diagnostic".to_string(),
-                detail:
-                    "openai request failed: action `filesystem__list` validation failed: missing path"
-                        .to_string(),
-            },
-        });
-
-        assert_eq!(tab.lines.line_count(), 1);
     }
 
     #[test]

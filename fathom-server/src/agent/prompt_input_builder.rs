@@ -211,11 +211,10 @@ fn prompt_event_from_execution_update(update: &pb::ExecutionUpdateTrigger) -> Op
 mod tests {
     use crate::agent::prompt_input_builder::build_prompt_input;
     use crate::agent::types::{
-        ActionModeSupportSnapshot, AgentInvocationContext, CapabilityActionSnapshot,
-        CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
-        HarnessContractSnapshot, IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot,
-        PromptEvent, ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot,
-        SessionCompactionSnapshot,
+        ActionModeSupportContract, AgentInvocationContext, CapabilityAction, CapabilityEnvironment,
+        CapabilityRecipe, CapabilitySurface, HarnessContract, IdentityEnvelope,
+        ParticipantEnvelope, PromptEvent, ResolvedPayloadLookupHint, SessionAnchor,
+        SessionBaseline, SessionCompaction,
     };
     use crate::history::HistoryEvent;
     use crate::history::schema::{HistoryActorKind, HistoryEventKind, UserMessageHistoryPayload};
@@ -226,11 +225,11 @@ mod tests {
     fn base_context(recent_history: Vec<HistoryEvent>) -> AgentInvocationContext {
         let agent_profile = default_agent_profile("agent-default");
         AgentInvocationContext {
-            harness_contract: HarnessContractSnapshot {
+            harness_contract: HarnessContract {
                 runtime_version: "0.1.0".to_string(),
                 contract_schema_version: 1,
             },
-            identity_envelope: IdentityEnvelopeSnapshot {
+            identity_envelope: IdentityEnvelope {
                 schema_version: 1,
                 source_revision: format!(
                     "{}@spec:{}@updated:{}",
@@ -241,25 +240,25 @@ mod tests {
                 material: serde_json::from_str(&agent_profile.material_json)
                     .expect("agent material json"),
             },
-            session_baseline: SessionBaselineSnapshot {
-                session_anchor: SessionAnchorSnapshot {
+            session_baseline: SessionBaseline {
+                session_anchor: SessionAnchor {
                     session_id: "session-1".to_string(),
                     started_at_unix_ms: 1_765_000_000_000,
                 },
-                capability_surface: CapabilitySurfaceSnapshot {
-                    environments: vec![CapabilityEnvironmentSnapshot {
+                capability_surface: CapabilitySurface {
+                    environments: vec![CapabilityEnvironment {
                         id: "filesystem".to_string(),
                         name: "Filesystem".to_string(),
                         description: "Stateful filesystem environment rooted at a base path."
                             .to_string(),
-                        actions: vec![CapabilityActionSnapshot {
+                        actions: vec![CapabilityAction {
                             action_id: "filesystem__list".to_string(),
                             description: "List directory entries for a non-empty relative path."
                                 .to_string(),
-                            mode_support: ActionModeSupportSnapshot::AwaitOnly,
+                            mode_support: ActionModeSupportContract::AwaitOnly,
                             discovery: false,
                         }],
-                        recipes: vec![CapabilityRecipeSnapshot {
+                        recipes: vec![CapabilityRecipe {
                             title: "Find files".to_string(),
                             steps: vec![
                                 "Call filesystem__list with path '.'.".to_string(),
@@ -268,7 +267,7 @@ mod tests {
                         }],
                     }],
                 },
-                participant_envelope: ParticipantEnvelopeSnapshot {
+                participant_envelope: ParticipantEnvelope {
                     schema_version: 1,
                     source_revision: "user-default@1765000000000".to_string(),
                     material: json!({
@@ -287,7 +286,7 @@ mod tests {
             resolved_payload_lookups: vec![],
             triggers: vec![],
             recent_history,
-            compaction: SessionCompactionSnapshot::default(),
+            compaction: SessionCompaction::default(),
         }
     }
 

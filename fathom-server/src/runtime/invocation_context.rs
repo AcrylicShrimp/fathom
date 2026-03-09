@@ -1,9 +1,8 @@
 use super::Runtime;
 use crate::agent::{
-    ActionModeSupportSnapshot, AgentInvocationContext, CapabilityActionSnapshot,
-    CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
-    HarnessContractSnapshot, IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot,
-    ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot,
+    ActionModeSupportContract, AgentInvocationContext, CapabilityAction, CapabilityEnvironment,
+    CapabilityRecipe, CapabilitySurface, HarnessContract, IdentityEnvelope, ParticipantEnvelope,
+    ResolvedPayloadLookupHint, SessionAnchor, SessionBaseline,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::profile_material::{agent_identity_material, participant_profile_material};
@@ -43,9 +42,9 @@ impl Runtime {
             .collect::<Vec<_>>();
 
         AgentInvocationContext {
-            harness_contract: self.build_harness_contract_snapshot(),
-            identity_envelope: self.build_identity_envelope_snapshot(state),
-            session_baseline: self.build_session_baseline_snapshot(state),
+            harness_contract: self.build_harness_contract(),
+            identity_envelope: self.build_identity_envelope(state),
+            session_baseline: self.build_session_baseline(state),
             resolved_payload_lookups,
             triggers: triggers.to_vec(),
             recent_history,
@@ -53,15 +52,15 @@ impl Runtime {
         }
     }
 
-    fn build_harness_contract_snapshot(&self) -> HarnessContractSnapshot {
-        HarnessContractSnapshot {
+    fn build_harness_contract(&self) -> HarnessContract {
+        HarnessContract {
             runtime_version: env!("CARGO_PKG_VERSION").to_string(),
             contract_schema_version: 1,
         }
     }
 
-    fn build_identity_envelope_snapshot(&self, state: &SessionState) -> IdentityEnvelopeSnapshot {
-        IdentityEnvelopeSnapshot {
+    fn build_identity_envelope(&self, state: &SessionState) -> IdentityEnvelope {
+        IdentityEnvelope {
             schema_version: 1,
             source_revision: format!(
                 "{}@spec:{}@updated:{}",
@@ -73,18 +72,18 @@ impl Runtime {
         }
     }
 
-    fn build_session_baseline_snapshot(&self, state: &SessionState) -> SessionBaselineSnapshot {
-        SessionBaselineSnapshot {
-            session_anchor: SessionAnchorSnapshot {
+    fn build_session_baseline(&self, state: &SessionState) -> SessionBaseline {
+        SessionBaseline {
+            session_anchor: SessionAnchor {
                 session_id: state.session_id.clone(),
                 started_at_unix_ms: state.created_at_unix_ms,
             },
-            capability_surface: self.build_capability_surface_snapshot(state),
-            participant_envelope: self.build_participant_envelope_snapshot(state),
+            capability_surface: self.build_capability_surface(state),
+            participant_envelope: self.build_participant_envelope(state),
         }
     }
 
-    fn build_capability_surface_snapshot(&self, state: &SessionState) -> CapabilitySurfaceSnapshot {
+    fn build_capability_surface(&self, state: &SessionState) -> CapabilitySurface {
         let mut environments = state
             .engaged_environment_ids
             .iter()
@@ -93,7 +92,7 @@ impl Runtime {
                 let mut actions =
                     EnvironmentRegistry::environment_action_summaries(environment_id)?
                         .into_iter()
-                        .map(|action| CapabilityActionSnapshot {
+                        .map(|action| CapabilityAction {
                             action_id: action.id,
                             description: action.description,
                             mode_support: map_mode_support(action.mode_support),
@@ -104,13 +103,13 @@ impl Runtime {
                 let mut recipes = environment
                     .recipes
                     .into_iter()
-                    .map(|recipe| CapabilityRecipeSnapshot {
+                    .map(|recipe| CapabilityRecipe {
                         title: recipe.title,
                         steps: recipe.steps,
                     })
                     .collect::<Vec<_>>();
                 recipes.sort_by(|a, b| a.title.cmp(&b.title));
-                Some(CapabilityEnvironmentSnapshot {
+                Some(CapabilityEnvironment {
                     id: environment.id,
                     name: environment.name,
                     description: environment.description,
@@ -120,20 +119,17 @@ impl Runtime {
             })
             .collect::<Vec<_>>();
         environments.sort_by(|a, b| a.id.cmp(&b.id));
-        CapabilitySurfaceSnapshot { environments }
+        CapabilitySurface { environments }
     }
 
-    fn build_participant_envelope_snapshot(
-        &self,
-        state: &SessionState,
-    ) -> ParticipantEnvelopeSnapshot {
+    fn build_participant_envelope(&self, state: &SessionState) -> ParticipantEnvelope {
         let participants = state
             .participant_user_ids
             .iter()
             .filter_map(|user_id| state.participant_user_profiles_copy.get(user_id))
             .map(participant_profile_material)
             .collect::<Vec<_>>();
-        ParticipantEnvelopeSnapshot {
+        ParticipantEnvelope {
             schema_version: 1,
             source_revision: participant_envelope_source_revision(state),
             material: json!({
@@ -159,10 +155,10 @@ fn participant_envelope_source_revision(state: &SessionState) -> String {
         .join(",")
 }
 
-fn map_mode_support(mode_support: ActionModeSupport) -> ActionModeSupportSnapshot {
+fn map_mode_support(mode_support: ActionModeSupport) -> ActionModeSupportContract {
     match mode_support {
-        ActionModeSupport::AwaitOnly => ActionModeSupportSnapshot::AwaitOnly,
-        ActionModeSupport::AwaitOrDetach => ActionModeSupportSnapshot::AwaitOrDetach,
+        ActionModeSupport::AwaitOnly => ActionModeSupportContract::AwaitOnly,
+        ActionModeSupport::AwaitOrDetach => ActionModeSupportContract::AwaitOrDetach,
     }
 }
 
@@ -171,9 +167,7 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::Runtime;
-    use crate::agent::{
-        ActionModeSupportSnapshot, SessionCompactionSnapshot, SummaryBlockRefSnapshot,
-    };
+    use crate::agent::{ActionModeSupportContract, SessionCompaction, SummaryBlockRef};
     use crate::environment::EnvironmentRegistry;
     use crate::session::SessionState;
     use crate::util::{default_agent_profile, default_user_profile};
@@ -267,7 +261,7 @@ mod tests {
                 .environments
                 .iter()
                 .flat_map(|environment| environment.actions.iter())
-                .any(|action| action.mode_support == ActionModeSupportSnapshot::AwaitOrDetach)
+                .any(|action| action.mode_support == ActionModeSupportContract::AwaitOrDetach)
         );
         assert!(
             context
@@ -278,7 +272,7 @@ mod tests {
                 .flat_map(|environment| environment.actions.iter())
                 .all(|action| matches!(
                     action.mode_support,
-                    ActionModeSupportSnapshot::AwaitOnly | ActionModeSupportSnapshot::AwaitOrDetach
+                    ActionModeSupportContract::AwaitOnly | ActionModeSupportContract::AwaitOrDetach
                 ))
         );
     }
@@ -310,9 +304,9 @@ mod tests {
             .name = "Updated User".to_string();
         state.engaged_environment_ids =
             BTreeSet::from(["filesystem".to_string(), "shell".to_string()]);
-        state.compaction = SessionCompactionSnapshot {
+        state.compaction = SessionCompaction {
             last_compacted_history_index: 24,
-            summary_blocks: vec![SummaryBlockRefSnapshot {
+            summary_blocks: vec![SummaryBlockRef {
                 id: "history-summary-000024".to_string(),
                 source_range_start: 0,
                 source_range_end: 24,

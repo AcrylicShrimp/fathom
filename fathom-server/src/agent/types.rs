@@ -8,7 +8,7 @@ use crate::history::{HistoryEvent, PayloadPreview};
 use fathom_protocol::pb;
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct SummaryBlockRefSnapshot {
+pub(crate) struct SummaryBlockRef {
     pub(crate) id: String,
     pub(crate) source_range_start: u64,
     pub(crate) source_range_end: u64,
@@ -17,16 +17,16 @@ pub(crate) struct SummaryBlockRefSnapshot {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
-pub(crate) struct SessionCompactionSnapshot {
+pub(crate) struct SessionCompaction {
     pub(crate) last_compacted_history_index: u64,
-    pub(crate) summary_blocks: Vec<SummaryBlockRefSnapshot>,
+    pub(crate) summary_blocks: Vec<SummaryBlockRef>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PromptStablePrefix {
-    pub(crate) harness_contract: HarnessContractSnapshot,
-    pub(crate) identity_envelope: IdentityEnvelopeSnapshot,
-    pub(crate) session_baseline: SessionBaselineSnapshot,
+    pub(crate) harness_contract: HarnessContract,
+    pub(crate) identity_envelope: IdentityEnvelope,
+    pub(crate) session_baseline: SessionBaseline,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,68 +34,68 @@ pub(crate) struct PromptInput {
     pub(crate) stable_prefix: PromptStablePrefix,
     pub(crate) transcript_events: Vec<PromptEvent>,
     pub(crate) pending_events: Vec<PromptEvent>,
-    pub(crate) compaction_blocks: Vec<SummaryBlockRefSnapshot>,
+    pub(crate) compaction_blocks: Vec<SummaryBlockRef>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentInvocationContext {
-    pub(crate) harness_contract: HarnessContractSnapshot,
-    pub(crate) identity_envelope: IdentityEnvelopeSnapshot,
-    pub(crate) session_baseline: SessionBaselineSnapshot,
+    pub(crate) harness_contract: HarnessContract,
+    pub(crate) identity_envelope: IdentityEnvelope,
+    pub(crate) session_baseline: SessionBaseline,
     pub(crate) resolved_payload_lookups: Vec<ResolvedPayloadLookupHint>,
     pub(crate) triggers: Vec<pb::Trigger>,
     pub(crate) recent_history: Vec<HistoryEvent>,
-    pub(crate) compaction: SessionCompactionSnapshot,
+    pub(crate) compaction: SessionCompaction,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct HarnessContractSnapshot {
+pub(crate) struct HarnessContract {
     pub(crate) runtime_version: String,
     pub(crate) contract_schema_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct IdentityEnvelopeSnapshot {
+pub(crate) struct IdentityEnvelope {
     pub(crate) schema_version: u32,
     pub(crate) source_revision: String,
     pub(crate) material: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct SessionBaselineSnapshot {
-    pub(crate) session_anchor: SessionAnchorSnapshot,
-    pub(crate) capability_surface: CapabilitySurfaceSnapshot,
-    pub(crate) participant_envelope: ParticipantEnvelopeSnapshot,
+pub(crate) struct SessionBaseline {
+    pub(crate) session_anchor: SessionAnchor,
+    pub(crate) capability_surface: CapabilitySurface,
+    pub(crate) participant_envelope: ParticipantEnvelope,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct SessionAnchorSnapshot {
+pub(crate) struct SessionAnchor {
     pub(crate) session_id: String,
     pub(crate) started_at_unix_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct CapabilitySurfaceSnapshot {
-    pub(crate) environments: Vec<CapabilityEnvironmentSnapshot>,
+pub(crate) struct CapabilitySurface {
+    pub(crate) environments: Vec<CapabilityEnvironment>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct CapabilityEnvironmentSnapshot {
+pub(crate) struct CapabilityEnvironment {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) description: String,
-    pub(crate) actions: Vec<CapabilityActionSnapshot>,
-    pub(crate) recipes: Vec<CapabilityRecipeSnapshot>,
+    pub(crate) actions: Vec<CapabilityAction>,
+    pub(crate) recipes: Vec<CapabilityRecipe>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ActionModeSupportSnapshot {
+pub(crate) enum ActionModeSupportContract {
     AwaitOnly,
     AwaitOrDetach,
 }
 
-impl ActionModeSupportSnapshot {
+impl ActionModeSupportContract {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::AwaitOnly => "await_only",
@@ -105,21 +105,21 @@ impl ActionModeSupportSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct CapabilityActionSnapshot {
+pub(crate) struct CapabilityAction {
     pub(crate) action_id: String,
     pub(crate) description: String,
-    pub(crate) mode_support: ActionModeSupportSnapshot,
+    pub(crate) mode_support: ActionModeSupportContract,
     pub(crate) discovery: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct CapabilityRecipeSnapshot {
+pub(crate) struct CapabilityRecipe {
     pub(crate) title: String,
     pub(crate) steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ParticipantEnvelopeSnapshot {
+pub(crate) struct ParticipantEnvelope {
     pub(crate) schema_version: u32,
     pub(crate) source_revision: String,
     pub(crate) material: Value,

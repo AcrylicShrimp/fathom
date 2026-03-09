@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::agent::SummaryBlockRefSnapshot;
+use crate::agent::SummaryBlockRef;
 use crate::history::HistoryEvent;
 use crate::history::schema::HistoryEventKind;
 use crate::session::state::SessionState;
@@ -27,16 +27,13 @@ pub(crate) fn maybe_compact_history(state: &mut SessionState) {
         let summary_text =
             summarize_history_batch(&block_id, &batch, source_range_start, source_range_end);
 
-        state
-            .compaction
-            .summary_blocks
-            .push(SummaryBlockRefSnapshot {
-                id: block_id,
-                source_range_start,
-                source_range_end,
-                summary_text,
-                created_at_unix_ms: now_unix_ms(),
-            });
+        state.compaction.summary_blocks.push(SummaryBlockRef {
+            id: block_id,
+            source_range_start,
+            source_range_end,
+            summary_text,
+            created_at_unix_ms: now_unix_ms(),
+        });
         state.compaction.last_compacted_history_index = source_range_end;
     }
 }

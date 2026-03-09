@@ -9,12 +9,11 @@ mod types;
 #[cfg(test)]
 pub(crate) use types::{ActionArgDeltaNote, ActionArgDoneNote};
 pub(crate) use types::{
-    ActionInvocation, ActionModeSupportSnapshot, AgentInvocationContext, AgentTurnOutcome,
-    CapabilityActionSnapshot, CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot,
-    CapabilitySurfaceSnapshot, CompiledPrompt, HarnessContractSnapshot, IdentityEnvelopeSnapshot,
-    ModelDeltaEvent, ModelInvocationOutcome, ParticipantEnvelopeSnapshot, PromptMessage,
-    ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot,
-    SessionCompactionSnapshot, StreamNote, SummaryBlockRefSnapshot,
+    ActionInvocation, ActionModeSupportContract, AgentInvocationContext, AgentTurnOutcome,
+    CapabilityAction, CapabilityEnvironment, CapabilityRecipe, CapabilitySurface, CompiledPrompt,
+    HarnessContract, IdentityEnvelope, ModelDeltaEvent, ModelInvocationOutcome,
+    ParticipantEnvelope, PromptMessage, ResolvedPayloadLookupHint, SessionAnchor, SessionBaseline,
+    SessionCompaction, StreamNote, SummaryBlockRef,
 };
 
 use std::sync::Arc;
@@ -191,18 +190,23 @@ You MUST emit at least one valid action call or assistant output."
                 }
                 Err(error) => {
                     diagnostics.push(format!(
-                        "model adapter `{}` request failed: {error}",
-                        self.model_adapter.provider_name()
+                        "model adapter `{}` request failed: {}",
+                        self.model_adapter.provider_name(),
+                        error.message()
                     ));
-                    if semantic_attempt == 0 && is_recoverable_action_error(&error) {
-                        retry_feedback = Some(build_retry_feedback(&error));
+                    if semantic_attempt == 0 && error.is_semantic_retryable() {
+                        retry_feedback = Some(build_retry_feedback(error.message()));
                         diagnostics.push(
                             "retrying semantic attempt due to recoverable action-call error"
                                 .to_string(),
                         );
                         continue;
                     }
-                    return AgentTurnOutcome::failure("model_adapter_error", error, diagnostics);
+                    return AgentTurnOutcome::failure(
+                        "model_adapter_error",
+                        error.message(),
+                        diagnostics,
+                    );
                 }
             }
         }
@@ -213,13 +217,6 @@ You MUST emit at least one valid action call or assistant output."
             diagnostics,
         )
     }
-}
-
-fn is_recoverable_action_error(error: &str) -> bool {
-    error.contains("validation failed")
-        || error.contains("invalid arguments JSON for action")
-        || error.contains("unknown action `")
-        || error.contains("is not available in this session")
 }
 
 fn build_retry_feedback(error: &str) -> String {
@@ -245,26 +242,26 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::build_retry_feedback;
-    use super::model_adapter::{ModelAdapter, ModelAdapterFuture, ModelEventSink};
+    use super::model_adapter::{
+        ModelAdapter, ModelAdapterError, ModelAdapterFuture, ModelEventSink,
+    };
     use super::types::PromptDiagnostics;
     use super::{
-        AgentInvocationContext, AgentOrchestrator, CapabilityEnvironmentSnapshot,
-        CapabilitySurfaceSnapshot, CompiledPrompt, HarnessContractSnapshot,
-        IdentityEnvelopeSnapshot, ModelDeltaEvent, ModelInvocationOutcome,
-        ParticipantEnvelopeSnapshot, PromptMessage, SessionAnchorSnapshot, SessionBaselineSnapshot,
-        SessionCompactionSnapshot,
+        AgentInvocationContext, AgentOrchestrator, CapabilityEnvironment, CapabilitySurface,
+        CompiledPrompt, HarnessContract, IdentityEnvelope, ModelDeltaEvent, ModelInvocationOutcome,
+        ParticipantEnvelope, PromptMessage, SessionAnchor, SessionBaseline, SessionCompaction,
     };
     use crate::util::default_agent_profile;
     use serde_json::json;
 
     struct FakeModelAdapter {
         availability_error: Option<String>,
-        outcomes: Mutex<VecDeque<Result<ModelInvocationOutcome, String>>>,
+        outcomes: Mutex<VecDeque<Result<ModelInvocationOutcome, ModelAdapterError>>>,
         prompt_message_counts: Mutex<Vec<usize>>,
     }
 
     impl FakeModelAdapter {
-        fn with_outcomes(outcomes: Vec<Result<ModelInvocationOutcome, String>>) -> Self {
+        fn with_outcomes(outcomes: Vec<Result<ModelInvocationOutcome, ModelAdapterError>>) -> Self {
             Self {
                 availability_error: None,
                 outcomes: Mutex::new(VecDeque::from(outcomes)),
@@ -313,11 +310,11 @@ mod tests {
     fn test_context() -> AgentInvocationContext {
         let agent_profile = default_agent_profile("agent-default");
         AgentInvocationContext {
-            harness_contract: HarnessContractSnapshot {
+            harness_contract: HarnessContract {
                 runtime_version: "0.1.0".to_string(),
                 contract_schema_version: 1,
             },
-            identity_envelope: IdentityEnvelopeSnapshot {
+            identity_envelope: IdentityEnvelope {
                 schema_version: 1,
                 source_revision: format!(
                     "{}@spec:{}@updated:{}",
@@ -328,13 +325,13 @@ mod tests {
                 material: serde_json::from_str(&agent_profile.material_json)
                     .expect("agent material json"),
             },
-            session_baseline: SessionBaselineSnapshot {
-                session_anchor: SessionAnchorSnapshot {
+            session_baseline: SessionBaseline {
+                session_anchor: SessionAnchor {
                     session_id: "session-1".to_string(),
                     started_at_unix_ms: 1_765_000_000_000,
                 },
-                capability_surface: CapabilitySurfaceSnapshot {
-                    environments: vec![CapabilityEnvironmentSnapshot {
+                capability_surface: CapabilitySurface {
+                    environments: vec![CapabilityEnvironment {
                         id: "filesystem".to_string(),
                         name: "Filesystem".to_string(),
                         description: "Stateful filesystem environment rooted at a base path."
@@ -343,7 +340,7 @@ mod tests {
                         recipes: vec![],
                     }],
                 },
-                participant_envelope: ParticipantEnvelopeSnapshot {
+                participant_envelope: ParticipantEnvelope {
                     schema_version: 1,
                     source_revision: "user-default@1765000000000".to_string(),
                     material: json!({"participants": []}),
@@ -352,7 +349,7 @@ mod tests {
             resolved_payload_lookups: vec![],
             triggers: vec![],
             recent_history: vec![],
-            compaction: SessionCompactionSnapshot::default(),
+            compaction: SessionCompaction::default(),
         }
     }
 
@@ -376,10 +373,10 @@ mod tests {
     #[tokio::test]
     async fn run_turn_retries_after_recoverable_model_adapter_error() {
         let fake_adapter = Arc::new(FakeModelAdapter::with_outcomes(vec![
-            Err(
+            Err(ModelAdapterError::semantic_retryable(
                 "action `filesystem__read` validation failed: missing or invalid string field `path`"
                     .to_string(),
-            ),
+            )),
             Ok(ModelInvocationOutcome {
                 action_call_count: 1,
                 assistant_outputs: vec![],
