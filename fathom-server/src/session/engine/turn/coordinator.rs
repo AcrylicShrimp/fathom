@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 use crate::environment::EnvironmentActorHandle;
-use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::state::SessionState;
+use fathom_protocol::pb;
 
 use super::super::events::emit_event;
 use super::super::history_flush::flush_history;

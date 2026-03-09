@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::pb;
+use fathom_protocol::pb;
 
 pub(crate) fn now_unix_ms() -> i64 {
     SystemTime::now()
@@ -49,25 +49,5 @@ pub(crate) fn default_agent_profile(agent_id: &str) -> pb::AgentProfile {
         long_term_memory_md: "# Long-Term Agent Memory\\n".to_string(),
         spec_version: 1,
         updated_at_unix_ms: now_unix_ms(),
-    }
-}
-
-pub(crate) fn execution_status_label(status: pb::ExecutionStatus) -> &'static str {
-    match status {
-        pb::ExecutionStatus::Unspecified => "unspecified",
-        pb::ExecutionStatus::Pending => "pending",
-        pb::ExecutionStatus::Running => "running",
-        pb::ExecutionStatus::Succeeded => "succeeded",
-        pb::ExecutionStatus::Failed => "failed",
-        pb::ExecutionStatus::Canceled => "canceled",
-    }
-}
-
-pub(crate) fn refresh_scope_label(scope: pb::RefreshScope) -> &'static str {
-    match scope {
-        pb::RefreshScope::Unspecified => "unspecified",
-        pb::RefreshScope::Agent => "agent",
-        pb::RefreshScope::User => "user",
-        pb::RefreshScope::All => "all",
     }
 }

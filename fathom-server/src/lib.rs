@@ -2,12 +2,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use fathom_protocol::pb::runtime_service_server::RuntimeServiceServer;
 use tonic::transport::Server;
 use tracing::info;
-
-pub mod pb {
-    tonic::include_proto!("fathom.v1");
-}
 
 mod agent;
 mod environment;
@@ -17,8 +14,6 @@ mod service;
 mod session;
 mod system_env;
 mod util;
-
-use pb::runtime_service_server::RuntimeServiceServer;
 pub use service::FathomRuntimeService;
 
 pub async fn serve(addr: SocketAddr) -> Result<()> {

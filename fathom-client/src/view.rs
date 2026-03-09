@@ -1,5 +1,8 @@
-use crate::pb;
-use crate::util::{execution_status_label, refresh_scope_label};
+use fathom_protocol::pb;
+use fathom_protocol::{
+    execution_status_label, execution_update_phase_label, refresh_scope_label,
+    system_notice_level_label,
+};
 
 const EXECUTION_ARGS_PREVIEW_MAX_CHARS: usize = 140;
 const EXECUTION_RESULT_PREVIEW_MAX_CHARS: usize = 160;
@@ -391,34 +394,10 @@ fn normalize_json_if_possible(source: &str) -> String {
     }
 }
 
-fn system_notice_level_label(level: pb::SystemNoticeLevel) -> &'static str {
-    match level {
-        pb::SystemNoticeLevel::Unspecified => "unspecified",
-        pb::SystemNoticeLevel::Info => "info",
-        pb::SystemNoticeLevel::Warning => "warning",
-        pb::SystemNoticeLevel::Error => "error",
-    }
-}
-
-fn execution_update_phase_label(phase: pb::ExecutionUpdatePhase) -> &'static str {
-    match phase {
-        pb::ExecutionUpdatePhase::Unspecified => "unspecified",
-        pb::ExecutionUpdatePhase::ArgumentsDelta => "arguments.delta",
-        pb::ExecutionUpdatePhase::ArgumentsReady => "arguments.ready",
-        pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded => "awaited_execution_succeeded",
-        pb::ExecutionUpdatePhase::AwaitedExecutionFailed => "awaited_execution_failed",
-        pb::ExecutionUpdatePhase::ExecutionDetached => "execution_detached",
-        pb::ExecutionUpdatePhase::DetachedExecutionSucceeded => "detached_execution_succeeded",
-        pb::ExecutionUpdatePhase::DetachedExecutionFailed => "detached_execution_failed",
-        pb::ExecutionUpdatePhase::ExecutionRejected => "execution_rejected",
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::pb;
-
     use super::{render_event_record, session_event_to_record};
+    use fathom_protocol::pb;
 
     #[test]
     fn execution_event_render_includes_action_and_args_preview() {

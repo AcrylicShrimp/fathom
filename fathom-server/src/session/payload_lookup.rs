@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use crate::history::EXECUTION_PAYLOAD_LOOKUP_ACTION;
-use crate::pb;
+use fathom_protocol::pb;
 
 pub(crate) const LOOKUP_INJECT_MAX_BYTES: usize = 16 * 1024;
 
@@ -95,7 +95,7 @@ fn truncate_utf8_by_bytes(value: &str) -> (String, usize) {
 mod tests {
     use super::{LOOKUP_INJECT_MAX_BYTES, resolve_from_execution};
     use crate::history::EXECUTION_PAYLOAD_LOOKUP_ACTION;
-    use crate::pb;
+    use fathom_protocol::pb;
 
     #[test]
     fn resolve_parses_lookup_payload() {

@@ -6,9 +6,9 @@ use crate::agent::{
     ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot, TurnSnapshot,
 };
 use crate::environment::EnvironmentRegistry;
-use crate::pb;
 use crate::session::SessionState;
 use fathom_env::ActionModeSupport;
+use fathom_protocol::pb;
 use serde_json::json;
 
 impl Runtime {

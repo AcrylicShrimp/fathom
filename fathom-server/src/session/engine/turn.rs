@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::environment::EnvironmentActorHandle;
-use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::state::{SessionCommand, SessionState};
+use fathom_protocol::pb;
 
 use self::coordinator::TurnCoordinator;
 

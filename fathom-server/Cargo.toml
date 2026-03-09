@@ -12,16 +12,12 @@ fathom-env-brave-search.workspace = true
 fathom-env-fs.workspace = true
 fathom-env-jina.workspace = true
 fathom-env-shell.workspace = true
+fathom-protocol.workspace = true
 futures-util.workspace = true
-prost.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true
-tonic-prost.workspace = true
 tracing.workspace = true
-
-[build-dependencies]
-tonic-prost-build.workspace = true

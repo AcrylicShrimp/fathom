@@ -10,14 +10,15 @@ use crate::environment::{
 };
 use crate::history;
 use crate::history::build_payload_preview;
-use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::diagnostics::execution_to_json;
 use crate::session::execution_context::ExecutionContext;
 use crate::session::payload_lookup::resolve_from_execution;
 use crate::session::state::{ActiveExecutionState, InFlightActionState, SessionState};
-use crate::util::{execution_status_label, now_unix_ms};
+use crate::util::now_unix_ms;
 use fathom_env::ActionModeSupport;
+use fathom_protocol::pb;
+use fathom_protocol::{execution_status_label, execution_update_phase_label};
 
 use super::events::{emit_event, emit_execution_update_event, enqueue_trigger};
 
@@ -426,7 +427,7 @@ pub(super) fn settled_execution_output(
         pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded
         | pb::ExecutionUpdatePhase::DetachedExecutionSucceeded => format!(
             "{} execution `{}` finished as {}",
-            phase_label(phase),
+            execution_update_phase_label(phase),
             execution.execution_id,
             status
         ),
@@ -434,7 +435,7 @@ pub(super) fn settled_execution_output(
         | pb::ExecutionUpdatePhase::DetachedExecutionFailed => {
             format!(
                 "{} execution `{}` finished as {} message={}",
-                phase_label(phase),
+                execution_update_phase_label(phase),
                 execution.execution_id,
                 status,
                 truncate_inline(&execution.result_message, 180)
@@ -443,13 +444,13 @@ pub(super) fn settled_execution_output(
         pb::ExecutionUpdatePhase::ExecutionDetached => {
             format!(
                 "{} execution `{}`",
-                phase_label(phase),
+                execution_update_phase_label(phase),
                 execution.execution_id
             )
         }
         pb::ExecutionUpdatePhase::ExecutionRejected => format!(
             "{} execution `{}` message={}",
-            phase_label(phase),
+            execution_update_phase_label(phase),
             execution.execution_id,
             truncate_inline(&execution.result_message, 180)
         ),
@@ -543,20 +544,6 @@ fn outcome_phase_for_commit(
     }
 }
 
-fn phase_label(phase: pb::ExecutionUpdatePhase) -> &'static str {
-    match phase {
-        pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded => "awaited_execution_succeeded",
-        pb::ExecutionUpdatePhase::AwaitedExecutionFailed => "awaited_execution_failed",
-        pb::ExecutionUpdatePhase::ExecutionDetached => "execution_detached",
-        pb::ExecutionUpdatePhase::DetachedExecutionSucceeded => "detached_execution_succeeded",
-        pb::ExecutionUpdatePhase::DetachedExecutionFailed => "detached_execution_failed",
-        pb::ExecutionUpdatePhase::ExecutionRejected => "execution_rejected",
-        pb::ExecutionUpdatePhase::ArgumentsDelta => "arguments_delta",
-        pb::ExecutionUpdatePhase::ArgumentsReady => "arguments_ready",
-        pb::ExecutionUpdatePhase::Unspecified => "unspecified",
-    }
-}
-
 fn truncate_inline(value: &str, max_chars: usize) -> String {
     let value = value.replace('\n', "\\n");
     if value.chars().count() <= max_chars {
@@ -582,11 +569,11 @@ mod tests {
         EnvironmentCommittedAction, EnvironmentRegistry, RequestedExecutionMode,
         spawn_environment_actor,
     };
-    use crate::pb;
     use crate::runtime::Runtime;
     use crate::session::state::{ActiveExecutionState, InFlightActionState};
     use crate::session::{SessionCommand, SessionState};
     use crate::util::{default_agent_profile, default_user_profile};
+    use fathom_protocol::pb;
 
     fn test_state() -> SessionState {
         let user_id = "user-a".to_string();

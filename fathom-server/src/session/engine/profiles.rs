@@ -1,6 +1,6 @@
-use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::state::SessionState;
+use fathom_protocol::pb;
 
 pub(super) async fn apply_profile_refresh(
     runtime: &Runtime,

@@ -1,10 +1,10 @@
 use tokio::sync::broadcast;
 use tracing::warn;
 
-use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::state::SessionState;
 use crate::util::now_unix_ms;
+use fathom_protocol::pb;
 
 pub(super) fn enqueue_automatic_heartbeat(
     runtime: &Runtime,

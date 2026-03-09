@@ -7,12 +7,12 @@ use crate::environment::EnvironmentRegistry;
 use super::types::TurnSnapshot;
 
 #[derive(Clone)]
-pub(crate) struct SessionToolCatalog {
+pub(crate) struct SessionActionCatalog {
     registry: EnvironmentRegistry,
     engaged_environment_ids: BTreeSet<String>,
 }
 
-impl SessionToolCatalog {
+impl SessionActionCatalog {
     pub(crate) fn from_snapshot(registry: EnvironmentRegistry, snapshot: &TurnSnapshot) -> Self {
         Self {
             registry,

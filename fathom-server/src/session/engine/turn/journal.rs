@@ -10,7 +10,7 @@ pub(super) fn append_turn_started_record(
     runtime: &Runtime,
     state: &SessionState,
     turn_id: u64,
-    turn_triggers: &[crate::pb::Trigger],
+    turn_triggers: &[fathom_protocol::pb::Trigger],
 ) {
     runtime.diagnostics().append_session_record(
         &state.session_id,

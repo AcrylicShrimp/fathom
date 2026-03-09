@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
 use crate::agent::TurnSnapshot;
-use crate::pb;
-use crate::util::execution_status_label;
+use fathom_protocol::execution_status_label;
+use fathom_protocol::pb;
 
 pub(crate) fn execution_to_json(execution: &pb::Execution) -> Value {
     let status = pb::ExecutionStatus::try_from(execution.status)

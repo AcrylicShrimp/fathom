@@ -1,8 +1,8 @@
 use tonic::Status;
 
 use super::Runtime;
-use crate::pb;
 use crate::util::{default_agent_profile, default_user_profile, now_unix_ms};
+use fathom_protocol::pb;
 
 impl Runtime {
     pub(crate) async fn get_or_create_user_profile(&self, user_id: &str) -> pb::UserProfile {

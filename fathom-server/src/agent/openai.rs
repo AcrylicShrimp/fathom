@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use reqwest::header::RETRY_AFTER;
 use serde_json::{Value, json};
 
-use crate::agent::SessionToolCatalog;
+use crate::agent::SessionActionCatalog;
 use crate::agent::model_adapter::{ModelAdapter, ModelAdapterFuture, ModelEventSink};
 use crate::agent::retry::RetryPolicy;
 use crate::agent::types::{
@@ -53,7 +53,7 @@ impl OpenAiModelAdapter {
     async fn stream_actions<F>(
         &self,
         prompt_messages: &[PromptMessage],
-        tool_catalog: &SessionToolCatalog,
+        action_catalog: &SessionActionCatalog,
         mut on_event: F,
     ) -> Result<ModelInvocationOutcome, String>
     where
@@ -93,7 +93,7 @@ impl OpenAiModelAdapter {
                 "stream": true,
                 "input": input_messages,
                 "reasoning": { "effort": reasoning_effort },
-                "tools": tool_catalog.openai_action_definitions(),
+                "tools": action_catalog.openai_action_definitions(),
                 "tool_choice": "auto"
             });
 
@@ -108,7 +108,7 @@ impl OpenAiModelAdapter {
             match response {
                 Ok(response) if response.status().is_success() => {
                     let result = self
-                        .parse_stream(response, tool_catalog, &mut on_event)
+                        .parse_stream(response, action_catalog, &mut on_event)
                         .await;
                     match result {
                         Ok(outcome) => return Ok(outcome),
@@ -187,7 +187,7 @@ impl OpenAiModelAdapter {
     async fn parse_stream<F>(
         &self,
         response: reqwest::Response,
-        tool_catalog: &SessionToolCatalog,
+        action_catalog: &SessionActionCatalog,
         on_event: &mut F,
     ) -> Result<ModelInvocationOutcome, String>
     where
@@ -233,7 +233,7 @@ impl OpenAiModelAdapter {
                     .map_err(|error| format!("invalid stream json payload: {error}"))?;
                 handle_stream_event(
                     value,
-                    tool_catalog,
+                    action_catalog,
                     on_event,
                     &mut partial_calls,
                     &mut dispatched_keys,
@@ -267,11 +267,11 @@ impl ModelAdapter for OpenAiModelAdapter {
     fn stream_prompt<'a>(
         &'a self,
         prompt_messages: &'a [PromptMessage],
-        tool_catalog: &'a SessionToolCatalog,
+        action_catalog: &'a SessionActionCatalog,
         on_event: &'a mut ModelEventSink<'a>,
     ) -> ModelAdapterFuture<'a> {
         Box::pin(async move {
-            self.stream_actions(prompt_messages, tool_catalog, on_event)
+            self.stream_actions(prompt_messages, action_catalog, on_event)
                 .await
         })
     }
@@ -280,7 +280,7 @@ impl ModelAdapter for OpenAiModelAdapter {
 #[allow(clippy::too_many_arguments)]
 fn handle_stream_event<F>(
     value: Value,
-    tool_catalog: &SessionToolCatalog,
+    action_catalog: &SessionActionCatalog,
     on_event: &mut F,
     partial_calls: &mut HashMap<String, PartialActionCall>,
     dispatched_keys: &mut HashSet<String>,
@@ -307,7 +307,7 @@ where
             if let Some(item) = value.get("item") {
                 maybe_finalize_item(
                     item,
-                    tool_catalog,
+                    action_catalog,
                     on_event,
                     partial_calls,
                     dispatched_keys,
@@ -416,7 +416,7 @@ where
 
             if let Some(name) = partial.name.clone() {
                 maybe_dispatch_partial(
-                    tool_catalog,
+                    action_catalog,
                     key,
                     name,
                     partial.arguments.clone(),
@@ -439,7 +439,7 @@ where
 
 fn maybe_finalize_item<F>(
     item: &Value,
-    tool_catalog: &SessionToolCatalog,
+    action_catalog: &SessionActionCatalog,
     on_event: &mut F,
     partial_calls: &mut HashMap<String, PartialActionCall>,
     dispatched_keys: &mut HashSet<String>,
@@ -482,7 +482,7 @@ where
 
     if let Some(name) = entry.name.clone() {
         maybe_dispatch_partial(
-            tool_catalog,
+            action_catalog,
             key,
             name,
             entry.arguments.clone(),
@@ -499,7 +499,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 fn maybe_dispatch_partial<F>(
-    tool_catalog: &SessionToolCatalog,
+    action_catalog: &SessionActionCatalog,
     key: String,
     raw_action_id: String,
     arguments_raw: String,
@@ -527,7 +527,7 @@ where
         )
     })?;
 
-    let canonical_action_id = tool_catalog
+    let canonical_action_id = action_catalog
         .validate_action(&raw_action_id, &args_value)
         .map_err(|error| {
             format!(

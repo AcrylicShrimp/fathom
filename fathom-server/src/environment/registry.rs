@@ -459,7 +459,7 @@ fn ensure_schema_object_properties(schema: &mut Map<String, Value>) {
             json!({
                 "type": "string",
                 "enum": ["await", "detach"],
-                "description": "Optional execution mode override. Omit this field or use `await` unless the capability surface says the tool supports detach."
+                "description": "Optional execution mode override. Omit this field or use `await` unless the capability surface says the action supports detach."
             })
         });
 }
@@ -525,7 +525,7 @@ fn validate_execution_mode_arg(
     };
     if mode == RequestedExecutionMode::Detach && mode_support != ActionModeSupport::AwaitOrDetach {
         return Err(format!(
-            "action `{action_id}` validation failed: detach is not allowed for this tool; use await"
+            "action `{action_id}` validation failed: detach is not allowed for this action; use await"
         ));
     }
     Ok(())
@@ -842,18 +842,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_execution_mode_rejects_detach_for_await_only_tool() {
+    fn validate_execution_mode_rejects_detach_for_await_only_action() {
         let error = validate_execution_mode_arg(
             "filesystem__list",
             &json!({"path":".","reasoning":"inspect workspace","execution_mode":"detach"}),
             ActionModeSupport::AwaitOnly,
         )
-        .expect_err("detach must be rejected for await_only tools");
+        .expect_err("detach must be rejected for await_only actions");
         assert!(error.contains("detach is not allowed"));
     }
 
     #[test]
-    fn validate_execution_mode_accepts_detach_for_detach_capable_tool() {
+    fn validate_execution_mode_accepts_detach_for_detach_capable_action() {
         let result = validate_execution_mode_arg(
             "system__get_context",
             &json!({"reasoning":"inspect runtime","execution_mode":"detach"}),

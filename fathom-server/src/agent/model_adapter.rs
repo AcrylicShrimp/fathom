@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::agent::{ModelDeltaEvent, ModelInvocationOutcome, PromptMessage, SessionToolCatalog};
+use crate::agent::{ModelDeltaEvent, ModelInvocationOutcome, PromptMessage, SessionActionCatalog};
 
 pub(crate) type ModelEventSink<'a> = dyn FnMut(ModelDeltaEvent) + Send + 'a;
 pub(crate) type ModelAdapterFuture<'a> =
@@ -17,7 +17,7 @@ pub(crate) trait ModelAdapter: Send + Sync {
     fn stream_prompt<'a>(
         &'a self,
         prompt_messages: &'a [PromptMessage],
-        tool_catalog: &'a SessionToolCatalog,
+        action_catalog: &'a SessionActionCatalog,
         on_event: &'a mut ModelEventSink<'a>,
     ) -> ModelAdapterFuture<'a>;
 }
@@ -48,7 +48,7 @@ impl ModelAdapter for UnavailableModelAdapter {
     fn stream_prompt<'a>(
         &'a self,
         _prompt_messages: &'a [PromptMessage],
-        _tool_catalog: &'a SessionToolCatalog,
+        _action_catalog: &'a SessionActionCatalog,
         _on_event: &'a mut ModelEventSink<'a>,
     ) -> ModelAdapterFuture<'a> {
         let error = self.init_error.clone();

@@ -6,9 +6,9 @@ use tonic::Status;
 
 use super::{EVENT_BUFFER_SIZE, Runtime, SESSION_CMD_BUFFER_SIZE};
 use crate::environment::EnvironmentRegistry;
-use crate::pb;
 use crate::session::{SessionCommand, SessionRuntime, SessionState, run_session_actor};
 use crate::util::dedup_ids;
+use fathom_protocol::pb;
 
 impl Runtime {
     pub(crate) async fn create_session(

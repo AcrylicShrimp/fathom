@@ -14,9 +14,9 @@ use std::sync::atomic::AtomicU64;
 use tokio::sync::RwLock;
 
 use crate::agent::AgentOrchestrator;
-use crate::pb;
 use crate::session::SessionRuntime;
 use diagnostics::DiagnosticsSink;
+use fathom_protocol::pb;
 
 pub(crate) const EVENT_BUFFER_SIZE: usize = 256;
 pub(crate) const SESSION_CMD_BUFFER_SIZE: usize = 128;

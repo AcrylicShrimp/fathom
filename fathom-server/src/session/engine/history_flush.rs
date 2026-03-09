@@ -1,6 +1,6 @@
 use crate::history;
-use crate::pb;
 use crate::session::state::SessionState;
+use fathom_protocol::pb;
 
 pub(super) fn flush_history(
     state: &mut SessionState,

@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
-use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::execution_context::ExecutionContext;
+use fathom_protocol::pb;
 
 const DEFAULT_LOOKUP_LIMIT: usize = 4096;
 const MAX_LOOKUP_LIMIT: usize = 65536;

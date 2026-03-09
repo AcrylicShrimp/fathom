@@ -1,9 +1,9 @@
+mod action_catalog;
 mod model_adapter;
 mod openai;
 mod prompt;
 mod prompt_assembler;
 mod retry;
-mod tool_catalog;
 mod types;
 
 pub(crate) use types::{
@@ -19,10 +19,10 @@ pub(crate) use types::{
 use std::sync::Arc;
 
 use crate::environment::EnvironmentRegistry;
+pub(crate) use action_catalog::SessionActionCatalog;
 use model_adapter::{ModelAdapter, UnavailableModelAdapter};
 use openai::OpenAiModelAdapter;
 use prompt_assembler::PromptAssembler;
-pub(crate) use tool_catalog::SessionToolCatalog;
 
 #[derive(Clone)]
 pub(crate) struct AgentOrchestrator {
@@ -52,8 +52,8 @@ impl AgentOrchestrator {
         self.prompt_assembler.assemble(snapshot, retry_feedback)
     }
 
-    fn session_tool_catalog(&self, snapshot: &TurnSnapshot) -> SessionToolCatalog {
-        SessionToolCatalog::from_snapshot(self.environment_registry.clone(), snapshot)
+    fn session_action_catalog(&self, snapshot: &TurnSnapshot) -> SessionActionCatalog {
+        SessionActionCatalog::from_snapshot(self.environment_registry.clone(), snapshot)
     }
 
     fn from_parts(
@@ -99,7 +99,7 @@ impl AgentOrchestrator {
 
         let mut diagnostics = Vec::new();
         let mut retry_feedback: Option<String> = None;
-        let tool_catalog = self.session_tool_catalog(snapshot);
+        let action_catalog = self.session_action_catalog(snapshot);
 
         for semantic_attempt in 0..=1usize {
             on_event(ModelDeltaEvent::StreamNote(StreamNote {
@@ -125,7 +125,7 @@ impl AgentOrchestrator {
             let event_sink: &mut model_adapter::ModelEventSink<'_> = &mut on_event;
             let result = self
                 .model_adapter
-                .stream_prompt(&prompt_bundle.messages, &tool_catalog, event_sink)
+                .stream_prompt(&prompt_bundle.messages, &action_catalog, event_sink)
                 .await;
 
             match result {
@@ -289,7 +289,7 @@ mod tests {
         fn stream_prompt<'a>(
             &'a self,
             prompt_messages: &'a [PromptMessage],
-            _tool_catalog: &'a super::SessionToolCatalog,
+            _action_catalog: &'a super::SessionActionCatalog,
             _on_event: &'a mut ModelEventSink<'a>,
         ) -> ModelAdapterFuture<'a> {
             self.prompt_message_counts

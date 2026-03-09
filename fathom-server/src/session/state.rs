@@ -6,10 +6,10 @@ use tonic::Status;
 use crate::agent::SessionCompactionSnapshot;
 use crate::environment::{EnvironmentCommittedAction, RequestedExecutionMode};
 use crate::history::HistoryEvent;
-use crate::pb;
 use crate::session::payload_lookup::ResolvedPayloadLookup;
 use crate::util::now_unix_ms;
 use fathom_env::EnvironmentSnapshot;
+use fathom_protocol::pb;
 
 #[derive(Clone)]
 pub(crate) struct SessionRuntime {

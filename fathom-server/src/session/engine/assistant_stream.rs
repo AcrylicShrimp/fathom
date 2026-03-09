@@ -1,5 +1,5 @@
-use crate::pb;
 use crate::util::now_unix_ms;
+use fathom_protocol::pb;
 
 const STREAM_BATCH_WINDOW_MS: i64 = 40;
 
@@ -107,7 +107,7 @@ impl TurnAssistantStreamEmitter {
 #[cfg(test)]
 mod tests {
     use super::TurnAssistantStreamEmitter;
-    use crate::pb;
+    use fathom_protocol::pb;
 
     #[test]
     fn emitter_streams_assistant_delta_and_done() {

@@ -4,14 +4,14 @@ use tokio::sync::broadcast;
 
 use crate::agent::{ModelDeltaEvent, StreamNote};
 use crate::environment::EnvironmentActorHandle;
-use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::state::SessionState;
 use crate::util::now_unix_ms;
+use fathom_protocol::pb;
 
+use super::action_dispatch::TurnActionDispatcher;
 use super::assistant_stream::TurnAssistantStreamEmitter;
 use super::events::{emit_event, emit_execution_update_event};
-use super::tool_dispatch::TurnToolDispatcher;
 
 pub(super) struct TurnDeltaTransport<'a> {
     session_id: String,
@@ -19,7 +19,7 @@ pub(super) struct TurnDeltaTransport<'a> {
     stream_emitter: TurnAssistantStreamEmitter,
     invocation_stream_notes: Vec<serde_json::Value>,
     streamed_assistant_outputs: Vec<(String, String)>,
-    tool_dispatcher: TurnToolDispatcher<'a>,
+    action_dispatcher: TurnActionDispatcher<'a>,
 }
 
 impl<'a> TurnDeltaTransport<'a> {
@@ -37,7 +37,7 @@ impl<'a> TurnDeltaTransport<'a> {
             stream_emitter: TurnAssistantStreamEmitter::new(turn_id),
             invocation_stream_notes: Vec::new(),
             streamed_assistant_outputs: Vec::new(),
-            tool_dispatcher: TurnToolDispatcher::new(
+            action_dispatcher: TurnActionDispatcher::new(
                 runtime,
                 state,
                 events_tx,
@@ -50,7 +50,7 @@ impl<'a> TurnDeltaTransport<'a> {
         match event {
             ModelDeltaEvent::StreamNote(note) => self.on_stream_note(note),
             ModelDeltaEvent::ActionInvocation(action_invocation) => {
-                self.tool_dispatcher
+                self.action_dispatcher
                     .dispatch_action_invocation(action_invocation);
             }
             ModelDeltaEvent::ActionArgsDelta(note) => emit_execution_update_event(
@@ -103,7 +103,7 @@ impl<'a> TurnDeltaTransport<'a> {
     }
 
     pub(super) fn action_dispatches(&self) -> &[serde_json::Value] {
-        self.tool_dispatcher.action_dispatches()
+        self.action_dispatcher.action_dispatches()
     }
 
     pub(super) fn drain_streamed_assistant_outputs(&mut self) -> Vec<(String, String)> {

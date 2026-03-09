@@ -1,4 +1,4 @@
-use crate::pb;
+use fathom_protocol::pb;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AgentTurnSummary {

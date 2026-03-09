@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
-use crate::pb;
 use crate::runtime::Runtime;
+use fathom_protocol::pb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProfileKind {

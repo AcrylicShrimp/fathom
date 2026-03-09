@@ -7,10 +7,10 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status};
 
-use crate::pb;
-use crate::pb::runtime_service_server::RuntimeService;
 use crate::runtime::{DEFAULT_EXECUTION_CAPACITY, Runtime};
 use crate::util::now_unix_ms;
+use fathom_protocol::pb;
+use fathom_protocol::pb::runtime_service_server::RuntimeService;
 
 #[derive(Clone)]
 pub struct FathomRuntimeService {

@@ -643,14 +643,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
- "prost",
+ "fathom-protocol",
  "ratatui",
  "serde_json",
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-prost",
- "tonic-prost-build",
  "tracing",
 ]
 
@@ -705,6 +703,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fathom-protocol"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "fathom-server"
 version = "0.1.0"
 dependencies = [
@@ -715,16 +723,14 @@ dependencies = [
  "fathom-env-fs",
  "fathom-env-jina",
  "fathom-env-shell",
+ "fathom-protocol",
  "futures-util",
- "prost",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-prost",
- "tonic-prost-build",
  "tracing",
 ]
 

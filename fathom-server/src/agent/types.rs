@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::history::HistoryEvent;
-use crate::pb;
+use fathom_protocol::pb;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SummaryBlockRefSnapshot {

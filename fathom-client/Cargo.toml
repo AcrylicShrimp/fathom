@@ -7,14 +7,10 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 crossterm.workspace = true
-prost.workspace = true
+fathom-protocol.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true
-tonic-prost.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
-
-[build-dependencies]
-tonic-prost-build.workspace = true

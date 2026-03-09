@@ -9,9 +9,9 @@ use crate::history::schema::{
     ExecutionRequestedHistoryPayload, ExecutionSucceededHistoryPayload, HistoryActorKind,
     HistoryEvent, HistoryEventKind, RefreshProfileHistoryPayload, UserMessageHistoryPayload,
 };
-use crate::pb;
 use crate::session::state::SessionState;
-use crate::util::{execution_status_label, refresh_scope_label};
+use fathom_protocol::pb;
+use fathom_protocol::{execution_status_label, refresh_scope_label};
 
 pub(crate) fn trigger_line(state: &SessionState, trigger: &pb::Trigger) -> HistoryEvent {
     let Some(kind) = trigger.kind.as_ref() else {

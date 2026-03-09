@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use crate::agent::types::{PromptMessage, PromptMessageBundle, PromptMessageStat, TurnSnapshot};
 use crate::history::build_payload_preview;
 use crate::history::{HistoryEvent, HistoryEventKind, PayloadPreview};
-use crate::pb;
+use fathom_protocol::pb;
 
 const TOKEN_DIVISOR_CHARS: usize = 4;
 const DEFAULT_CONTEXT_LIMIT_TOKENS: usize = 128_000;
@@ -888,8 +888,8 @@ mod tests {
         ExecutionSucceededHistoryPayload, HistoryActorKind, HistoryEventKind,
         UserMessageHistoryPayload,
     };
-    use crate::pb;
     use crate::util::default_agent_profile;
+    use fathom_protocol::pb;
     use serde_json::json;
 
     use super::build_agent_prompt_bundle;

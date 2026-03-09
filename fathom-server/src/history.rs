@@ -4,9 +4,9 @@ mod preview;
 pub(crate) mod schema;
 mod transform;
 
-use crate::pb;
 use crate::session::state::SessionState;
 use crate::util::now_unix_ms;
+use fathom_protocol::pb;
 
 use self::compaction::maybe_compact_history;
 

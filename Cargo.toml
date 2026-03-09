@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "fathom-protocol",
     "fathom-server",
     "fathom-client",
     "fathom",
@@ -26,6 +27,7 @@ fathom-env-brave-search = { path = "envs/fathom-env-brave-search" }
 fathom-env-fs = { path = "envs/fathom-env-fs" }
 fathom-env-jina = { path = "envs/fathom-env-jina" }
 fathom-env-shell = { path = "envs/fathom-env-shell" }
+fathom-protocol = { path = "fathom-protocol" }
 futures-util = "0.3"
 glob = "0.3"
 prost = "0.14"

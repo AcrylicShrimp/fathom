@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow};
 use tonic::transport::Channel;
 
-use crate::pb;
-use crate::pb::runtime_service_client::RuntimeServiceClient;
 use crate::util::now_unix_ms;
+use fathom_protocol::pb;
+use fathom_protocol::pb::runtime_service_client::RuntimeServiceClient;
 
 const DEFAULT_AGENT_ID: &str = "agent-default";
 const DEFAULT_USER_ID: &str = "user-default";

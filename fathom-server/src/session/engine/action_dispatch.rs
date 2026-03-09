@@ -4,17 +4,17 @@ use tokio::sync::broadcast;
 
 use crate::agent::ActionInvocation;
 use crate::environment::EnvironmentActorHandle;
-use crate::pb;
 use crate::runtime::Runtime;
 use crate::session::diagnostics::execution_to_json;
 use crate::session::state::SessionState;
+use fathom_protocol::pb;
 
 use super::events::emit_execution_update_event;
 use super::tasks::{
     QueuedExecutionOutcome, queue_execution, queued_action_output, settled_execution_output,
 };
 
-pub(super) struct TurnToolDispatcher<'a> {
+pub(super) struct TurnActionDispatcher<'a> {
     runtime: &'a Runtime,
     state: &'a mut SessionState,
     events_tx: &'a broadcast::Sender<pb::SessionEvent>,
@@ -22,7 +22,7 @@ pub(super) struct TurnToolDispatcher<'a> {
     dispatched_actions: Vec<serde_json::Value>,
 }
 
-impl<'a> TurnToolDispatcher<'a> {
+impl<'a> TurnActionDispatcher<'a> {
     pub(super) fn new(
         runtime: &'a Runtime,
         state: &'a mut SessionState,
@@ -109,13 +109,13 @@ mod tests {
 
     use tokio::sync::{broadcast, mpsc};
 
-    use super::TurnToolDispatcher;
+    use super::TurnActionDispatcher;
     use crate::agent::ActionInvocation;
     use crate::environment::{EnvironmentRegistry, spawn_environment_actor};
-    use crate::pb;
     use crate::runtime::Runtime;
     use crate::session::{SessionCommand, SessionState};
     use crate::util::{default_agent_profile, default_user_profile};
+    use fathom_protocol::pb;
 
     fn test_state() -> SessionState {
         let user_id = "user-a".to_string();
@@ -143,7 +143,7 @@ mod tests {
         let environment_handles = HashMap::new();
 
         let mut dispatcher =
-            TurnToolDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
+            TurnActionDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
         dispatcher.dispatch_action_invocation(ActionInvocation {
             action_id: "shell__run".to_string(),
             args_json:
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_action_invocation_emits_execution_detached_for_detach_capable_tool() {
+    async fn dispatch_action_invocation_emits_execution_detached_for_detach_capable_action() {
         let runtime = Runtime::new(2, 10);
         let (events_tx, mut events_rx) = broadcast::channel(16);
         let mut state = test_state();
@@ -195,7 +195,7 @@ mod tests {
         let environment_handles = HashMap::from([("shell".to_string(), shell_handle)]);
 
         let mut dispatcher =
-            TurnToolDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
+            TurnActionDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
         dispatcher.dispatch_action_invocation(ActionInvocation {
             action_id: "shell__run".to_string(),
             args_json:
