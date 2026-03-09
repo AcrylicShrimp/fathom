@@ -184,7 +184,7 @@ mod tests {
             call_key: "call-key-1".to_string(),
             call_id: Some("call-id-1".to_string()),
             action_id: Some("filesystem__read".to_string()),
-            args_json: "{\"path\":\"Cargo.toml\",\"reasoning\":\"inspect manifest\"}".to_string(),
+            args_json: "{\"path\":\"Cargo.toml\"}".to_string(),
         }));
         transport.handle_model_event(ModelDeltaEvent::AssistantTextDelta("hel".to_string()));
         transport.handle_model_event(ModelDeltaEvent::AssistantTextDone("hello".to_string()));

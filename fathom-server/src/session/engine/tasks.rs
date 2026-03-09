@@ -442,33 +442,6 @@ pub(super) fn settled_execution_output(
     }
 }
 
-fn extract_reasoning_suffix(args_json: &str) -> String {
-    const MAX_REASONING_CHARS: usize = 160;
-
-    let Ok(args) = serde_json::from_str::<serde_json::Value>(args_json) else {
-        return String::new();
-    };
-    let reasoning = args
-        .get("reasoning")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let Some(reasoning) = reasoning else {
-        return String::new();
-    };
-    let reasoning = if reasoning.chars().count() > MAX_REASONING_CHARS {
-        let mut truncated = reasoning
-            .chars()
-            .take(MAX_REASONING_CHARS)
-            .collect::<String>();
-        truncated.push_str("...");
-        truncated
-    } else {
-        reasoning.to_string()
-    };
-    format!(" reasoning={reasoning}")
-}
-
 pub(super) fn queued_action_output(
     execution: &pb::Execution,
     call_id: Option<&str>,
@@ -480,7 +453,6 @@ pub(super) fn queued_action_output(
     let call_suffix = call_id
         .map(|value| format!(" call_id={value}"))
         .unwrap_or_default();
-    let reasoning_suffix = extract_reasoning_suffix(&execution.args_json);
     let mode_suffix = if requested_mode == RequestedExecutionMode::Detach {
         " mode=detach"
     } else {
@@ -488,8 +460,8 @@ pub(super) fn queued_action_output(
     };
 
     format!(
-        "submitted action `{}` as {} ({status}){}{}{}",
-        execution.action_id, execution.execution_id, call_suffix, mode_suffix, reasoning_suffix
+        "submitted action `{}` as {} ({status}){}{}",
+        execution.action_id, execution.execution_id, call_suffix, mode_suffix
     )
 }
 
@@ -587,9 +559,7 @@ mod tests {
             &environment_handles,
             ActionInvocation {
                 action_id: "filesystem__list".to_string(),
-                args_json:
-                    r#"{"path":".","reasoning":"inspect workspace","execution_mode":"detach"}"#
-                        .to_string(),
+                args_json: r#"{"path":".","execution_mode":"detach"}"#.to_string(),
                 call_key: "call-key-1".to_string(),
                 call_id: Some("call-id-1".to_string()),
             },
@@ -641,9 +611,7 @@ mod tests {
             &environment_handles,
             ActionInvocation {
                 action_id: "shell__run".to_string(),
-                args_json:
-                    r#"{"command":"pwd","reasoning":"run asynchronously","execution_mode":"detach"}"#
-                        .to_string(),
+                args_json: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
                 call_key: "call-key-1".to_string(),
                 call_id: Some("call-id-1".to_string()),
             },
@@ -687,7 +655,7 @@ mod tests {
             execution_id: execution_id.clone(),
             session_id: state.session_id.clone(),
             action_id: "filesystem__list".to_string(),
-            args_json: r#"{"path":".","reasoning":"inspect workspace"}"#.to_string(),
+            args_json: r#"{"path":"."}"#.to_string(),
             status: pb::ExecutionStatus::Running as i32,
             result_message: String::new(),
             created_at_unix_ms: created_at,
@@ -753,9 +721,7 @@ mod tests {
             execution_id: execution_id.clone(),
             session_id: state.session_id.clone(),
             action_id: "shell__run".to_string(),
-            args_json:
-                r#"{"command":"pwd","reasoning":"run asynchronously","execution_mode":"detach"}"#
-                    .to_string(),
+            args_json: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
             status: pb::ExecutionStatus::Running as i32,
             result_message: String::new(),
             created_at_unix_ms: created_at,

@@ -142,7 +142,7 @@ impl EnvironmentRegistry {
                     "type": "function",
                     "name": entry.canonical_action_id,
                     "description": spec.description,
-                    "parameters": with_reasoning_schema(spec.input_schema, spec.mode_support),
+                    "parameters": with_runtime_action_schema(spec.input_schema, spec.mode_support),
                 })
             })
             .collect()
@@ -240,7 +240,6 @@ impl EnvironmentRegistry {
                 "action `{canonical_action_id}` is not available in this session"
             ));
         }
-        validate_reasoning_arg(&canonical_action_id, args)?;
         validate_execution_mode_arg(&canonical_action_id, args, entry.action.spec().mode_support)?;
         entry.action.validate(args)?;
         Ok(canonical_action_id)
@@ -259,7 +258,7 @@ impl EnvironmentRegistry {
         environment_state: &Value,
         execution_timeout_ms: u64,
     ) -> Option<ActionOutcome> {
-        let execution_args_json = strip_runtime_fields_from_args_json(args_json);
+        let execution_args_json = strip_execution_control_fields_from_args_json(args_json);
         match resolved.environment_id.as_str() {
             fathom_env_fs::FILESYSTEM_ENVIRONMENT_ID => fathom_env_fs::execute_action(
                 resolved.action_name.as_str(),
@@ -423,16 +422,13 @@ impl EnvironmentRegistry {
     }
 }
 
-const ACTION_REASONING_KEY: &str = "reasoning";
-const ACTION_REASONING_MAX_CHARS: usize = 1_024;
 const ACTION_EXECUTION_MODE_KEY: &str = "execution_mode";
 
-fn with_reasoning_schema(input_schema: Value, mode_support: ActionModeSupport) -> Value {
+fn with_runtime_action_schema(input_schema: Value, mode_support: ActionModeSupport) -> Value {
     let Value::Object(mut schema) = input_schema else {
         return input_schema;
     };
     ensure_schema_object_properties(&mut schema, mode_support);
-    ensure_schema_required_reasoning(&mut schema);
     Value::Object(schema)
 }
 
@@ -446,16 +442,6 @@ fn ensure_schema_object_properties(
     let Value::Object(properties) = properties_entry else {
         return;
     };
-    properties
-        .entry(ACTION_REASONING_KEY.to_string())
-        .or_insert_with(|| {
-            json!({
-                "type": "string",
-                "minLength": 1,
-                "maxLength": ACTION_REASONING_MAX_CHARS,
-                "description": "Short reason for why this action is needed now."
-            })
-        });
     let supported_execution_modes = match mode_support {
         ActionModeSupport::AwaitOnly => vec![RequestedExecutionMode::Await.as_str()],
         ActionModeSupport::AwaitOrDetach => vec![
@@ -472,44 +458,6 @@ fn ensure_schema_object_properties(
                 "description": "Optional execution mode override. Omit this field or use `await` unless the capability surface says the action supports detach."
             })
         });
-}
-
-fn ensure_schema_required_reasoning(schema: &mut Map<String, Value>) {
-    let required_entry = schema
-        .entry("required".to_string())
-        .or_insert_with(|| Value::Array(Vec::new()));
-    let Value::Array(required) = required_entry else {
-        return;
-    };
-    if required
-        .iter()
-        .any(|value| value.as_str() == Some(ACTION_REASONING_KEY))
-    {
-        return;
-    }
-    required.push(Value::String(ACTION_REASONING_KEY.to_string()));
-}
-
-fn validate_reasoning_arg(action_id: &str, args: &Value) -> Result<(), String> {
-    let Some(args) = args.as_object() else {
-        return Err("action arguments must be a JSON object".to_string());
-    };
-    let reasoning = args
-        .get(ACTION_REASONING_KEY)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            format!(
-                "action `{action_id}` validation failed: missing non-empty string field `reasoning`"
-            )
-        })?;
-    if reasoning.chars().count() > ACTION_REASONING_MAX_CHARS {
-        return Err(format!(
-            "action `{action_id}` validation failed: field `reasoning` exceeds {ACTION_REASONING_MAX_CHARS} characters"
-        ));
-    }
-    Ok(())
 }
 
 fn validate_execution_mode_arg(
@@ -562,14 +510,13 @@ pub(crate) fn requested_execution_mode_from_args_json(
         .ok_or_else(|| format!("field `{ACTION_EXECUTION_MODE_KEY}` must be `await` or `detach`"))
 }
 
-fn strip_runtime_fields_from_args_json(args_json: &str) -> String {
+fn strip_execution_control_fields_from_args_json(args_json: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<Value>(args_json) else {
         return args_json.to_string();
     };
     let Some(args) = value.as_object_mut() else {
         return args_json.to_string();
     };
-    args.remove(ACTION_REASONING_KEY);
     args.remove(ACTION_EXECUTION_MODE_KEY);
     serde_json::to_string(&value).unwrap_or_else(|_| args_json.to_string())
 }
@@ -618,24 +565,27 @@ mod tests {
             EnvironmentRegistry::validate("filesystem__read", &json!({"path":"fs://notes.txt"}));
         assert!(invalid.is_err());
 
-        let valid = EnvironmentRegistry::validate(
-            "filesystem__read",
-            &json!({"path":"notes.txt", "reasoning":"read file requested by user"}),
-        );
+        let valid = EnvironmentRegistry::validate("filesystem__read", &json!({"path":"notes.txt"}));
         assert!(valid.is_ok());
     }
 
     #[test]
-    fn validates_reasoning_requirement() {
-        let missing_reasoning =
-            EnvironmentRegistry::validate("filesystem__read", &json!({"path":"notes.txt"}));
-        assert!(missing_reasoning.is_err());
+    fn openai_definitions_do_not_require_debug_field() {
+        let registry = EnvironmentRegistry::new();
+        let definitions = registry.openai_action_definitions();
 
-        let empty_reasoning = EnvironmentRegistry::validate(
-            "filesystem__read",
-            &json!({"path":"notes.txt","reasoning":"   "}),
-        );
-        assert!(empty_reasoning.is_err());
+        for definition in definitions {
+            let required = definition["parameters"]["required"]
+                .as_array()
+                .expect("required must be an array");
+            assert!(
+                required
+                    .iter()
+                    .all(|entry| entry.as_str() != Some("reasoning")),
+                "debug field must not be required for {}",
+                definition["name"]
+            );
+        }
     }
 
     #[test]
@@ -671,25 +621,6 @@ mod tests {
 
         assert!(description.contains("non-empty relative"));
         assert!(description.contains("use `.`"));
-    }
-
-    #[test]
-    fn openai_definitions_require_reasoning_field() {
-        let registry = EnvironmentRegistry::new();
-        let definitions = registry.openai_action_definitions();
-
-        for definition in definitions {
-            let required = definition["parameters"]["required"]
-                .as_array()
-                .expect("required must be an array");
-            assert!(
-                required
-                    .iter()
-                    .any(|entry| entry.as_str() == Some("reasoning")),
-                "reasoning must be required for {}",
-                definition["name"]
-            );
-        }
     }
 
     #[test]
@@ -759,11 +690,7 @@ mod tests {
         let allowed = BTreeSet::from(["filesystem".to_string()]);
 
         let error = registry
-            .validate_in_environments(
-                "shell__run",
-                &json!({"command":"pwd","reasoning":"inspect cwd"}),
-                &allowed,
-            )
+            .validate_in_environments("shell__run", &json!({"command":"pwd"}), &allowed)
             .expect_err("shell action should be rejected when shell is not engaged");
         assert!(error.contains("is not available in this session"));
     }
@@ -791,24 +718,21 @@ mod tests {
     }
 
     #[test]
-    fn strips_runtime_reasoning_field_for_execution() {
-        let raw = r#"{"query":"seti","count":5,"reasoning":"need sources"}"#;
-        let stripped = super::strip_runtime_fields_from_args_json(raw);
+    fn strip_execution_control_fields_preserves_regular_arguments() {
+        let raw = r#"{"query":"seti","count":5}"#;
+        let stripped = super::strip_execution_control_fields_from_args_json(raw);
         let value: serde_json::Value =
             serde_json::from_str(&stripped).expect("stripped args must be valid json");
-        assert!(value.get("reasoning").is_none());
         assert_eq!(value["query"], "seti");
         assert_eq!(value["count"], 5);
     }
 
     #[test]
     fn strips_execution_mode_field_for_execution() {
-        let raw =
-            r#"{"query":"seti","count":5,"reasoning":"need sources","execution_mode":"detach"}"#;
-        let stripped = super::strip_runtime_fields_from_args_json(raw);
+        let raw = r#"{"query":"seti","count":5,"execution_mode":"detach"}"#;
+        let stripped = super::strip_execution_control_fields_from_args_json(raw);
         let value: serde_json::Value =
             serde_json::from_str(&stripped).expect("stripped args must be valid json");
-        assert!(value.get("reasoning").is_none());
         assert!(value.get("execution_mode").is_none());
         assert_eq!(value["query"], "seti");
         assert_eq!(value["count"], 5);
@@ -816,17 +740,15 @@ mod tests {
 
     #[test]
     fn requested_execution_mode_defaults_to_await() {
-        let mode = requested_execution_mode_from_args_json(
-            r#"{"query":"seti","reasoning":"need sources"}"#,
-        )
-        .expect("mode should parse");
+        let mode = requested_execution_mode_from_args_json(r#"{"query":"seti"}"#)
+            .expect("mode should parse");
         assert_eq!(mode, RequestedExecutionMode::Await);
     }
 
     #[test]
     fn requested_execution_mode_accepts_detach() {
         let mode = requested_execution_mode_from_args_json(
-            r#"{"query":"seti","reasoning":"need sources","execution_mode":"detach"}"#,
+            r#"{"query":"seti","execution_mode":"detach"}"#,
         )
         .expect("mode should parse");
         assert_eq!(mode, RequestedExecutionMode::Detach);
@@ -834,10 +756,9 @@ mod tests {
 
     #[test]
     fn requested_execution_mode_rejects_invalid_values() {
-        let error = requested_execution_mode_from_args_json(
-            r#"{"query":"seti","reasoning":"need sources","execution_mode":"later"}"#,
-        )
-        .expect_err("invalid mode must be rejected");
+        let error =
+            requested_execution_mode_from_args_json(r#"{"query":"seti","execution_mode":"later"}"#)
+                .expect_err("invalid mode must be rejected");
         assert!(error.contains("must be `await` or `detach`"));
     }
 
@@ -845,7 +766,7 @@ mod tests {
     fn validate_execution_mode_allows_omitted_mode() {
         let result = validate_execution_mode_arg(
             "filesystem__list",
-            &json!({"path":".","reasoning":"inspect workspace"}),
+            &json!({"path":"."}),
             ActionModeSupport::AwaitOnly,
         );
         assert!(result.is_ok());
@@ -855,7 +776,7 @@ mod tests {
     fn validate_execution_mode_rejects_detach_for_await_only_action() {
         let error = validate_execution_mode_arg(
             "filesystem__list",
-            &json!({"path":".","reasoning":"inspect workspace","execution_mode":"detach"}),
+            &json!({"path":".","execution_mode":"detach"}),
             ActionModeSupport::AwaitOnly,
         )
         .expect_err("detach must be rejected for await_only actions");
@@ -866,7 +787,7 @@ mod tests {
     fn validate_execution_mode_accepts_detach_for_detach_capable_action() {
         let result = validate_execution_mode_arg(
             "system__get_context",
-            &json!({"reasoning":"inspect runtime","execution_mode":"detach"}),
+            &json!({"execution_mode":"detach"}),
             ActionModeSupport::AwaitOrDetach,
         );
         assert!(result.is_ok());
@@ -903,18 +824,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_reasoning_counts_unicode_characters_not_bytes() {
-        let valid = EnvironmentRegistry::validate(
-            "filesystem__read",
-            &json!({"path":"notes.txt", "reasoning": "가".repeat(1024)}),
-        );
+    fn validation_accepts_actions_without_debug_field() {
+        let valid = EnvironmentRegistry::validate("filesystem__read", &json!({"path":"notes.txt"}));
         assert!(valid.is_ok());
-
-        let invalid = EnvironmentRegistry::validate(
-            "filesystem__read",
-            &json!({"path":"notes.txt", "reasoning": "가".repeat(1025)}),
-        )
-        .expect_err("unicode reasoning beyond max should fail");
-        assert!(invalid.contains("exceeds 1024 characters"));
     }
 }

@@ -127,10 +127,7 @@ mod tests {
 
         let catalog = SessionActionCatalog::from_context(EnvironmentRegistry::new(), &context);
         let error = catalog
-            .validate_action(
-                "shell__run",
-                &json!({"command": "pwd", "reasoning": "inspect cwd"}),
-            )
+            .validate_action("shell__run", &json!({"command": "pwd"}))
             .expect_err("shell action should be rejected");
 
         assert!(error.contains("is not available in this session"));

@@ -19,7 +19,6 @@ pub(super) fn build_harness_contract_block(input: &PromptInput) -> String {
         "You may emit assistant text and/or action executions in the same turn.".to_string(),
         "Use only actions listed in the Session Baseline capability surface.".to_string(),
         "Use canonical action ids in the format env__action.".to_string(),
-        "Every execution request must include a concise `reasoning` field that explains why the call is necessary now.".to_string(),
         "Execution requests default to `await` semantics.".to_string(),
         "Request `detach` only when an action's `mode_support` is `await_or_detach`.".to_string(),
         "If an action is `await_only`, requesting `detach` will be rejected.".to_string(),

@@ -17,7 +17,6 @@ use crate::agent::types::{
 
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
 const DEFAULT_MODEL: &str = "gpt-5.2-codex";
-const DEFAULT_REASONING_EFFORT: &str = "high";
 const DEFAULT_TIMEOUT_SECS: u64 = 45;
 
 #[derive(Debug, Clone)]
@@ -68,14 +67,13 @@ impl OpenAiModelAdapter {
         };
 
         let mut attempts = 0usize;
-        let reasoning_effort = DEFAULT_REASONING_EFFORT;
         let max_retries = self.retry_policy.max_retries();
         let mut last_error: Option<ModelAdapterError> = None;
 
         while attempts <= max_retries {
             on_event(ModelDeltaEvent::StreamNote(StreamNote {
                 phase: "openai.request.start".to_string(),
-                detail: format!("attempt={} effort={reasoning_effort}", attempts + 1),
+                detail: format!("attempt={}", attempts + 1),
             }));
 
             let input_messages = prompt_messages
@@ -96,7 +94,6 @@ impl OpenAiModelAdapter {
                 "model": DEFAULT_MODEL,
                 "stream": true,
                 "input": input_messages,
-                "reasoning": { "effort": reasoning_effort },
                 "tools": action_catalog.openai_action_definitions(),
                 "tool_choice": "auto"
             });

@@ -146,9 +146,7 @@ mod tests {
             TurnActionDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
         dispatcher.dispatch_action_invocation(ActionInvocation {
             action_id: "shell__run".to_string(),
-            args_json:
-                "{\"command\":\"pwd\",\"reasoning\":\"run in background\",\"execution_mode\":\"detach\"}"
-                    .to_string(),
+            args_json: "{\"command\":\"pwd\",\"execution_mode\":\"detach\"}".to_string(),
             call_key: "call-key-1".to_string(),
             call_id: Some("call-id-1".to_string()),
         });
@@ -198,9 +196,7 @@ mod tests {
             TurnActionDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
         dispatcher.dispatch_action_invocation(ActionInvocation {
             action_id: "shell__run".to_string(),
-            args_json:
-                "{\"command\":\"pwd\",\"reasoning\":\"run in background\",\"execution_mode\":\"detach\"}"
-                    .to_string(),
+            args_json: "{\"command\":\"pwd\",\"execution_mode\":\"detach\"}".to_string(),
             call_key: "call-key-1".to_string(),
             call_id: Some("call-id-1".to_string()),
         });
