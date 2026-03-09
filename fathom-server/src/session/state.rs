@@ -147,11 +147,11 @@ impl SessionState {
     }
 
     pub(crate) fn push_pending_payload_lookup(&mut self, lookup: ResolvedPayloadLookup) {
-        if self
-            .pending_payload_lookups
-            .iter()
-            .any(|item| item.lookup_execution_id == lookup.lookup_execution_id)
-        {
+        if self.pending_payload_lookups.iter().any(|item| {
+            item.execution_id == lookup.execution_id
+                && item.part == lookup.part
+                && item.offset == lookup.offset
+        }) {
             return;
         }
         self.pending_payload_lookups.push(lookup);

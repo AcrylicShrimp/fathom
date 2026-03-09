@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::agent::types::{
     AgentInvocationContext, PromptAssistantOutput, PromptCron, PromptEvent,
     PromptExecutionDetached, PromptExecutionFailed, PromptExecutionRejected,
@@ -22,20 +24,36 @@ pub(crate) fn build_prompt_input(
         .iter()
         .filter_map(prompt_event_from_trigger)
         .collect::<Vec<_>>();
-    pending_events.extend(context.resolved_payload_lookups.iter().map(|lookup| {
-        PromptEvent::PayloadLookupAvailable(PromptPayloadLookupAvailable {
-            lookup_execution_id: lookup.lookup_execution_id.clone(),
-            execution_id: lookup.execution_id.clone(),
-            part: lookup.part.clone(),
-            offset: lookup.offset,
-            next_offset: lookup.next_offset,
-            full_bytes: lookup.full_bytes,
-            source_truncated: lookup.source_truncated,
-            payload_chunk: lookup.payload_chunk.clone(),
-            injected_truncated: lookup.injected_truncated,
-            injected_omitted_bytes: lookup.injected_omitted_bytes,
-        })
-    }));
+    let mut seen_payload_slices = HashSet::new();
+    pending_events.extend(
+        context
+            .resolved_payload_lookups
+            .iter()
+            .filter_map(|lookup| {
+                let slice_key = (
+                    lookup.execution_id.clone(),
+                    lookup.part.clone(),
+                    lookup.offset,
+                );
+                if !seen_payload_slices.insert(slice_key) {
+                    return None;
+                }
+                Some(PromptEvent::PayloadLookupAvailable(
+                    PromptPayloadLookupAvailable {
+                        lookup_execution_id: lookup.lookup_execution_id.clone(),
+                        execution_id: lookup.execution_id.clone(),
+                        part: lookup.part.clone(),
+                        offset: lookup.offset,
+                        next_offset: lookup.next_offset,
+                        full_bytes: lookup.full_bytes,
+                        source_truncated: lookup.source_truncated,
+                        payload_chunk: lookup.payload_chunk.clone(),
+                        injected_truncated: lookup.injected_truncated,
+                        injected_omitted_bytes: lookup.injected_omitted_bytes,
+                    },
+                ))
+            }),
+    );
     if let Some(feedback) = retry_feedback {
         pending_events.push(PromptEvent::RetryFeedback(PromptAssistantOutput {
             content: feedback.to_string(),
@@ -419,6 +437,46 @@ mod tests {
                 if item.execution_id == "execution-3"
                     && item.action_id == "shell__run"
                     && item.message == "detach is not allowed for shell__run"
+        ));
+    }
+
+    #[test]
+    fn build_prompt_input_deduplicates_payload_lookup_slices() {
+        let mut context = base_context(vec![]);
+        context.resolved_payload_lookups = vec![
+            ResolvedPayloadLookupHint {
+                lookup_execution_id: "lookup-1".to_string(),
+                execution_id: "execution-1".to_string(),
+                part: "result".to_string(),
+                offset: 0,
+                next_offset: Some(12),
+                full_bytes: 42,
+                source_truncated: false,
+                payload_chunk: "{\"ok\":true}".to_string(),
+                injected_truncated: false,
+                injected_omitted_bytes: 0,
+            },
+            ResolvedPayloadLookupHint {
+                lookup_execution_id: "lookup-2".to_string(),
+                execution_id: "execution-1".to_string(),
+                part: "result".to_string(),
+                offset: 0,
+                next_offset: Some(12),
+                full_bytes: 42,
+                source_truncated: false,
+                payload_chunk: "{\"ok\":true}".to_string(),
+                injected_truncated: false,
+                injected_omitted_bytes: 0,
+            },
+        ];
+
+        let input = build_prompt_input(&context, None);
+
+        assert_eq!(input.pending_events.len(), 1);
+        assert!(matches!(
+            input.pending_events.first(),
+            Some(PromptEvent::PayloadLookupAvailable(item))
+                if item.execution_id == "execution-1" && item.offset == 0
         ));
     }
 }

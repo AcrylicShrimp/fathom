@@ -142,7 +142,7 @@ impl EnvironmentRegistry {
                     "type": "function",
                     "name": entry.canonical_action_id,
                     "description": spec.description,
-                    "parameters": with_reasoning_schema(spec.input_schema),
+                    "parameters": with_reasoning_schema(spec.input_schema, spec.mode_support),
                 })
             })
             .collect()
@@ -424,19 +424,22 @@ impl EnvironmentRegistry {
 }
 
 const ACTION_REASONING_KEY: &str = "reasoning";
-const ACTION_REASONING_MAX_BYTES: usize = 1_024;
+const ACTION_REASONING_MAX_CHARS: usize = 1_024;
 const ACTION_EXECUTION_MODE_KEY: &str = "execution_mode";
 
-fn with_reasoning_schema(input_schema: Value) -> Value {
+fn with_reasoning_schema(input_schema: Value, mode_support: ActionModeSupport) -> Value {
     let Value::Object(mut schema) = input_schema else {
         return input_schema;
     };
-    ensure_schema_object_properties(&mut schema);
+    ensure_schema_object_properties(&mut schema, mode_support);
     ensure_schema_required_reasoning(&mut schema);
     Value::Object(schema)
 }
 
-fn ensure_schema_object_properties(schema: &mut Map<String, Value>) {
+fn ensure_schema_object_properties(
+    schema: &mut Map<String, Value>,
+    mode_support: ActionModeSupport,
+) {
     let properties_entry = schema
         .entry("properties".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
@@ -449,16 +452,23 @@ fn ensure_schema_object_properties(schema: &mut Map<String, Value>) {
             json!({
                 "type": "string",
                 "minLength": 1,
-                "maxLength": ACTION_REASONING_MAX_BYTES,
+                "maxLength": ACTION_REASONING_MAX_CHARS,
                 "description": "Short reason for why this action is needed now."
             })
         });
+    let supported_execution_modes = match mode_support {
+        ActionModeSupport::AwaitOnly => vec![RequestedExecutionMode::Await.as_str()],
+        ActionModeSupport::AwaitOrDetach => vec![
+            RequestedExecutionMode::Await.as_str(),
+            RequestedExecutionMode::Detach.as_str(),
+        ],
+    };
     properties
         .entry(ACTION_EXECUTION_MODE_KEY.to_string())
         .or_insert_with(|| {
             json!({
                 "type": "string",
-                "enum": ["await", "detach"],
+                "enum": supported_execution_modes,
                 "description": "Optional execution mode override. Omit this field or use `await` unless the capability surface says the action supports detach."
             })
         });
@@ -494,9 +504,9 @@ fn validate_reasoning_arg(action_id: &str, args: &Value) -> Result<(), String> {
                 "action `{action_id}` validation failed: missing non-empty string field `reasoning`"
             )
         })?;
-    if reasoning.len() > ACTION_REASONING_MAX_BYTES {
+    if reasoning.chars().count() > ACTION_REASONING_MAX_CHARS {
         return Err(format!(
-            "action `{action_id}` validation failed: field `reasoning` exceeds {ACTION_REASONING_MAX_BYTES} bytes"
+            "action `{action_id}` validation failed: field `reasoning` exceeds {ACTION_REASONING_MAX_CHARS} characters"
         ));
     }
     Ok(())
@@ -860,5 +870,51 @@ mod tests {
             ActionModeSupport::AwaitOrDetach,
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn openai_definition_limits_execution_mode_enum_for_await_only_action() {
+        let registry = EnvironmentRegistry::new();
+        let definition = registry
+            .openai_action_definitions()
+            .into_iter()
+            .find(|definition| definition["name"] == json!("filesystem__read"))
+            .expect("filesystem__read definition should exist");
+
+        assert_eq!(
+            definition["parameters"]["properties"]["execution_mode"]["enum"],
+            json!(["await"])
+        );
+    }
+
+    #[test]
+    fn openai_definition_allows_detach_for_detach_capable_action() {
+        let registry = EnvironmentRegistry::new();
+        let definition = registry
+            .openai_action_definitions()
+            .into_iter()
+            .find(|definition| definition["name"] == json!("shell__run"))
+            .expect("shell__run definition should exist");
+
+        assert_eq!(
+            definition["parameters"]["properties"]["execution_mode"]["enum"],
+            json!(["await", "detach"])
+        );
+    }
+
+    #[test]
+    fn validate_reasoning_counts_unicode_characters_not_bytes() {
+        let valid = EnvironmentRegistry::validate(
+            "filesystem__read",
+            &json!({"path":"notes.txt", "reasoning": "가".repeat(1024)}),
+        );
+        assert!(valid.is_ok());
+
+        let invalid = EnvironmentRegistry::validate(
+            "filesystem__read",
+            &json!({"path":"notes.txt", "reasoning": "가".repeat(1025)}),
+        )
+        .expect_err("unicode reasoning beyond max should fail");
+        assert!(invalid.contains("exceeds 1024 characters"));
     }
 }
