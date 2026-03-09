@@ -1,11 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 
 use crate::agent::types::{PromptMessage, PromptMessageBundle, PromptMessageStat, TurnSnapshot};
+use crate::history::build_payload_preview;
 use crate::history::{HistoryEvent, HistoryEventKind, PayloadPreview};
-use crate::history::{TASK_PAYLOAD_LOOKUP_ACTION, build_payload_preview};
 use crate::pb;
-use crate::util::task_status_label;
 
 const TOKEN_DIVISOR_CHARS: usize = 4;
 const DEFAULT_CONTEXT_LIMIT_TOKENS: usize = 128_000;
@@ -25,8 +24,13 @@ const MAX_LOOKUP_PAYLOAD_CHARS: usize = 1_600;
 enum TimelineKind {
     UserMessage,
     AssistantOutput,
-    ActionStarted,
-    ActionFinished,
+    ExecutionRequested,
+    AwaitedExecutionSucceeded,
+    AwaitedExecutionFailed,
+    ExecutionDetached,
+    DetachedExecutionSucceeded,
+    DetachedExecutionFailed,
+    ExecutionRejected,
 }
 
 #[derive(Debug, Clone)]
@@ -34,9 +38,7 @@ struct TimelineEvent {
     ts_unix_ms: i64,
     seq: usize,
     kind: TimelineKind,
-    task_id: Option<String>,
     action_id: Option<String>,
-    status: Option<String>,
     line: String,
 }
 
@@ -154,19 +156,19 @@ fn build_harness_contract_block(snapshot: &TurnSnapshot) -> String {
             snapshot.harness_contract.contract_schema_version
         ),
         String::new(),
-        "You may emit assistant text and/or tool calls in the same turn.".to_string(),
-        "Use only tools listed in the Session Baseline capability surface.".to_string(),
-        "Use canonical tool names in the format env__action.".to_string(),
-        "Every tool call must include a concise `reasoning` field that explains why the call is necessary now.".to_string(),
-        "Tool calls default to `await` semantics.".to_string(),
-        "Request `detach` only when a tool's `mode_support` is `await_or_detach`.".to_string(),
-        "If a tool is `await_only`, requesting `detach` will be rejected.".to_string(),
+        "You may emit assistant text and/or action executions in the same turn.".to_string(),
+        "Use only actions listed in the Session Baseline capability surface.".to_string(),
+        "Use canonical action ids in the format env__action.".to_string(),
+        "Every execution request must include a concise `reasoning` field that explains why the call is necessary now.".to_string(),
+        "Execution requests default to `await` semantics.".to_string(),
+        "Request `detach` only when an action's `mode_support` is `await_or_detach`.".to_string(),
+        "If an action is `await_only`, requesting `detach` will be rejected.".to_string(),
         "Use Resolved Payload Lookups when present before issuing additional payload fetches.".to_string(),
-        "Do not assume current time unless a tool result or event provides it explicitly.".to_string(),
-        "Do not assume live environment state unless a tool result or event provides it explicitly.".to_string(),
+        "Do not assume current time unless an execution result or event provides it explicitly.".to_string(),
+        "Do not assume live environment state unless an execution result or event provides it explicitly.".to_string(),
         "Action input schemas are enforced by the runtime; provide exact argument shapes.".to_string(),
         "For optional action arguments, omit fields you do not need; never send empty placeholder strings.".to_string(),
-        "Avoid unbounded tool chaining. When evidence is sufficient, provide a direct assistant report to the user.".to_string(),
+        "Avoid unbounded execution chaining. When evidence is sufficient, provide a direct assistant report to the user.".to_string(),
     ]
     .join("\n")
 }
@@ -217,26 +219,26 @@ fn build_session_baseline_block(snapshot: &TurnSnapshot) -> String {
                 "- id={} name={} description={}",
                 environment.id, environment.name, environment.description
             ));
-            let mut tools = environment.tools;
-            tools.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
-            if tools.is_empty() {
-                lines.push("  tools: (none)".to_string());
+            let mut actions = environment.actions;
+            actions.sort_by(|a, b| a.action_id.cmp(&b.action_id));
+            if actions.is_empty() {
+                lines.push("  actions: (none)".to_string());
             } else {
-                lines.push("  tools:".to_string());
-                for tool in tools {
-                    if tool.discovery {
+                lines.push("  actions:".to_string());
+                for action in actions {
+                    if action.discovery {
                         lines.push(format!(
                             "  - {} [{}] (discovery): {}",
-                            tool.tool_name,
-                            tool.mode_support.as_str(),
-                            tool.description
+                            action.action_id,
+                            action.mode_support.as_str(),
+                            action.description
                         ));
                     } else {
                         lines.push(format!(
                             "  - {} [{}]: {}",
-                            tool.tool_name,
-                            tool.mode_support.as_str(),
-                            tool.description
+                            action.action_id,
+                            action.mode_support.as_str(),
+                            action.description
                         ));
                     }
                 }
@@ -313,7 +315,11 @@ fn build_resolved_lookup_event_lines(snapshot: &TurnSnapshot) -> Vec<String> {
         BTreeMap::<(String, String, usize), crate::agent::ResolvedPayloadLookupHint>::new();
     for lookup in &snapshot.resolved_payload_lookups {
         dedup.insert(
-            (lookup.task_id.clone(), lookup.part.clone(), lookup.offset),
+            (
+                lookup.execution_id.clone(),
+                lookup.part.clone(),
+                lookup.offset,
+            ),
             lookup.clone(),
         );
     }
@@ -321,9 +327,9 @@ fn build_resolved_lookup_event_lines(snapshot: &TurnSnapshot) -> Vec<String> {
     let mut lines = Vec::new();
     for (_, lookup) in dedup {
         lines.push(format!(
-            "resolved_payload_lookup lookup_task_id={} task_id={} part={} offset={} next_offset={} full_bytes={} source_truncated={} injected_truncated={} injected_omitted_bytes={}",
-            lookup.lookup_task_id,
-            lookup.task_id,
+            "resolved_payload_lookup lookup_execution_id={} execution_id={} part={} offset={} next_offset={} full_bytes={} source_truncated={} injected_truncated={} injected_omitted_bytes={}",
+            lookup.lookup_execution_id,
+            lookup.execution_id,
             lookup.part,
             lookup.offset,
             lookup
@@ -378,98 +384,22 @@ fn build_session_compaction_summaries(snapshot: &TurnSnapshot) -> (Vec<String>, 
 
 fn build_canonical_timeline(snapshot: &TurnSnapshot) -> TimelineBuild {
     let mut raw = Vec::<TimelineEvent>::new();
-    let mut dedup_dropped = 0usize;
     let mut raw_events = 0usize;
-    let mut finished_task_ids = HashSet::<String>::new();
-
-    for event in &snapshot.recent_history {
-        if matches!(&event.kind, HistoryEventKind::TaskFinished(_)) {
-            finished_task_ids.insert(event.actor_id.clone());
-        }
-    }
 
     for (seq, event) in snapshot.recent_history.iter().enumerate() {
-        match &event.kind {
-            HistoryEventKind::TriggerTaskDone(_) => {
-                let task_id = event.actor_id.clone();
-                if finished_task_ids.contains(&task_id) {
-                    dedup_dropped += 1;
-                    continue;
-                }
-                if let Some(event) = timeline_event_from_task_done_event(event, seq) {
-                    raw_events += 1;
-                    raw.push(event);
-                }
-            }
-            _ => {
-                if let Some(event) = timeline_event_from_history_event(event, seq) {
-                    raw_events += 1;
-                    raw.push(event);
-                }
-            }
+        if let Some(event) = timeline_event_from_history_event(event, seq) {
+            raw_events += 1;
+            raw.push(event);
         }
     }
 
     raw.sort_by(|a, b| a.ts_unix_ms.cmp(&b.ts_unix_ms).then(a.seq.cmp(&b.seq)));
 
-    let mut action_started_seen = HashSet::<String>::new();
-    let mut action_finished_seen = HashSet::<String>::new();
-    let mut events = Vec::with_capacity(raw.len());
-    for event in raw {
-        match event.kind {
-            TimelineKind::ActionStarted => {
-                let Some(task_id) = event.task_id.clone() else {
-                    events.push(event);
-                    continue;
-                };
-                if !action_started_seen.insert(task_id) {
-                    dedup_dropped += 1;
-                    continue;
-                }
-            }
-            TimelineKind::ActionFinished => {
-                let key = format!(
-                    "{}:{}:{}",
-                    event.task_id.clone().unwrap_or_default(),
-                    event.status.clone().unwrap_or_default(),
-                    event.action_id.clone().unwrap_or_default()
-                );
-                if !action_finished_seen.insert(key) {
-                    dedup_dropped += 1;
-                    continue;
-                }
-            }
-            _ => {}
-        }
-        events.push(event);
-    }
-
     TimelineBuild {
-        events,
+        events: raw,
         raw_events,
-        dedup_dropped,
+        dedup_dropped: 0,
     }
-}
-
-fn timeline_event_from_task_done_event(event: &HistoryEvent, seq: usize) -> Option<TimelineEvent> {
-    let HistoryEventKind::TriggerTaskDone(payload) = &event.kind else {
-        return None;
-    };
-    let task_id = event.actor_id.clone();
-    let status = payload.status.clone();
-    let result_preview = preview_to_inline(&payload.result_preview);
-    Some(TimelineEvent {
-        ts_unix_ms: event.ts_unix_ms,
-        seq,
-        kind: TimelineKind::ActionFinished,
-        task_id: Some(task_id.clone()),
-        action_id: Some("unknown".to_string()),
-        status: Some(status.clone()),
-        line: format!(
-            "action_finished task_id={} action=unknown env=unknown status={} result_preview={} source=trigger_task_done",
-            task_id, status, result_preview
-        ),
-    })
 }
 
 fn timeline_event_from_history_event(event: &HistoryEvent, seq: usize) -> Option<TimelineEvent> {
@@ -480,9 +410,7 @@ fn timeline_event_from_history_event(event: &HistoryEvent, seq: usize) -> Option
                 ts_unix_ms: event.ts_unix_ms,
                 seq,
                 kind: TimelineKind::UserMessage,
-                task_id: None,
                 action_id: None,
-                status: None,
                 line: format!("user_message user={} text={}", event.actor_id, text),
             })
         }
@@ -492,52 +420,109 @@ fn timeline_event_from_history_event(event: &HistoryEvent, seq: usize) -> Option
                 ts_unix_ms: event.ts_unix_ms,
                 seq,
                 kind: TimelineKind::AssistantOutput,
-                task_id: None,
                 action_id: None,
-                status: None,
                 line: format!("assistant_output content={content}"),
             })
         }
-        HistoryEventKind::TaskStarted(payload) => {
-            let task_id = event.actor_id.clone();
-            let action_id = payload.canonical_action_id.clone();
-            let env_id = payload.environment_id.as_str();
-            let status = payload.status.clone();
+        HistoryEventKind::ExecutionRequested(payload) => {
             let args_preview = preview_to_inline(&payload.args_preview);
             Some(TimelineEvent {
                 ts_unix_ms: event.ts_unix_ms,
                 seq,
-                kind: TimelineKind::ActionStarted,
-                task_id: Some(task_id.clone()),
-                action_id: Some(action_id.clone()),
-                status: Some(status.clone()),
+                kind: TimelineKind::ExecutionRequested,
+                action_id: Some(payload.canonical_action_id.clone()),
                 line: format!(
-                    "action_started task_id={} action={} env={} status={} args_preview={}",
-                    task_id, action_id, env_id, status, args_preview
+                    "execution_requested execution_id={} action_id={} mode={} args_preview={}",
+                    event.actor_id,
+                    payload.canonical_action_id,
+                    payload.execution_mode,
+                    args_preview
                 ),
             })
         }
-        HistoryEventKind::TaskFinished(payload) => {
-            let task_id = event.actor_id.clone();
-            let action_id = payload.canonical_action_id.clone();
-            let env_id = payload.environment_id.as_str();
-            let status = payload.status.clone();
-            let result_preview = preview_to_inline(&payload.result_preview);
+        HistoryEventKind::AwaitedExecutionSucceeded(payload) => {
+            let payload_preview = preview_to_inline(&payload.payload_preview);
             Some(TimelineEvent {
                 ts_unix_ms: event.ts_unix_ms,
                 seq,
-                kind: TimelineKind::ActionFinished,
-                task_id: Some(task_id.clone()),
-                action_id: Some(action_id.clone()),
-                status: Some(status.clone()),
+                kind: TimelineKind::AwaitedExecutionSucceeded,
+                action_id: Some(payload.canonical_action_id.clone()),
                 line: format!(
-                    "action_finished task_id={} action={} env={} status={} result_preview={}",
-                    task_id, action_id, env_id, status, result_preview
+                    "awaited_execution_succeeded execution_id={} action_id={} payload_preview={}",
+                    event.actor_id, payload.canonical_action_id, payload_preview
                 ),
             })
         }
-        HistoryEventKind::TriggerTaskDone(_)
-        | HistoryEventKind::TriggerUnknown
+        HistoryEventKind::AwaitedExecutionFailed(payload) => Some(TimelineEvent {
+            ts_unix_ms: event.ts_unix_ms,
+            seq,
+            kind: TimelineKind::AwaitedExecutionFailed,
+            action_id: Some(payload.canonical_action_id.clone()),
+            line: format!(
+                "awaited_execution_failed execution_id={} action_id={} message={}{}",
+                event.actor_id,
+                payload.canonical_action_id,
+                truncate_inline(&payload.message, MAX_INLINE_TEXT_CHARS),
+                payload
+                    .payload_preview
+                    .as_ref()
+                    .map(|preview| format!(" payload_preview={}", preview_to_inline(preview)))
+                    .unwrap_or_default()
+            ),
+        }),
+        HistoryEventKind::ExecutionDetached(payload) => Some(TimelineEvent {
+            ts_unix_ms: event.ts_unix_ms,
+            seq,
+            kind: TimelineKind::ExecutionDetached,
+            action_id: Some(payload.canonical_action_id.clone()),
+            line: format!(
+                "execution_detached execution_id={} action_id={}",
+                event.actor_id, payload.canonical_action_id
+            ),
+        }),
+        HistoryEventKind::DetachedExecutionSucceeded(payload) => {
+            let payload_preview = preview_to_inline(&payload.payload_preview);
+            Some(TimelineEvent {
+                ts_unix_ms: event.ts_unix_ms,
+                seq,
+                kind: TimelineKind::DetachedExecutionSucceeded,
+                action_id: Some(payload.canonical_action_id.clone()),
+                line: format!(
+                    "detached_execution_succeeded execution_id={} action_id={} payload_preview={}",
+                    event.actor_id, payload.canonical_action_id, payload_preview
+                ),
+            })
+        }
+        HistoryEventKind::DetachedExecutionFailed(payload) => Some(TimelineEvent {
+            ts_unix_ms: event.ts_unix_ms,
+            seq,
+            kind: TimelineKind::DetachedExecutionFailed,
+            action_id: Some(payload.canonical_action_id.clone()),
+            line: format!(
+                "detached_execution_failed execution_id={} action_id={} message={}{}",
+                event.actor_id,
+                payload.canonical_action_id,
+                truncate_inline(&payload.message, MAX_INLINE_TEXT_CHARS),
+                payload
+                    .payload_preview
+                    .as_ref()
+                    .map(|preview| format!(" payload_preview={}", preview_to_inline(preview)))
+                    .unwrap_or_default()
+            ),
+        }),
+        HistoryEventKind::ExecutionRejected(payload) => Some(TimelineEvent {
+            ts_unix_ms: event.ts_unix_ms,
+            seq,
+            kind: TimelineKind::ExecutionRejected,
+            action_id: Some(payload.canonical_action_id.clone()),
+            line: format!(
+                "execution_rejected execution_id={} action_id={} message={}",
+                event.actor_id,
+                payload.canonical_action_id,
+                truncate_inline(&payload.message, MAX_INLINE_TEXT_CHARS)
+            ),
+        }),
+        HistoryEventKind::TriggerUnknown
         | HistoryEventKind::TriggerHeartbeat
         | HistoryEventKind::TriggerCron(_)
         | HistoryEventKind::TriggerRefreshProfile(_) => None,
@@ -620,7 +605,6 @@ fn summarize_timeline_batch(index: usize, batch: &[TimelineEvent]) -> String {
         return format!("summary_block[{index}] (empty)");
     }
     let mut counts = BTreeMap::<&'static str, usize>::new();
-    let mut statuses = BTreeMap::<String, usize>::new();
     let mut actions = BTreeSet::<String>::new();
     let first_ts = batch
         .first()
@@ -632,31 +616,53 @@ fn summarize_timeline_batch(index: usize, batch: &[TimelineEvent]) -> String {
         let key = match event.kind {
             TimelineKind::UserMessage => "user_message",
             TimelineKind::AssistantOutput => "assistant_output",
-            TimelineKind::ActionStarted => "action_started",
-            TimelineKind::ActionFinished => "action_finished",
+            TimelineKind::ExecutionRequested => "execution_requested",
+            TimelineKind::AwaitedExecutionSucceeded => "awaited_execution_succeeded",
+            TimelineKind::AwaitedExecutionFailed => "awaited_execution_failed",
+            TimelineKind::ExecutionDetached => "execution_detached",
+            TimelineKind::DetachedExecutionSucceeded => "detached_execution_succeeded",
+            TimelineKind::DetachedExecutionFailed => "detached_execution_failed",
+            TimelineKind::ExecutionRejected => "execution_rejected",
         };
         *counts.entry(key).or_default() += 1;
-        if let Some(status) = &event.status {
-            *statuses.entry(status.clone()).or_default() += 1;
-        }
         if let Some(action) = &event.action_id {
             actions.insert(action.clone());
         }
     }
     let actions_preview = actions.into_iter().take(4).collect::<Vec<_>>().join(",");
-    let status_preview = statuses
-        .into_iter()
-        .map(|(status, count)| format!("{status}:{count}"))
-        .collect::<Vec<_>>()
-        .join(",");
     format!(
-        "summary_block[{index}] ts=[{first_ts},{last_ts}] events={} user_message={} assistant_output={} action_started={} action_finished={} statuses=[{}] actions=[{}]",
+        "summary_block[{index}] ts=[{first_ts},{last_ts}] events={} user_message={} assistant_output={} execution_requested={} awaited_execution_succeeded={} awaited_execution_failed={} execution_detached={} detached_execution_succeeded={} detached_execution_failed={} execution_rejected={} actions=[{}]",
         batch.len(),
         counts.get("user_message").copied().unwrap_or_default(),
         counts.get("assistant_output").copied().unwrap_or_default(),
-        counts.get("action_started").copied().unwrap_or_default(),
-        counts.get("action_finished").copied().unwrap_or_default(),
-        status_preview,
+        counts
+            .get("execution_requested")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("awaited_execution_succeeded")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("awaited_execution_failed")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("execution_detached")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("detached_execution_succeeded")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("detached_execution_failed")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("execution_rejected")
+            .copied()
+            .unwrap_or_default(),
         actions_preview
     )
 }
@@ -758,26 +764,40 @@ fn trigger_text_compact(trigger: &pb::Trigger) -> String {
                 truncate_inline(&message.text, MAX_INLINE_TEXT_CHARS)
             )
         }
-        pb::trigger::Kind::TaskDone(done) => {
-            let status = pb::TaskStatus::try_from(done.status)
-                .map(task_status_label)
-                .unwrap_or("unknown");
-            let preview = build_payload_preview(
-                &done.result_message,
-                format!("task://{}/result", done.task_id),
-            );
-            let preview_text = format!(
-                "lookup_ref={} full_bytes={} omitted_bytes={} truncated={} head={} tail={}",
-                preview.lookup_ref,
-                preview.full_bytes,
-                preview.omitted_bytes,
-                preview.truncated,
-                truncate_inline(&preview.head, MAX_PREVIEW_HEAD_CHARS),
-                truncate_inline(&preview.tail, MAX_PREVIEW_TAIL_CHARS),
-            );
+        pb::trigger::Kind::ExecutionUpdate(update) => {
+            let kind = pb::ExecutionUpdateKind::try_from(update.kind)
+                .unwrap_or(pb::ExecutionUpdateKind::Unspecified);
+            let label = match kind {
+                pb::ExecutionUpdateKind::AwaitedExecutionSucceeded => "awaited_execution_succeeded",
+                pb::ExecutionUpdateKind::AwaitedExecutionFailed => "awaited_execution_failed",
+                pb::ExecutionUpdateKind::ExecutionDetached => "execution_detached",
+                pb::ExecutionUpdateKind::DetachedExecutionSucceeded => {
+                    "detached_execution_succeeded"
+                }
+                pb::ExecutionUpdateKind::DetachedExecutionFailed => "detached_execution_failed",
+                pb::ExecutionUpdateKind::ExecutionRejected => "execution_rejected",
+                pb::ExecutionUpdateKind::Unspecified => "execution_update_unspecified",
+            };
+            let payload_suffix = if update.payload_message.trim().is_empty() {
+                String::new()
+            } else {
+                let preview = build_payload_preview(
+                    &update.payload_message,
+                    format!("execution://{}/result", update.execution_id),
+                );
+                format!(" payload_preview={}", preview_to_inline(&preview))
+            };
+            let message_suffix = if update.message.trim().is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " message={}",
+                    truncate_inline(&update.message, MAX_INLINE_TEXT_CHARS)
+                )
+            };
             format!(
-                "task_done task_id={} status={} result_preview={} lookup_action={}",
-                done.task_id, status, preview_text, TASK_PAYLOAD_LOOKUP_ACTION
+                "{label} execution_id={} action_id={}{}{}",
+                update.execution_id, update.action_id, message_suffix, payload_suffix
             )
         }
         pb::trigger::Kind::Heartbeat(_) => "heartbeat".to_string(),
@@ -856,16 +876,16 @@ fn read_ratio_env(name: &str, default: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use crate::agent::{
-        CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
-        CapabilityToolSnapshot, HarnessContractSnapshot, IdentityEnvelopeSnapshot,
-        ParticipantEnvelopeSnapshot, ResolvedPayloadLookupHint, SessionAnchorSnapshot,
-        SessionBaselineSnapshot, SessionCompactionSnapshot, SummaryBlockRefSnapshot,
-        ToolModeSupport, TurnSnapshot,
+        ActionModeSupportSnapshot, CapabilityActionSnapshot, CapabilityEnvironmentSnapshot,
+        CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot, HarnessContractSnapshot,
+        IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot, ResolvedPayloadLookupHint,
+        SessionAnchorSnapshot, SessionBaselineSnapshot, SessionCompactionSnapshot,
+        SummaryBlockRefSnapshot, TurnSnapshot,
     };
     use crate::history::HistoryEvent;
     use crate::history::PayloadPreview;
     use crate::history::schema::{
-        HistoryActorKind, HistoryEventKind, TaskDoneHistoryPayload, TaskFinishedHistoryPayload,
+        ExecutionSucceededHistoryPayload, HistoryActorKind, HistoryEventKind,
         UserMessageHistoryPayload,
     };
     use crate::pb;
@@ -924,12 +944,12 @@ mod tests {
                             name: "Filesystem".to_string(),
                             description: "Stateful filesystem environment rooted at a base path."
                                 .to_string(),
-                            tools: vec![CapabilityToolSnapshot {
-                                tool_name: "filesystem__list".to_string(),
+                            actions: vec![CapabilityActionSnapshot {
+                                action_id: "filesystem__list".to_string(),
                                 description:
                                     "List directory entries for a non-empty relative path."
                                         .to_string(),
-                                mode_support: ToolModeSupport::AwaitOnly,
+                                mode_support: ActionModeSupportSnapshot::AwaitOnly,
                                 discovery: false,
                             }],
                             recipes: vec![CapabilityRecipeSnapshot {
@@ -944,10 +964,10 @@ mod tests {
                             id: "system".to_string(),
                             name: "System".to_string(),
                             description: "Inspect runtime context and metadata.".to_string(),
-                            tools: vec![CapabilityToolSnapshot {
-                                tool_name: "system__get_time".to_string(),
+                            actions: vec![CapabilityActionSnapshot {
+                                action_id: "system__get_time".to_string(),
                                 description: "Get current server time context.".to_string(),
-                                mode_support: ToolModeSupport::AwaitOnly,
+                                mode_support: ActionModeSupportSnapshot::AwaitOnly,
                                 discovery: true,
                             }],
                             recipes: vec![],
@@ -1020,8 +1040,8 @@ mod tests {
             })),
         }];
         next_turn.resolved_payload_lookups = vec![ResolvedPayloadLookupHint {
-            lookup_task_id: "lookup-1".to_string(),
-            task_id: "task-1".to_string(),
+            lookup_execution_id: "lookup-1".to_string(),
+            execution_id: "execution-1".to_string(),
             part: "result".to_string(),
             offset: 0,
             next_offset: Some(120),
@@ -1051,8 +1071,8 @@ mod tests {
             })),
         }];
         snapshot.resolved_payload_lookups = vec![ResolvedPayloadLookupHint {
-            lookup_task_id: "lookup-1".to_string(),
-            task_id: "task-1".to_string(),
+            lookup_execution_id: "lookup-1".to_string(),
+            execution_id: "execution-1".to_string(),
             part: "result".to_string(),
             offset: 0,
             next_offset: Some(120),
@@ -1072,13 +1092,13 @@ mod tests {
             )
         );
         assert!(debug_prompt.contains(
-            "resolved_payload_lookup lookup_task_id=lookup-1 task_id=task-1 part=result offset=0"
+            "resolved_payload_lookup lookup_execution_id=lookup-1 execution_id=execution-1 part=result offset=0"
         ));
         assert!(debug_prompt.contains("payload_chunk {\"ok\":true}"));
     }
 
     #[test]
-    fn typed_history_drives_timeline_without_trigger_task_done_duplicates() {
+    fn typed_history_drives_execution_requests_and_outcomes() {
         let snapshot = base_snapshot(vec![
             HistoryEvent {
                 ts_unix_ms: 10,
@@ -1091,28 +1111,32 @@ mod tests {
             },
             HistoryEvent {
                 ts_unix_ms: 20,
-                actor_kind: HistoryActorKind::Task,
-                actor_id: "task-1".to_string(),
+                actor_kind: HistoryActorKind::Execution,
+                actor_id: "execution-1".to_string(),
                 profile_ref: "agent:agent-default@v1".to_string(),
-                kind: HistoryEventKind::TriggerTaskDone(TaskDoneHistoryPayload {
-                    status: "succeeded".to_string(),
-                    result_preview: sample_preview("task://task-1/result"),
-                    lookup_action: "system__get_task_payload".to_string(),
-                }),
+                kind: HistoryEventKind::ExecutionRequested(
+                    crate::history::schema::ExecutionRequestedHistoryPayload {
+                        canonical_action_id: "filesystem__list".to_string(),
+                        environment_id: "filesystem".to_string(),
+                        action_name: "list".to_string(),
+                        execution_mode: "await".to_string(),
+                        status: "running".to_string(),
+                        args_preview: sample_preview("execution://execution-1/args"),
+                        lookup_action: "system__get_execution_payload".to_string(),
+                    },
+                ),
             },
             HistoryEvent {
                 ts_unix_ms: 21,
-                actor_kind: HistoryActorKind::Task,
-                actor_id: "task-1".to_string(),
+                actor_kind: HistoryActorKind::Execution,
+                actor_id: "execution-1".to_string(),
                 profile_ref: "agent:agent-default@v1".to_string(),
-                kind: HistoryEventKind::TaskFinished(TaskFinishedHistoryPayload {
-                    canonical_action_id: "filesystem__list".to_string(),
-                    environment_id: "filesystem".to_string(),
-                    action_name: "list".to_string(),
-                    status: "succeeded".to_string(),
-                    result_preview: sample_preview("task://task-1/result"),
-                    lookup_action: "system__get_task_payload".to_string(),
-                }),
+                kind: HistoryEventKind::AwaitedExecutionSucceeded(
+                    ExecutionSucceededHistoryPayload {
+                        canonical_action_id: "filesystem__list".to_string(),
+                        payload_preview: sample_preview("execution://execution-1/result"),
+                    },
+                ),
             },
         ]);
 
@@ -1123,9 +1147,71 @@ mod tests {
             debug_prompt.contains("user_message user=user-default text=show me the repo files")
         );
         assert!(debug_prompt.contains(
-            "action_finished task_id=task-1 action=filesystem__list env=filesystem status=succeeded"
+            "execution_requested execution_id=execution-1 action_id=filesystem__list mode=await"
         ));
-        assert!(!debug_prompt.contains("source=trigger_task_done"));
+        assert!(debug_prompt.contains(
+            "awaited_execution_succeeded execution_id=execution-1 action_id=filesystem__list"
+        ));
+    }
+
+    #[test]
+    fn transcript_preserves_execution_event_order() {
+        let snapshot = base_snapshot(vec![
+            HistoryEvent {
+                ts_unix_ms: 20,
+                actor_kind: HistoryActorKind::Execution,
+                actor_id: "execution-7".to_string(),
+                profile_ref: "agent:agent-default@v1".to_string(),
+                kind: HistoryEventKind::ExecutionRequested(
+                    crate::history::schema::ExecutionRequestedHistoryPayload {
+                        canonical_action_id: "shell__run".to_string(),
+                        environment_id: "shell".to_string(),
+                        action_name: "run".to_string(),
+                        execution_mode: "detach".to_string(),
+                        status: "running".to_string(),
+                        args_preview: sample_preview("execution://execution-7/args"),
+                        lookup_action: "system__get_execution_payload".to_string(),
+                    },
+                ),
+            },
+            HistoryEvent {
+                ts_unix_ms: 21,
+                actor_kind: HistoryActorKind::Execution,
+                actor_id: "execution-7".to_string(),
+                profile_ref: "agent:agent-default@v1".to_string(),
+                kind: HistoryEventKind::ExecutionDetached(
+                    crate::history::schema::ExecutionDetachedHistoryPayload {
+                        canonical_action_id: "shell__run".to_string(),
+                    },
+                ),
+            },
+            HistoryEvent {
+                ts_unix_ms: 30,
+                actor_kind: HistoryActorKind::Execution,
+                actor_id: "execution-7".to_string(),
+                profile_ref: "agent:agent-default@v1".to_string(),
+                kind: HistoryEventKind::DetachedExecutionSucceeded(
+                    ExecutionSucceededHistoryPayload {
+                        canonical_action_id: "shell__run".to_string(),
+                        payload_preview: sample_preview("execution://execution-7/result"),
+                    },
+                ),
+            },
+        ]);
+
+        let debug_prompt = build_agent_prompt_bundle(&snapshot, None).as_debug_prompt();
+        let execution_request_index = debug_prompt
+            .find("execution_requested execution_id=execution-7 action_id=shell__run mode=detach")
+            .expect("execution_requested line");
+        let detached_index = debug_prompt
+            .find("execution_detached execution_id=execution-7 action_id=shell__run")
+            .expect("execution_detached line");
+        let success_index = debug_prompt
+            .find("detached_execution_succeeded execution_id=execution-7 action_id=shell__run")
+            .expect("detached success line");
+
+        assert!(execution_request_index < detached_index);
+        assert!(detached_index < success_index);
     }
 
     #[test]
@@ -1137,7 +1223,7 @@ mod tests {
                 id: "history-summary-000024".to_string(),
                 source_range_start: 0,
                 source_range_end: 24,
-                summary_text: "history-summary-000024 source=[0,24) events=24 user_message=3 assistant_output=2 task_started=4 task_finished=4 task_done=4 refresh_profile=1 heartbeat=0 cron=0 statuses=[succeeded:4] actions=[filesystem__list] users=[user-default]".to_string(),
+                summary_text: "history-summary-000024 source=[0,24) events=24 user_message=3 assistant_output=2 execution_requested=4 awaited_execution_succeeded=4 awaited_execution_failed=0 execution_detached=0 detached_execution_succeeded=0 detached_execution_failed=0 execution_rejected=0 refresh_profile=1 heartbeat=0 cron=0 statuses=[succeeded:4] actions=[filesystem__list] users=[user-default]".to_string(),
                 created_at_unix_ms: 1_765_000_000_000,
             }],
         };

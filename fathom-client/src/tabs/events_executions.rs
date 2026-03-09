@@ -5,27 +5,27 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::tabs::{LineBuffer, Tab, TabKeyResult, TaskDetail};
+use crate::tabs::{ExecutionDetail, LineBuffer, Tab, TabKeyResult};
 use crate::view::{EventRecord, SessionEventRecordKind, render_event_record};
 
-pub(crate) struct ToolsEventsTab {
+pub(crate) struct ExecutionsEventsTab {
     lines: LineBuffer,
-    task_lines: Vec<TaskLine>,
-    selected_task_line: Option<usize>,
+    execution_lines: Vec<ExecutionLine>,
+    selected_execution_line: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
-struct TaskLine {
+struct ExecutionLine {
     line_index: usize,
-    detail: TaskDetail,
+    detail: ExecutionDetail,
 }
 
-impl ToolsEventsTab {
+impl ExecutionsEventsTab {
     pub(crate) fn new() -> Self {
         Self {
             lines: LineBuffer::new(),
-            task_lines: Vec::new(),
-            selected_task_line: None,
+            execution_lines: Vec::new(),
+            selected_execution_line: None,
         }
     }
 
@@ -33,13 +33,22 @@ impl ToolsEventsTab {
         matches!(
             event,
             EventRecord::Session {
-                kind: SessionEventRecordKind::ToolCall { phase, .. },
+                kind: SessionEventRecordKind::ExecutionUpdate { phase, .. },
                 ..
-            } if phase == "queued" || phase == "arguments.ready"
+            } if matches!(
+                phase.as_str(),
+                "arguments.ready"
+                    | "awaited_execution_succeeded"
+                    | "awaited_execution_failed"
+                    | "execution_detached"
+                    | "detached_execution_succeeded"
+                    | "detached_execution_failed"
+                    | "execution_rejected"
+            )
         ) || matches!(
             event,
             EventRecord::Session {
-                kind: SessionEventRecordKind::TaskStateChanged { .. },
+                kind: SessionEventRecordKind::ExecutionStateChanged { .. },
                 ..
             }
         ) || matches!(
@@ -57,13 +66,13 @@ impl ToolsEventsTab {
         )
     }
 
-    fn extract_task_detail(event: &EventRecord) -> Option<TaskDetail> {
+    fn extract_execution_detail(event: &EventRecord) -> Option<ExecutionDetail> {
         let EventRecord::Session { session_id, kind } = event else {
             return None;
         };
 
-        let SessionEventRecordKind::TaskStateChanged {
-            task_id,
+        let SessionEventRecordKind::ExecutionStateChanged {
+            execution_id,
             action_id,
             status,
             args_json,
@@ -74,9 +83,9 @@ impl ToolsEventsTab {
             return None;
         };
 
-        Some(TaskDetail {
+        Some(ExecutionDetail {
             session_id: session_id.clone(),
-            task_id: task_id.clone(),
+            execution_id: execution_id.clone(),
             action_id: action_id.clone(),
             status: status.clone(),
             args_json: args_json.clone(),
@@ -84,18 +93,18 @@ impl ToolsEventsTab {
         })
     }
 
-    fn rebase_task_lines(&mut self, dropped_prefix: usize) {
+    fn rebase_execution_lines(&mut self, dropped_prefix: usize) {
         if dropped_prefix == 0 {
             return;
         }
 
         let selected_line_index = self
-            .selected_task_line
-            .and_then(|index| self.task_lines.get(index))
+            .selected_execution_line
+            .and_then(|index| self.execution_lines.get(index))
             .map(|line| line.line_index);
 
-        let mut rebased = Vec::with_capacity(self.task_lines.len());
-        for mut line in self.task_lines.drain(..) {
+        let mut rebased = Vec::with_capacity(self.execution_lines.len());
+        for mut line in self.execution_lines.drain(..) {
             if line.line_index < dropped_prefix {
                 continue;
             }
@@ -103,29 +112,29 @@ impl ToolsEventsTab {
             rebased.push(line);
         }
 
-        self.selected_task_line = selected_line_index.and_then(|line_index| {
+        self.selected_execution_line = selected_line_index.and_then(|line_index| {
             rebased
                 .iter()
                 .position(|line| line.line_index == line_index)
         });
-        self.task_lines = rebased;
+        self.execution_lines = rebased;
     }
 
-    fn selected_task_detail(&self) -> Option<TaskDetail> {
-        self.selected_task_line
-            .and_then(|index| self.task_lines.get(index))
+    fn selected_execution_detail(&self) -> Option<ExecutionDetail> {
+        self.selected_execution_line
+            .and_then(|index| self.execution_lines.get(index))
             .map(|line| line.detail.clone())
     }
 
     fn select_prev(&mut self, viewport_height: u16, viewport_width: u16) -> bool {
-        if self.task_lines.is_empty() {
+        if self.execution_lines.is_empty() {
             return false;
         }
-        let current = match self.selected_task_line {
+        let current = match self.selected_execution_line {
             Some(index) => index,
             None => {
-                let index = self.task_lines.len().saturating_sub(1);
-                self.selected_task_line = Some(index);
+                let index = self.execution_lines.len().saturating_sub(1);
+                self.selected_execution_line = Some(index);
                 self.ensure_selected_visible(viewport_height, viewport_width);
                 return true;
             }
@@ -134,38 +143,38 @@ impl ToolsEventsTab {
         if next == current {
             return false;
         }
-        self.selected_task_line = Some(next);
+        self.selected_execution_line = Some(next);
         self.ensure_selected_visible(viewport_height, viewport_width);
         true
     }
 
     fn select_next(&mut self, viewport_height: u16, viewport_width: u16) -> bool {
-        if self.task_lines.is_empty() {
+        if self.execution_lines.is_empty() {
             return false;
         }
-        let current = match self.selected_task_line {
+        let current = match self.selected_execution_line {
             Some(index) => index,
             None => {
-                self.selected_task_line = Some(0);
+                self.selected_execution_line = Some(0);
                 self.ensure_selected_visible(viewport_height, viewport_width);
                 return true;
             }
         };
         let next = current
             .saturating_add(1)
-            .min(self.task_lines.len().saturating_sub(1));
+            .min(self.execution_lines.len().saturating_sub(1));
         if next == current {
             return false;
         }
-        self.selected_task_line = Some(next);
+        self.selected_execution_line = Some(next);
         self.ensure_selected_visible(viewport_height, viewport_width);
         true
     }
 
     fn ensure_selected_visible(&mut self, viewport_height: u16, viewport_width: u16) {
         let Some(line_index) = self
-            .selected_task_line
-            .and_then(|selected| self.task_lines.get(selected))
+            .selected_execution_line
+            .and_then(|selected| self.execution_lines.get(selected))
             .map(|line| line.line_index)
         else {
             return;
@@ -175,8 +184,8 @@ impl ToolsEventsTab {
     }
 
     fn selected_render_line_index(&self) -> Option<usize> {
-        self.selected_task_line
-            .and_then(|selected| self.task_lines.get(selected))
+        self.selected_execution_line
+            .and_then(|selected| self.execution_lines.get(selected))
             .map(|line| line.line_index)
     }
 
@@ -221,20 +230,21 @@ fn is_ctrl_enter_like(key: &KeyEvent) -> bool {
         )
 }
 
-impl Tab for ToolsEventsTab {
+impl Tab for ExecutionsEventsTab {
     fn on_event(&mut self, event: &EventRecord) {
         if Self::should_render(event) {
             let was_following = self.lines.is_following();
             let outcome = self.lines.push_line(render_event_record(event));
-            self.rebase_task_lines(outcome.dropped_prefix);
+            self.rebase_execution_lines(outcome.dropped_prefix);
 
-            if let Some(detail) = Self::extract_task_detail(event) {
-                self.task_lines.push(TaskLine {
+            if let Some(detail) = Self::extract_execution_detail(event) {
+                self.execution_lines.push(ExecutionLine {
                     line_index: outcome.index,
                     detail,
                 });
-                if self.selected_task_line.is_none() || was_following {
-                    self.selected_task_line = Some(self.task_lines.len().saturating_sub(1));
+                if self.selected_execution_line.is_none() || was_following {
+                    self.selected_execution_line =
+                        Some(self.execution_lines.len().saturating_sub(1));
                 }
             }
         }
@@ -247,12 +257,12 @@ impl Tab for ToolsEventsTab {
             "scroll"
         };
         let selected = self
-            .selected_task_line
-            .and_then(|index| self.task_lines.get(index))
+            .selected_execution_line
+            .and_then(|index| self.execution_lines.get(index))
             .map(|line| {
                 format!(
                     " selected={} {}",
-                    line.detail.task_id, line.detail.action_id
+                    line.detail.execution_id, line.detail.action_id
                 )
             })
             .unwrap_or_default();
@@ -260,7 +270,10 @@ impl Tab for ToolsEventsTab {
             .wrap(Wrap { trim: false })
             .block(
                 Block::default()
-                    .title(format!("events:tools [{}] ({mode}){selected}", session_id))
+                    .title(format!(
+                        "events:executions [{}] ({mode}){selected}",
+                        session_id
+                    ))
                     .borders(Borders::ALL),
             )
             .scroll((self.lines.scroll_value(), 0));
@@ -323,15 +336,15 @@ impl Tab for ToolsEventsTab {
                     return TabKeyResult::Ignored;
                 }
 
-                if let Some(detail) = self.selected_task_detail() {
-                    TabKeyResult::OpenTaskDetail(detail)
+                if let Some(detail) = self.selected_execution_detail() {
+                    TabKeyResult::OpenExecutionDetail(detail)
                 } else {
                     TabKeyResult::Handled
                 }
             }
             KeyCode::Char('j') | KeyCode::Char('m') if is_ctrl_enter_like(key) => {
-                if let Some(detail) = self.selected_task_detail() {
-                    TabKeyResult::OpenTaskDetail(detail)
+                if let Some(detail) = self.selected_execution_detail() {
+                    TabKeyResult::OpenExecutionDetail(detail)
                 } else {
                     TabKeyResult::Handled
                 }
@@ -343,7 +356,7 @@ impl Tab for ToolsEventsTab {
 
 #[cfg(test)]
 mod tests {
-    use super::ToolsEventsTab;
+    use super::ExecutionsEventsTab;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::Modifier;
 
@@ -351,28 +364,29 @@ mod tests {
     use crate::view::{EventRecord, SessionEventRecordKind};
 
     #[test]
-    fn keeps_tool_trigger_and_result_events() {
-        let mut tab = ToolsEventsTab::new();
+    fn keeps_execution_update_and_result_events() {
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::ToolCall {
-                phase: "queued".to_string(),
+            kind: SessionEventRecordKind::ExecutionUpdate {
+                phase: "execution_detached".to_string(),
                 call_key: "call-1".to_string(),
                 call_id: "fc_1".to_string(),
-                action_id: "filesystem__list".to_string(),
-                task_id: "task-1".to_string(),
-                args_preview: r#"{"path":"."}"#.to_string(),
-                detail: "queued action `filesystem__list` as task-1 (running)".to_string(),
+                action_id: "shell__run".to_string(),
+                execution_id: "execution-1".to_string(),
+                args_preview: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
+                detail: "submitted action `shell__run` as execution-1 (running) mode=detach"
+                    .to_string(),
             },
         });
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
-                action_id: "filesystem__list".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
+                action_id: "shell__run".to_string(),
                 status: "succeeded".to_string(),
-                args_json: r#"{"path":"."}"#.to_string(),
-                args_preview: r#"{"path":"."}"#.to_string(),
+                args_json: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
+                args_preview: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
                 result_message: String::new(),
                 result_preview: String::new(),
             },
@@ -383,7 +397,7 @@ mod tests {
 
     #[test]
     fn filters_openai_stream_events() {
-        let mut tab = ToolsEventsTab::new();
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::AgentStream {
@@ -396,16 +410,16 @@ mod tests {
     }
 
     #[test]
-    fn filters_tool_argument_delta_events() {
-        let mut tab = ToolsEventsTab::new();
+    fn filters_execution_argument_delta_events() {
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::ToolCall {
+            kind: SessionEventRecordKind::ExecutionUpdate {
                 phase: "arguments.delta".to_string(),
                 call_key: "call-1".to_string(),
                 call_id: "fc_1".to_string(),
                 action_id: "filesystem__list".to_string(),
-                task_id: String::new(),
+                execution_id: String::new(),
                 args_preview: r#"{"pat"#.to_string(),
                 detail: String::new(),
             },
@@ -416,7 +430,7 @@ mod tests {
 
     #[test]
     fn keeps_validation_failure_diagnostics() {
-        let mut tab = ToolsEventsTab::new();
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::AgentStream {
@@ -431,8 +445,8 @@ mod tests {
     }
 
     #[test]
-    fn filters_non_tool_lifecycle_events() {
-        let mut tab = ToolsEventsTab::new();
+    fn filters_non_execution_lifecycle_events() {
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::TurnStarted {
@@ -445,8 +459,8 @@ mod tests {
     }
 
     #[test]
-    fn keeps_turn_failure_for_tool_error_context() {
-        let mut tab = ToolsEventsTab::new();
+    fn keeps_turn_failure_for_execution_error_context() {
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::TurnFailure {
@@ -460,12 +474,12 @@ mod tests {
     }
 
     #[test]
-    fn opens_task_detail_with_ctrl_enter() {
-        let mut tab = ToolsEventsTab::new();
+    fn opens_execution_detail_with_ctrl_enter() {
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__read".to_string(),
                 status: "failed".to_string(),
                 args_json: r#"{"path":"notes.txt"}"#.to_string(),
@@ -477,16 +491,16 @@ mod tests {
 
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
         let result = tab.handle_key(&key, true, 10, 80);
-        assert!(matches!(result, TabKeyResult::OpenTaskDetail(_)));
+        assert!(matches!(result, TabKeyResult::OpenExecutionDetail(_)));
     }
 
     #[test]
     fn plain_enter_is_ignored() {
-        let mut tab = ToolsEventsTab::new();
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__read".to_string(),
                 status: "failed".to_string(),
                 args_json: r#"{"path":"notes.txt"}"#.to_string(),
@@ -502,12 +516,12 @@ mod tests {
     }
 
     #[test]
-    fn opens_task_detail_with_ctrl_j_alias() {
-        let mut tab = ToolsEventsTab::new();
+    fn opens_execution_detail_with_ctrl_j_alias() {
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__read".to_string(),
                 status: "failed".to_string(),
                 args_json: r#"{"path":"notes.txt"}"#.to_string(),
@@ -519,16 +533,16 @@ mod tests {
 
         let key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
         let result = tab.handle_key(&key, false, 10, 80);
-        assert!(matches!(result, TabKeyResult::OpenTaskDetail(_)));
+        assert!(matches!(result, TabKeyResult::OpenExecutionDetail(_)));
     }
 
     #[test]
-    fn opens_task_detail_with_ctrl_m_alias() {
-        let mut tab = ToolsEventsTab::new();
+    fn opens_execution_detail_with_ctrl_m_alias() {
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__read".to_string(),
                 status: "failed".to_string(),
                 args_json: r#"{"path":"notes.txt"}"#.to_string(),
@@ -540,16 +554,16 @@ mod tests {
 
         let key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL);
         let result = tab.handle_key(&key, false, 10, 80);
-        assert!(matches!(result, TabKeyResult::OpenTaskDetail(_)));
+        assert!(matches!(result, TabKeyResult::OpenExecutionDetail(_)));
     }
 
     #[test]
-    fn up_down_with_single_task_does_not_consume_when_selection_cannot_move() {
-        let mut tab = ToolsEventsTab::new();
+    fn up_down_with_single_execution_does_not_consume_when_selection_cannot_move() {
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__list".to_string(),
                 status: "running".to_string(),
                 args_json: r#"{"path":"."}"#.to_string(),
@@ -572,13 +586,13 @@ mod tests {
     }
 
     #[test]
-    fn up_down_with_multiple_tasks_moves_selection() {
-        let mut tab = ToolsEventsTab::new();
-        for (task_id, path) in [("task-1", "."), ("task-2", "src")] {
+    fn up_down_with_multiple_executions_moves_selection() {
+        let mut tab = ExecutionsEventsTab::new();
+        for (execution_id, path) in [("execution-1", "."), ("execution-2", "src")] {
             tab.on_event(&EventRecord::Session {
                 session_id: "s1".to_string(),
-                kind: SessionEventRecordKind::TaskStateChanged {
-                    task_id: task_id.to_string(),
+                kind: SessionEventRecordKind::ExecutionStateChanged {
+                    execution_id: execution_id.to_string(),
                     action_id: "filesystem__list".to_string(),
                     status: "running".to_string(),
                     args_json: format!(r#"{{"path":"{path}"}}"#),
@@ -589,13 +603,13 @@ mod tests {
             });
         }
 
-        assert_eq!(tab.selected_task_line, Some(1));
+        assert_eq!(tab.selected_execution_line, Some(1));
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         assert!(matches!(
             tab.handle_key(&up, true, 10, 80),
             TabKeyResult::Handled
         ));
-        assert_eq!(tab.selected_task_line, Some(0));
+        assert_eq!(tab.selected_execution_line, Some(0));
         assert!(matches!(
             tab.handle_key(&up, true, 10, 80),
             TabKeyResult::Ignored
@@ -603,12 +617,12 @@ mod tests {
     }
 
     #[test]
-    fn render_text_marks_selected_task_line() {
-        let mut tab = ToolsEventsTab::new();
+    fn render_text_marks_selected_execution_line() {
+        let mut tab = ExecutionsEventsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__list".to_string(),
                 status: "running".to_string(),
                 args_json: r#"{"path":"."}"#.to_string(),

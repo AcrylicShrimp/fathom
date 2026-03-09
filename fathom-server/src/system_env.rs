@@ -1,17 +1,17 @@
 mod context;
 mod environments;
+mod executions;
 mod profiles;
-mod tasks;
 
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::runtime::Runtime;
-use crate::session::task_context::TaskExecutionContext;
+use crate::session::execution_context::ExecutionContext;
 use fathom_env::ActionOutcome;
 
+use self::executions::parse_execution_payload_part;
 use self::profiles::{parse_profile_kind, parse_profile_view};
-use self::tasks::parse_task_payload_part;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,8 +40,8 @@ struct DescribeEnvironmentArgs {
 }
 
 #[derive(Debug, Deserialize)]
-struct GetTaskPayloadArgs {
-    task_id: String,
+struct GetExecutionPayloadArgs {
+    execution_id: String,
     part: String,
     #[serde(default)]
     offset: usize,
@@ -51,7 +51,7 @@ struct GetTaskPayloadArgs {
 
 pub(crate) async fn execute_action(
     runtime: &Runtime,
-    context: &TaskExecutionContext,
+    context: &ExecutionContext,
     action_name: &str,
     args_json: &str,
 ) -> Option<ActionOutcome> {
@@ -62,14 +62,16 @@ pub(crate) async fn execute_action(
         "describe_environment" => Some(execute_describe_environment(context, args_json)),
         "get_session_identity_map" => Some(execute_get_session_identity_map(context)),
         "get_profile" => Some(execute_get_profile(runtime, args_json).await),
-        "get_task_payload" => Some(execute_get_task_payload(runtime, context, args_json).await),
+        "get_execution_payload" => {
+            Some(execute_get_execution_payload(runtime, context, args_json).await)
+        }
         _ => None,
     }
 }
 
 async fn execute_get_context(
     runtime: &Runtime,
-    context: &TaskExecutionContext,
+    context: &ExecutionContext,
     args_json: &str,
 ) -> ActionOutcome {
     match parse_args::<GetContextArgs>(args_json, "system__get_context") {
@@ -107,7 +109,7 @@ async fn execute_list_profiles(runtime: &Runtime, args_json: &str) -> ActionOutc
     )
 }
 
-fn execute_describe_environment(context: &TaskExecutionContext, args_json: &str) -> ActionOutcome {
+fn execute_describe_environment(context: &ExecutionContext, args_json: &str) -> ActionOutcome {
     let args =
         match parse_args::<DescribeEnvironmentArgs>(args_json, "system__describe_environment") {
             Ok(args) => args,
@@ -140,7 +142,7 @@ fn execute_describe_environment(context: &TaskExecutionContext, args_json: &str)
     }
 }
 
-fn execute_get_session_identity_map(context: &TaskExecutionContext) -> ActionOutcome {
+fn execute_get_session_identity_map(context: &ExecutionContext) -> ActionOutcome {
     success(
         "system__get_session_identity_map",
         json!({
@@ -178,39 +180,40 @@ async fn execute_get_profile(runtime: &Runtime, args_json: &str) -> ActionOutcom
     }
 }
 
-async fn execute_get_task_payload(
+async fn execute_get_execution_payload(
     runtime: &Runtime,
-    context: &TaskExecutionContext,
+    context: &ExecutionContext,
     args_json: &str,
 ) -> ActionOutcome {
-    let args = match parse_args::<GetTaskPayloadArgs>(args_json, "system__get_task_payload") {
-        Ok(args) => args,
-        Err(error) => return failure("system__get_task_payload", error),
-    };
-    if args.task_id.trim().is_empty() {
+    let args =
+        match parse_args::<GetExecutionPayloadArgs>(args_json, "system__get_execution_payload") {
+            Ok(args) => args,
+            Err(error) => return failure("system__get_execution_payload", error),
+        };
+    if args.execution_id.trim().is_empty() {
         return failure(
-            "system__get_task_payload",
-            "task_id must be non-empty".to_string(),
+            "system__get_execution_payload",
+            "execution_id must be non-empty".to_string(),
         );
     }
 
-    let part = match parse_task_payload_part(&args.part) {
+    let part = match parse_execution_payload_part(&args.part) {
         Ok(part) => part,
-        Err(error) => return failure("system__get_task_payload", error),
+        Err(error) => return failure("system__get_execution_payload", error),
     };
 
-    match tasks::get_task_payload(
+    match executions::get_execution_payload(
         runtime,
         context,
-        &args.task_id,
+        &args.execution_id,
         part,
         args.offset,
         args.limit,
     )
     .await
     {
-        Ok(payload) => success("system__get_task_payload", payload),
-        Err(error) => failure("system__get_task_payload", error),
+        Ok(payload) => success("system__get_execution_payload", payload),
+        Err(error) => failure("system__get_execution_payload", error),
     }
 }
 
@@ -254,14 +257,14 @@ mod tests {
     use serde_json::Value;
 
     use crate::runtime::Runtime;
-    use crate::session::task_context::TaskExecutionContext;
+    use crate::session::execution_context::ExecutionContext;
 
     use super::execute_action;
 
     #[tokio::test]
     async fn system_get_context_returns_payload() {
         let runtime = Runtime::new(2, 10);
-        let context = TaskExecutionContext {
+        let context = ExecutionContext {
             session_id: "session-1".to_string(),
             active_agent_id: "agent-1".to_string(),
             participant_user_ids: vec!["user-1".to_string()],
@@ -287,7 +290,7 @@ mod tests {
     #[tokio::test]
     async fn system_get_context_includes_environment_summaries() {
         let runtime = Runtime::new(2, 10);
-        let context = TaskExecutionContext {
+        let context = ExecutionContext {
             session_id: "session-1".to_string(),
             active_agent_id: "agent-1".to_string(),
             participant_user_ids: vec!["user-1".to_string()],
@@ -312,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn system_get_context_excludes_policy_fields() {
         let runtime = Runtime::new(2, 10);
-        let context = TaskExecutionContext {
+        let context = ExecutionContext {
             session_id: "session-1".to_string(),
             active_agent_id: "agent-1".to_string(),
             participant_user_ids: vec!["user-1".to_string()],
@@ -339,7 +342,7 @@ mod tests {
     #[tokio::test]
     async fn system_describe_environment_requires_activation() {
         let runtime = Runtime::new(2, 10);
-        let context = TaskExecutionContext {
+        let context = ExecutionContext {
             session_id: "session-1".to_string(),
             active_agent_id: "agent-1".to_string(),
             participant_user_ids: vec!["user-1".to_string()],
@@ -362,7 +365,7 @@ mod tests {
     #[tokio::test]
     async fn system_describe_environment_returns_action_inventory() {
         let runtime = Runtime::new(2, 10);
-        let context = TaskExecutionContext {
+        let context = ExecutionContext {
             session_id: "session-1".to_string(),
             active_agent_id: "agent-1".to_string(),
             participant_user_ids: vec!["user-1".to_string()],
@@ -396,7 +399,7 @@ mod tests {
     #[tokio::test]
     async fn system_describe_environment_includes_filesystem_path_rules() {
         let runtime = Runtime::new(2, 10);
-        let context = TaskExecutionContext {
+        let context = ExecutionContext {
             session_id: "session-1".to_string(),
             active_agent_id: "agent-1".to_string(),
             participant_user_ids: vec!["user-1".to_string()],
@@ -445,7 +448,7 @@ mod tests {
     #[tokio::test]
     async fn system_get_time_returns_canonical_time_context() {
         let runtime = Runtime::new(2, 10);
-        let context = TaskExecutionContext {
+        let context = ExecutionContext {
             session_id: "session-1".to_string(),
             active_agent_id: "agent-1".to_string(),
             participant_user_ids: vec!["user-1".to_string()],
@@ -470,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn system_get_time_rejects_unknown_fields() {
         let runtime = Runtime::new(2, 10);
-        let context = TaskExecutionContext {
+        let context = ExecutionContext {
             session_id: "session-1".to_string(),
             active_agent_id: "agent-1".to_string(),
             participant_user_ids: vec!["user-1".to_string()],

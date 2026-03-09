@@ -1,9 +1,9 @@
 use crate::pb;
-use crate::util::{refresh_scope_label, task_status_label};
+use crate::util::{execution_status_label, refresh_scope_label};
 
-const TASK_ARGS_PREVIEW_MAX_CHARS: usize = 140;
-const TASK_RESULT_PREVIEW_MAX_CHARS: usize = 160;
-const TOOL_CALL_ARGS_PREVIEW_MAX_CHARS: usize = 120;
+const EXECUTION_ARGS_PREVIEW_MAX_CHARS: usize = 140;
+const EXECUTION_RESULT_PREVIEW_MAX_CHARS: usize = 160;
+const EXECUTION_UPDATE_ARGS_PREVIEW_MAX_CHARS: usize = 120;
 
 #[derive(Debug, Clone)]
 pub(crate) enum EventRecord {
@@ -41,8 +41,8 @@ pub(crate) enum SessionEventRecordKind {
         done: bool,
         user_id: String,
     },
-    TaskStateChanged {
-        task_id: String,
+    ExecutionStateChanged {
+        execution_id: String,
         action_id: String,
         status: String,
         args_json: String,
@@ -59,12 +59,12 @@ pub(crate) enum SessionEventRecordKind {
         code: String,
         message: String,
     },
-    ToolCall {
+    ExecutionUpdate {
         phase: String,
         call_key: String,
         call_id: String,
         action_id: String,
-        task_id: String,
+        execution_id: String,
         args_preview: String,
         detail: String,
     },
@@ -124,34 +124,34 @@ pub(crate) fn session_event_to_record(event: &pb::SessionEvent) -> EventRecord {
             done: data.done,
             user_id: data.user_id.clone(),
         },
-        pb::session_event::Kind::TaskStateChanged(data) => {
-            let task = data.task.as_ref();
-            let task_id = task
-                .map(|task| task.task_id.clone())
+        pb::session_event::Kind::ExecutionStateChanged(data) => {
+            let execution = data.execution.as_ref();
+            let execution_id = execution
+                .map(|execution| execution.execution_id.clone())
                 .unwrap_or_else(|| "?".to_string());
-            let action_id = task
-                .map(|task| task.action_id.trim().to_string())
-                .filter(|value| !value.is_empty())
+            let action_id = execution
+                .map(|execution| execution.action_id.trim().to_string())
+                .filter(|value: &String| !value.is_empty())
                 .unwrap_or_else(|| "?".to_string());
-            let args_json = task
-                .map(|task| task.args_json.clone())
+            let args_json = execution
+                .map(|execution| execution.args_json.clone())
                 .unwrap_or_else(|| "{}".to_string());
-            let result_message = task
-                .map(|task| task.result_message.clone())
+            let result_message = execution
+                .map(|execution| execution.result_message.clone())
                 .unwrap_or_default();
-            SessionEventRecordKind::TaskStateChanged {
-                task_id,
+            SessionEventRecordKind::ExecutionStateChanged {
+                execution_id,
                 action_id,
-                status: task
-                    .and_then(|task| pb::TaskStatus::try_from(task.status).ok())
-                    .map(task_status_label)
+                status: execution
+                    .and_then(|execution| pb::ExecutionStatus::try_from(execution.status).ok())
+                    .map(execution_status_label)
                     .unwrap_or("unknown")
                     .to_string(),
-                args_preview: summarize_for_preview(&args_json, TASK_ARGS_PREVIEW_MAX_CHARS),
+                args_preview: summarize_for_preview(&args_json, EXECUTION_ARGS_PREVIEW_MAX_CHARS),
                 args_json,
                 result_preview: summarize_for_preview(
                     &result_message,
-                    TASK_RESULT_PREVIEW_MAX_CHARS,
+                    EXECUTION_RESULT_PREVIEW_MAX_CHARS,
                 ),
                 result_message,
             }
@@ -174,26 +174,26 @@ pub(crate) fn session_event_to_record(event: &pb::SessionEvent) -> EventRecord {
             code: data.code.clone(),
             message: data.message.clone(),
         },
-        pb::session_event::Kind::ToolCall(data) => {
+        pb::session_event::Kind::ExecutionUpdate(data) => {
             let args_source = if data.args_json.trim().is_empty() {
                 data.args_delta.as_str()
             } else {
                 data.args_json.as_str()
             };
-            SessionEventRecordKind::ToolCall {
-                phase: tool_call_phase_label(
-                    pb::ToolCallPhase::try_from(data.phase)
-                        .unwrap_or(pb::ToolCallPhase::Unspecified),
+            SessionEventRecordKind::ExecutionUpdate {
+                phase: execution_update_phase_label(
+                    pb::ExecutionUpdatePhase::try_from(data.phase)
+                        .unwrap_or(pb::ExecutionUpdatePhase::Unspecified),
                 )
                 .to_string(),
                 call_key: data.call_key.clone(),
                 call_id: data.call_id.clone(),
                 action_id: data.action_id.clone(),
-                task_id: data.task_id.clone(),
+                execution_id: data.execution_id.clone(),
                 args_preview: if args_source.trim().is_empty() {
                     String::new()
                 } else {
-                    summarize_for_preview(args_source, TOOL_CALL_ARGS_PREVIEW_MAX_CHARS)
+                    summarize_for_preview(args_source, EXECUTION_UPDATE_ARGS_PREVIEW_MAX_CHARS)
                 },
                 detail: data.detail.clone(),
             }
@@ -267,8 +267,8 @@ pub(crate) fn render_event_record(record: &EventRecord) -> String {
                         "{prefix} assistant_stream id={stream_id} done={done}{user_suffix}{preview}"
                     )
                 }
-                SessionEventRecordKind::TaskStateChanged {
-                    task_id,
+                SessionEventRecordKind::ExecutionStateChanged {
+                    execution_id,
                     action_id,
                     status,
                     args_preview,
@@ -276,7 +276,7 @@ pub(crate) fn render_event_record(record: &EventRecord) -> String {
                     ..
                 } => {
                     let mut line = format!(
-                        "{prefix} task {task_id} {action_id} -> {status} args={args_preview}"
+                        "{prefix} execution {execution_id} {action_id} -> {status} args={args_preview}"
                     );
                     if (status == "failed" || status == "canceled") && !result_preview.is_empty() {
                         line.push_str(&format!(" result={result_preview}"));
@@ -303,28 +303,35 @@ pub(crate) fn render_event_record(record: &EventRecord) -> String {
                         format!("{prefix} system notice [{level}] {code}: {message}")
                     }
                 }
-                SessionEventRecordKind::ToolCall {
+                SessionEventRecordKind::ExecutionUpdate {
                     phase,
                     call_key,
                     call_id,
                     action_id,
-                    task_id,
+                    execution_id,
                     args_preview,
                     detail,
                 } => {
-                    let mut line = format!("{prefix} tool {phase}");
+                    let mut line = format!("{prefix} execution_update {phase}");
                     if !action_id.is_empty() {
                         line.push_str(&format!(" action={action_id}"));
                     }
-                    if !task_id.is_empty() {
-                        line.push_str(&format!(" task={task_id}"));
+                    if !execution_id.is_empty() {
+                        line.push_str(&format!(" execution={execution_id}"));
                     }
                     if !call_id.is_empty() {
                         line.push_str(&format!(" call_id={call_id}"));
                     } else if !call_key.is_empty() {
                         line.push_str(&format!(" call={call_key}"));
                     }
-                    if !args_preview.is_empty() && (phase != "queued" || detail.is_empty()) {
+                    if !args_preview.is_empty()
+                        && phase != "awaited_execution_succeeded"
+                        && phase != "awaited_execution_failed"
+                        && phase != "execution_detached"
+                        && phase != "detached_execution_succeeded"
+                        && phase != "detached_execution_failed"
+                        && phase != "execution_rejected"
+                    {
                         line.push_str(&format!(" args={args_preview}"));
                     }
                     if !detail.is_empty() {
@@ -393,12 +400,17 @@ fn system_notice_level_label(level: pb::SystemNoticeLevel) -> &'static str {
     }
 }
 
-fn tool_call_phase_label(phase: pb::ToolCallPhase) -> &'static str {
+fn execution_update_phase_label(phase: pb::ExecutionUpdatePhase) -> &'static str {
     match phase {
-        pb::ToolCallPhase::Unspecified => "unspecified",
-        pb::ToolCallPhase::ArgumentsDelta => "arguments.delta",
-        pb::ToolCallPhase::ArgumentsReady => "arguments.ready",
-        pb::ToolCallPhase::Queued => "queued",
+        pb::ExecutionUpdatePhase::Unspecified => "unspecified",
+        pb::ExecutionUpdatePhase::ArgumentsDelta => "arguments.delta",
+        pb::ExecutionUpdatePhase::ArgumentsReady => "arguments.ready",
+        pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded => "awaited_execution_succeeded",
+        pb::ExecutionUpdatePhase::AwaitedExecutionFailed => "awaited_execution_failed",
+        pb::ExecutionUpdatePhase::ExecutionDetached => "execution_detached",
+        pb::ExecutionUpdatePhase::DetachedExecutionSucceeded => "detached_execution_succeeded",
+        pb::ExecutionUpdatePhase::DetachedExecutionFailed => "detached_execution_failed",
+        pb::ExecutionUpdatePhase::ExecutionRejected => "execution_rejected",
     }
 }
 
@@ -409,18 +421,18 @@ mod tests {
     use super::{render_event_record, session_event_to_record};
 
     #[test]
-    fn task_event_render_includes_action_and_args_preview() {
+    fn execution_event_render_includes_action_and_args_preview() {
         let event = pb::SessionEvent {
             session_id: "s1".to_string(),
             created_at_unix_ms: 0,
-            kind: Some(pb::session_event::Kind::TaskStateChanged(
-                pb::TaskStateChangedEvent {
-                    task: Some(pb::Task {
-                        task_id: "task-1".to_string(),
+            kind: Some(pb::session_event::Kind::ExecutionStateChanged(
+                pb::ExecutionStateChangedEvent {
+                    execution: Some(pb::Execution {
+                        execution_id: "execution-1".to_string(),
                         session_id: "s1".to_string(),
                         action_id: "filesystem__list".to_string(),
                         args_json: r#"{"path":"."}"#.to_string(),
-                        status: pb::TaskStatus::Running as i32,
+                        status: pb::ExecutionStatus::Running as i32,
                         result_message: String::new(),
                         created_at_unix_ms: 0,
                         updated_at_unix_ms: 0,
@@ -431,23 +443,23 @@ mod tests {
         let record = session_event_to_record(&event);
         let line = render_event_record(&record);
 
-        assert!(line.contains("task-1 filesystem__list -> running"));
+        assert!(line.contains("execution-1 filesystem__list -> running"));
         assert!(line.contains(r#"args={"path":"."}"#));
     }
 
     #[test]
-    fn task_event_render_includes_failed_result_preview() {
+    fn execution_event_render_includes_failed_result_preview() {
         let event = pb::SessionEvent {
             session_id: "s1".to_string(),
             created_at_unix_ms: 0,
-            kind: Some(pb::session_event::Kind::TaskStateChanged(
-                pb::TaskStateChangedEvent {
-                    task: Some(pb::Task {
-                        task_id: "task-2".to_string(),
+            kind: Some(pb::session_event::Kind::ExecutionStateChanged(
+                pb::ExecutionStateChangedEvent {
+                    execution: Some(pb::Execution {
+                        execution_id: "execution-2".to_string(),
                         session_id: "s1".to_string(),
                         action_id: "filesystem__read".to_string(),
                         args_json: r#"{"path":"notes.txt"}"#.to_string(),
-                        status: pb::TaskStatus::Failed as i32,
+                        status: pb::ExecutionStatus::Failed as i32,
                         result_message: "not found\nthis file does not exist in the workspace"
                             .to_string(),
                         created_at_unix_ms: 0,
@@ -464,26 +476,29 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_event_render_includes_phase_and_task() {
+    fn execution_update_render_includes_phase_and_execution() {
         let event = pb::SessionEvent {
             session_id: "s1".to_string(),
             created_at_unix_ms: 0,
-            kind: Some(pb::session_event::Kind::ToolCall(pb::ToolCallEvent {
-                phase: pb::ToolCallPhase::Queued as i32,
-                call_key: "call-1".to_string(),
-                call_id: "fc_1".to_string(),
-                action_id: "filesystem__list".to_string(),
-                task_id: "task-1".to_string(),
-                args_delta: String::new(),
-                args_json: r#"{"path":"."}"#.to_string(),
-                detail: "queued action `filesystem__list` as task-1 (running)".to_string(),
-            })),
+            kind: Some(pb::session_event::Kind::ExecutionUpdate(
+                pb::ExecutionUpdateEvent {
+                    phase: pb::ExecutionUpdatePhase::ExecutionDetached as i32,
+                    call_key: "call-1".to_string(),
+                    call_id: "fc_1".to_string(),
+                    action_id: "shell__run".to_string(),
+                    execution_id: "execution-1".to_string(),
+                    args_delta: String::new(),
+                    args_json: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
+                    detail: "submitted action `shell__run` as execution-1 (running) mode=detach"
+                        .to_string(),
+                },
+            )),
         };
         let record = session_event_to_record(&event);
         let line = render_event_record(&record);
 
-        assert!(line.contains("tool queued"));
-        assert!(line.contains("task=task-1"));
+        assert!(line.contains("execution_update execution_detached"));
+        assert!(line.contains("execution=execution-1"));
         assert!(line.contains("call_id=fc_1"));
     }
 

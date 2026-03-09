@@ -72,18 +72,18 @@ pub(crate) struct CapabilityEnvironmentSnapshot {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) description: String,
-    pub(crate) tools: Vec<CapabilityToolSnapshot>,
+    pub(crate) actions: Vec<CapabilityActionSnapshot>,
     pub(crate) recipes: Vec<CapabilityRecipeSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ToolModeSupport {
+pub(crate) enum ActionModeSupportSnapshot {
     AwaitOnly,
     AwaitOrDetach,
 }
 
-impl ToolModeSupport {
+impl ActionModeSupportSnapshot {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::AwaitOnly => "await_only",
@@ -93,10 +93,10 @@ impl ToolModeSupport {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct CapabilityToolSnapshot {
-    pub(crate) tool_name: String,
+pub(crate) struct CapabilityActionSnapshot {
+    pub(crate) action_id: String,
     pub(crate) description: String,
-    pub(crate) mode_support: ToolModeSupport,
+    pub(crate) mode_support: ActionModeSupportSnapshot,
     pub(crate) discovery: bool,
 }
 
@@ -125,7 +125,7 @@ pub(crate) struct SystemTimeContext {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct InFlightActionHint {
-    pub(crate) task_id: String,
+    pub(crate) execution_id: String,
     pub(crate) canonical_action_id: String,
     pub(crate) environment_id: String,
     pub(crate) action_name: String,
@@ -137,8 +137,8 @@ pub(crate) struct InFlightActionHint {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ResolvedPayloadLookupHint {
-    pub(crate) lookup_task_id: String,
-    pub(crate) task_id: String,
+    pub(crate) lookup_execution_id: String,
+    pub(crate) execution_id: String,
     pub(crate) part: String,
     pub(crate) offset: usize,
     pub(crate) next_offset: Option<usize>,

@@ -1,12 +1,12 @@
 mod conversation;
+mod events_executions;
 mod events_full;
-mod events_tools;
-mod running_tasks;
+mod running_executions;
 
 pub(crate) use conversation::ConversationTab;
+pub(crate) use events_executions::ExecutionsEventsTab;
 pub(crate) use events_full::FullEventsTab;
-pub(crate) use events_tools::ToolsEventsTab;
-pub(crate) use running_tasks::RunningTasksTab;
+pub(crate) use running_executions::RunningExecutionsTab;
 
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
@@ -17,9 +17,9 @@ use crate::view::EventRecord;
 const MAX_LINES_PER_TAB: usize = 10_000;
 
 #[derive(Debug, Clone)]
-pub(crate) struct TaskDetail {
+pub(crate) struct ExecutionDetail {
     pub(crate) session_id: String,
-    pub(crate) task_id: String,
+    pub(crate) execution_id: String,
     pub(crate) action_id: String,
     pub(crate) status: String,
     pub(crate) args_json: String,
@@ -29,7 +29,7 @@ pub(crate) struct TaskDetail {
 pub(crate) enum TabKeyResult {
     Ignored,
     Handled,
-    OpenTaskDetail(TaskDetail),
+    OpenExecutionDetail(ExecutionDetail),
 }
 
 pub(crate) trait Tab {

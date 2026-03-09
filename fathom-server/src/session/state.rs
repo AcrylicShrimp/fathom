@@ -4,7 +4,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
 use crate::agent::SessionCompactionSnapshot;
-use crate::environment::EnvironmentCommittedAction;
+use crate::environment::{EnvironmentCommittedAction, RequestedExecutionMode};
 use crate::history::HistoryEvent;
 use crate::pb;
 use crate::session::payload_lookup::ResolvedPayloadLookup;
@@ -25,12 +25,12 @@ pub(crate) enum SessionCommand {
     GetSummary {
         respond_to: oneshot::Sender<pb::SessionSummary>,
     },
-    ListTasks {
-        respond_to: oneshot::Sender<Vec<pb::Task>>,
+    ListExecutions {
+        respond_to: oneshot::Sender<Vec<pb::Execution>>,
     },
-    CancelTask {
-        task_id: String,
-        respond_to: oneshot::Sender<Result<pb::CancelTaskResponse, Status>>,
+    CancelExecution {
+        execution_id: String,
+        respond_to: oneshot::Sender<Result<pb::CancelExecutionResponse, Status>>,
     },
     EnvironmentActionCommitted {
         committed: EnvironmentCommittedAction,
@@ -39,7 +39,7 @@ pub(crate) enum SessionCommand {
 
 #[derive(Debug, Clone)]
 pub(crate) struct InFlightActionState {
-    pub(crate) task_id: String,
+    pub(crate) execution_id: String,
     pub(crate) canonical_action_id: String,
     pub(crate) environment_id: String,
     pub(crate) action_name: String,
@@ -47,6 +47,13 @@ pub(crate) struct InFlightActionState {
     pub(crate) status: String,
     pub(crate) submitted_at_unix_ms: i64,
     pub(crate) args_preview: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActiveExecutionState {
+    pub(crate) requested_mode: RequestedExecutionMode,
+    pub(crate) call_key: String,
+    pub(crate) call_id: Option<String>,
 }
 
 pub(crate) struct SessionState {
@@ -58,11 +65,12 @@ pub(crate) struct SessionState {
     pub(crate) participant_user_profiles_copy: HashMap<String, pb::UserProfile>,
     pub(crate) trigger_queue: VecDeque<pb::Trigger>,
     pub(crate) history: Vec<HistoryEvent>,
-    pub(crate) tasks: HashMap<String, pb::Task>,
+    pub(crate) executions: HashMap<String, pb::Execution>,
     pub(crate) engaged_environment_ids: BTreeSet<String>,
     pub(crate) environment_snapshots: HashMap<String, EnvironmentSnapshot>,
     pub(crate) next_environment_seq: HashMap<String, u64>,
     pub(crate) in_flight_actions: HashMap<String, InFlightActionState>,
+    pub(crate) active_executions: HashMap<String, ActiveExecutionState>,
     pub(crate) pending_payload_lookups: Vec<ResolvedPayloadLookup>,
     pub(crate) next_agent_invocation_seq: u64,
     pub(crate) turn_seq: u64,
@@ -94,11 +102,12 @@ impl SessionState {
             participant_user_profiles_copy,
             trigger_queue: VecDeque::new(),
             history: Vec::new(),
-            tasks: HashMap::new(),
+            executions: HashMap::new(),
             engaged_environment_ids,
             environment_snapshots,
             next_environment_seq,
             in_flight_actions: HashMap::new(),
+            active_executions: HashMap::new(),
             pending_payload_lookups: Vec::new(),
             next_agent_invocation_seq: 0,
             turn_seq: 0,
@@ -114,15 +123,15 @@ impl SessionState {
             .filter_map(|id| self.participant_user_profiles_copy.get(id).cloned())
             .collect::<Vec<_>>();
 
-        let pending_task_count = self
-            .tasks
+        let pending_execution_count = self
+            .executions
             .values()
-            .filter(|task| task.status == pb::TaskStatus::Pending as i32)
+            .filter(|execution| execution.status == pb::ExecutionStatus::Pending as i32)
             .count() as u64;
-        let running_task_count = self
-            .tasks
+        let running_execution_count = self
+            .executions
             .values()
-            .filter(|task| task.status == pb::TaskStatus::Running as i32)
+            .filter(|execution| execution.status == pb::ExecutionStatus::Running as i32)
             .count() as u64;
 
         pb::SessionSummary {
@@ -135,8 +144,8 @@ impl SessionState {
             queued_trigger_count: self.trigger_queue.len() as u64,
             history_entry_count: self.compaction.last_compacted_history_index
                 + self.history.len() as u64,
-            pending_task_count,
-            running_task_count,
+            pending_execution_count,
+            running_execution_count,
         }
     }
 
@@ -153,7 +162,7 @@ impl SessionState {
         if self
             .pending_payload_lookups
             .iter()
-            .any(|item| item.lookup_task_id == lookup.lookup_task_id)
+            .any(|item| item.lookup_execution_id == lookup.lookup_execution_id)
         {
             return;
         }

@@ -2,9 +2,9 @@ use serde_json::{Value, json};
 
 use crate::environment::EnvironmentRegistry;
 use crate::runtime::Runtime;
-use crate::session::task_context::TaskExecutionContext;
+use crate::session::execution_context::ExecutionContext;
 
-pub(crate) fn build_context_payload(runtime: &Runtime, context: &TaskExecutionContext) -> Value {
+pub(crate) fn build_context_payload(runtime: &Runtime, context: &ExecutionContext) -> Value {
     let time_context = runtime.current_system_time_context();
     json!({
         "runtime_version": env!("CARGO_PKG_VERSION"),

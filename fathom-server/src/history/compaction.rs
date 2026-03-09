@@ -47,22 +47,29 @@ fn adjusted_batch_len(history: &[HistoryEvent], proposed: usize) -> usize {
         let last_compacted = &history[batch_len - 1];
         let next_live = &history[batch_len];
 
-        let splits_task_done_finish_pair = matches!(
+        let splits_execution_request_terminal_pair = matches!(
             (&last_compacted.kind, &next_live.kind),
             (
-                HistoryEventKind::TriggerTaskDone(_),
-                HistoryEventKind::TaskFinished(_)
+                HistoryEventKind::ExecutionRequested(_),
+                HistoryEventKind::AwaitedExecutionSucceeded(_)
+                    | HistoryEventKind::AwaitedExecutionFailed(_)
+                    | HistoryEventKind::ExecutionDetached(_)
+                    | HistoryEventKind::DetachedExecutionSucceeded(_)
+                    | HistoryEventKind::DetachedExecutionFailed(_)
+                    | HistoryEventKind::ExecutionRejected(_)
             )
-        ) && last_compacted.actor_id == next_live.actor_id;
-        let splits_task_start_finish_pair = matches!(
+        ) && last_compacted.actor_id
+            == next_live.actor_id;
+        let splits_detach_terminal_pair = matches!(
             (&last_compacted.kind, &next_live.kind),
             (
-                HistoryEventKind::TaskStarted(_),
-                HistoryEventKind::TaskFinished(_)
+                HistoryEventKind::ExecutionDetached(_),
+                HistoryEventKind::DetachedExecutionSucceeded(_)
+                    | HistoryEventKind::DetachedExecutionFailed(_)
             )
         ) && last_compacted.actor_id == next_live.actor_id;
 
-        if !splits_task_done_finish_pair && !splits_task_start_finish_pair {
+        if !splits_execution_request_terminal_pair && !splits_detach_terminal_pair {
             break;
         }
         batch_len -= 1;
@@ -124,13 +131,38 @@ fn summarize_history_batch(
         .join(",");
 
     format!(
-        "{block_id} source=[{source_range_start},{source_range_end}) ts=[{first_ts},{last_ts}] events={} user_message={} assistant_output={} task_started={} task_finished={} task_done={} refresh_profile={} heartbeat={} cron={} statuses=[{}] actions=[{}] users=[{}]",
+        "{block_id} source=[{source_range_start},{source_range_end}) ts=[{first_ts},{last_ts}] events={} user_message={} assistant_output={} execution_requested={} awaited_execution_succeeded={} awaited_execution_failed={} execution_detached={} detached_execution_succeeded={} detached_execution_failed={} execution_rejected={} refresh_profile={} heartbeat={} cron={} statuses=[{}] actions=[{}] users=[{}]",
         batch.len(),
         counts.get("user_message").copied().unwrap_or_default(),
         counts.get("assistant_output").copied().unwrap_or_default(),
-        counts.get("task_started").copied().unwrap_or_default(),
-        counts.get("task_finished").copied().unwrap_or_default(),
-        counts.get("task_done").copied().unwrap_or_default(),
+        counts
+            .get("execution_requested")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("awaited_execution_succeeded")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("awaited_execution_failed")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("execution_detached")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("detached_execution_succeeded")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("detached_execution_failed")
+            .copied()
+            .unwrap_or_default(),
+        counts
+            .get("execution_rejected")
+            .copied()
+            .unwrap_or_default(),
         counts.get("refresh_profile").copied().unwrap_or_default(),
         counts.get("heartbeat").copied().unwrap_or_default(),
         counts.get("cron").copied().unwrap_or_default(),
@@ -147,7 +179,8 @@ mod tests {
     use super::{COMPACTION_BATCH_EVENTS, MIN_LIVE_HISTORY_EVENTS, maybe_compact_history};
     use crate::environment::EnvironmentRegistry;
     use crate::history::schema::{
-        HistoryActorKind, HistoryEventKind, TaskFinishedHistoryPayload, UserMessageHistoryPayload,
+        ExecutionSucceededHistoryPayload, HistoryActorKind, HistoryEventKind,
+        UserMessageHistoryPayload,
     };
     use crate::history::{HistoryEvent, PayloadPreview};
     use crate::session::SessionState;
@@ -179,12 +212,12 @@ mod tests {
                 actor_kind: if index % 2 == 0 {
                     HistoryActorKind::User
                 } else {
-                    HistoryActorKind::Task
+                    HistoryActorKind::Execution
                 },
                 actor_id: if index % 2 == 0 {
                     "user-a".to_string()
                 } else {
-                    format!("task-{index}")
+                    format!("execution-{index}")
                 },
                 profile_ref: "test".to_string(),
                 kind: if index % 2 == 0 {
@@ -192,12 +225,9 @@ mod tests {
                         text: format!("message-{index}"),
                     })
                 } else {
-                    HistoryEventKind::TaskFinished(TaskFinishedHistoryPayload {
+                    HistoryEventKind::AwaitedExecutionSucceeded(ExecutionSucceededHistoryPayload {
                         canonical_action_id: "filesystem__list".to_string(),
-                        environment_id: "filesystem".to_string(),
-                        action_name: "list".to_string(),
-                        status: "succeeded".to_string(),
-                        result_preview: PayloadPreview {
+                        payload_preview: PayloadPreview {
                             head: "[]".to_string(),
                             tail: String::new(),
                             full_bytes: 2,
@@ -205,9 +235,8 @@ mod tests {
                             tail_bytes: 0,
                             truncated: false,
                             omitted_bytes: 0,
-                            lookup_ref: format!("task://task-{index}/result"),
+                            lookup_ref: format!("execution://execution-{index}/result"),
                         },
-                        lookup_action: "system__get_task_payload".to_string(),
                     })
                 },
             });

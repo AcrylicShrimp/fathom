@@ -1,14 +1,14 @@
 use serde_json::Value;
 
-use crate::history::TASK_PAYLOAD_LOOKUP_ACTION;
+use crate::history::EXECUTION_PAYLOAD_LOOKUP_ACTION;
 use crate::pb;
 
 pub(crate) const LOOKUP_INJECT_MAX_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedPayloadLookup {
-    pub(crate) lookup_task_id: String,
-    pub(crate) task_id: String,
+    pub(crate) lookup_execution_id: String,
+    pub(crate) execution_id: String,
     pub(crate) part: String,
     pub(crate) offset: usize,
     pub(crate) next_offset: Option<usize>,
@@ -19,24 +19,24 @@ pub(crate) struct ResolvedPayloadLookup {
     pub(crate) injected_omitted_bytes: usize,
 }
 
-pub(crate) fn resolve_from_task(task: &pb::Task) -> Option<ResolvedPayloadLookup> {
-    if task.action_id != TASK_PAYLOAD_LOOKUP_ACTION {
+pub(crate) fn resolve_from_execution(execution: &pb::Execution) -> Option<ResolvedPayloadLookup> {
+    if execution.action_id != EXECUTION_PAYLOAD_LOOKUP_ACTION {
         return None;
     }
-    if task.status != pb::TaskStatus::Succeeded as i32 {
+    if execution.status != pb::ExecutionStatus::Succeeded as i32 {
         return None;
     }
 
-    let envelope: Value = serde_json::from_str(&task.result_message).ok()?;
+    let envelope: Value = serde_json::from_str(&execution.result_message).ok()?;
     if !envelope.get("ok")?.as_bool()? {
         return None;
     }
-    if envelope.get("op")?.as_str()? != TASK_PAYLOAD_LOOKUP_ACTION {
+    if envelope.get("op")?.as_str()? != EXECUTION_PAYLOAD_LOOKUP_ACTION {
         return None;
     }
 
     let data = envelope.get("data")?;
-    let task_id = data.get("task_id")?.as_str()?.to_string();
+    let execution_id = data.get("execution_id")?.as_str()?.to_string();
     let part = data.get("part")?.as_str()?.to_string();
     let offset = value_to_usize(data.get("offset"))?;
     let full_bytes = value_to_usize(data.get("full_bytes"))?;
@@ -49,8 +49,8 @@ pub(crate) fn resolve_from_task(task: &pb::Task) -> Option<ResolvedPayloadLookup
     let (payload_chunk, injected_omitted_bytes) = truncate_utf8_by_bytes(&payload);
 
     Some(ResolvedPayloadLookup {
-        lookup_task_id: task.task_id.clone(),
-        task_id,
+        lookup_execution_id: execution.execution_id.clone(),
+        execution_id,
         part,
         offset,
         next_offset,
@@ -93,23 +93,23 @@ fn truncate_utf8_by_bytes(value: &str) -> (String, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{LOOKUP_INJECT_MAX_BYTES, resolve_from_task};
-    use crate::history::TASK_PAYLOAD_LOOKUP_ACTION;
+    use super::{LOOKUP_INJECT_MAX_BYTES, resolve_from_execution};
+    use crate::history::EXECUTION_PAYLOAD_LOOKUP_ACTION;
     use crate::pb;
 
     #[test]
     fn resolve_parses_lookup_payload() {
-        let task = pb::Task {
-            task_id: "task-lookup-1".to_string(),
+        let execution = pb::Execution {
+            execution_id: "execution-lookup-1".to_string(),
             session_id: "session-1".to_string(),
-            action_id: TASK_PAYLOAD_LOOKUP_ACTION.to_string(),
+            action_id: EXECUTION_PAYLOAD_LOOKUP_ACTION.to_string(),
             args_json: "{}".to_string(),
-            status: pb::TaskStatus::Succeeded as i32,
+            status: pb::ExecutionStatus::Succeeded as i32,
             result_message: serde_json::json!({
                 "ok": true,
-                "op": TASK_PAYLOAD_LOOKUP_ACTION,
+                "op": EXECUTION_PAYLOAD_LOOKUP_ACTION,
                 "data": {
-                    "task_id": "task-42",
+                    "execution_id": "execution-42",
                     "part": "result",
                     "offset": 128,
                     "next_offset": -1,
@@ -123,9 +123,9 @@ mod tests {
             updated_at_unix_ms: 0,
         };
 
-        let resolved = resolve_from_task(&task).expect("lookup should resolve");
-        assert_eq!(resolved.lookup_task_id, "task-lookup-1");
-        assert_eq!(resolved.task_id, "task-42");
+        let resolved = resolve_from_execution(&execution).expect("lookup should resolve");
+        assert_eq!(resolved.lookup_execution_id, "execution-lookup-1");
+        assert_eq!(resolved.execution_id, "execution-42");
         assert_eq!(resolved.part, "result");
         assert_eq!(resolved.offset, 128);
         assert_eq!(resolved.next_offset, None);
@@ -137,17 +137,17 @@ mod tests {
     #[test]
     fn resolve_truncates_injected_payload() {
         let oversized = "a".repeat(LOOKUP_INJECT_MAX_BYTES + 64);
-        let task = pb::Task {
-            task_id: "task-lookup-2".to_string(),
+        let execution = pb::Execution {
+            execution_id: "execution-lookup-2".to_string(),
             session_id: "session-1".to_string(),
-            action_id: TASK_PAYLOAD_LOOKUP_ACTION.to_string(),
+            action_id: EXECUTION_PAYLOAD_LOOKUP_ACTION.to_string(),
             args_json: "{}".to_string(),
-            status: pb::TaskStatus::Succeeded as i32,
+            status: pb::ExecutionStatus::Succeeded as i32,
             result_message: serde_json::json!({
                 "ok": true,
-                "op": TASK_PAYLOAD_LOOKUP_ACTION,
+                "op": EXECUTION_PAYLOAD_LOOKUP_ACTION,
                 "data": {
-                    "task_id": "task-43",
+                    "execution_id": "execution-43",
                     "part": "args",
                     "offset": 0,
                     "next_offset": 123,
@@ -161,7 +161,7 @@ mod tests {
             updated_at_unix_ms: 0,
         };
 
-        let resolved = resolve_from_task(&task).expect("lookup should resolve");
+        let resolved = resolve_from_execution(&execution).expect("lookup should resolve");
         assert!(resolved.injected_truncated);
         assert!(resolved.injected_omitted_bytes > 0);
         assert_eq!(resolved.payload_chunk.len(), LOOKUP_INJECT_MAX_BYTES);

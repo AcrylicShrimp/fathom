@@ -2,46 +2,46 @@ use serde_json::{Value, json};
 
 use crate::pb;
 use crate::runtime::Runtime;
-use crate::session::task_context::TaskExecutionContext;
+use crate::session::execution_context::ExecutionContext;
 
 const DEFAULT_LOOKUP_LIMIT: usize = 4096;
 const MAX_LOOKUP_LIMIT: usize = 65536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TaskPayloadPart {
+pub(crate) enum ExecutionPayloadPart {
     Args,
     Result,
 }
 
-pub(crate) fn parse_task_payload_part(raw: &str) -> Result<TaskPayloadPart, String> {
+pub(crate) fn parse_execution_payload_part(raw: &str) -> Result<ExecutionPayloadPart, String> {
     match raw {
-        "args" => Ok(TaskPayloadPart::Args),
-        "result" => Ok(TaskPayloadPart::Result),
+        "args" => Ok(ExecutionPayloadPart::Args),
+        "result" => Ok(ExecutionPayloadPart::Result),
         _ => Err("part must be `args` or `result`".to_string()),
     }
 }
 
-pub(crate) async fn get_task_payload(
+pub(crate) async fn get_execution_payload(
     runtime: &Runtime,
-    context: &TaskExecutionContext,
-    task_id: &str,
-    part: TaskPayloadPart,
+    context: &ExecutionContext,
+    execution_id: &str,
+    part: ExecutionPayloadPart,
     offset: usize,
     limit: usize,
 ) -> Result<Value, String> {
-    let tasks = runtime
-        .list_tasks(&context.session_id)
+    let executions = runtime
+        .list_executions(&context.session_id)
         .await
-        .map_err(|error| format!("failed to list tasks: {}", error.message()))?;
+        .map_err(|error| format!("failed to list executions: {}", error.message()))?;
 
-    let task = tasks
+    let execution = executions
         .into_iter()
-        .find(|task| task.task_id == task_id)
-        .ok_or_else(|| format!("task `{task_id}` not found"))?;
+        .find(|execution| execution.execution_id == execution_id)
+        .ok_or_else(|| format!("execution `{execution_id}` not found"))?;
 
     let payload = match part {
-        TaskPayloadPart::Args => task.args_json,
-        TaskPayloadPart::Result => task.result_message,
+        ExecutionPayloadPart::Args => execution.args_json,
+        ExecutionPayloadPart::Result => execution.result_message,
     };
 
     let full_bytes = payload.len();
@@ -54,13 +54,13 @@ pub(crate) async fn get_task_payload(
         .map(|bytes| String::from_utf8_lossy(bytes).to_string())
         .unwrap_or_default();
 
-    let status = pb::TaskStatus::try_from(task.status)
+    let status = pb::ExecutionStatus::try_from(execution.status)
         .map(|status| format!("{:?}", status))
         .unwrap_or_else(|_| "UNKNOWN".to_string());
 
     Ok(json!({
-        "task_id": task_id,
-        "part": match part { TaskPayloadPart::Args => "args", TaskPayloadPart::Result => "result" },
+        "execution_id": execution_id,
+        "part": match part { ExecutionPayloadPart::Args => "args", ExecutionPayloadPart::Result => "result" },
         "status": status,
         "full_bytes": full_bytes,
         "offset": bounded_offset,

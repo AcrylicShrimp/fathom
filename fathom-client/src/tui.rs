@@ -23,7 +23,8 @@ use crate::runtime::{
     wait_for_server,
 };
 use crate::tabs::{
-    ConversationTab, FullEventsTab, RunningTasksTab, Tab, TabKeyResult, TaskDetail, ToolsEventsTab,
+    ConversationTab, ExecutionDetail, ExecutionsEventsTab, FullEventsTab, RunningExecutionsTab,
+    Tab, TabKeyResult,
 };
 use crate::view::{EventRecord, SessionEventRecordKind, session_event_to_record};
 
@@ -35,8 +36,8 @@ enum AppEvent {
 }
 
 #[derive(Clone)]
-struct TaskDetailModal {
-    detail: TaskDetail,
+struct ExecutionDetailModal {
+    detail: ExecutionDetail,
     scroll: u16,
 }
 
@@ -109,7 +110,7 @@ struct App {
     status: String,
     activity: ActivityState,
     completion: SlashCompletionState,
-    task_detail: Option<TaskDetailModal>,
+    execution_detail: Option<ExecutionDetailModal>,
     tabs: Vec<Box<dyn Tab>>,
     active_tab_index: usize,
 }
@@ -122,11 +123,11 @@ impl App {
             status: "connected".to_string(),
             activity: ActivityState::default(),
             completion: SlashCompletionState::default(),
-            task_detail: None,
+            execution_detail: None,
             tabs: vec![
                 Box::new(ConversationTab::new()),
-                Box::new(RunningTasksTab::new()),
-                Box::new(ToolsEventsTab::new()),
+                Box::new(RunningExecutionsTab::new()),
+                Box::new(ExecutionsEventsTab::new()),
                 Box::new(FullEventsTab::new()),
             ],
             active_tab_index: 0,
@@ -181,27 +182,27 @@ impl App {
         true
     }
 
-    fn open_task_detail(&mut self, detail: TaskDetail) {
-        self.task_detail = Some(TaskDetailModal { detail, scroll: 0 });
+    fn open_execution_detail(&mut self, detail: ExecutionDetail) {
+        self.execution_detail = Some(ExecutionDetailModal { detail, scroll: 0 });
     }
 
-    fn close_task_detail(&mut self) {
-        self.task_detail = None;
+    fn close_execution_detail(&mut self) {
+        self.execution_detail = None;
     }
 
-    fn task_detail(&self) -> Option<&TaskDetailModal> {
-        self.task_detail.as_ref()
+    fn execution_detail(&self) -> Option<&ExecutionDetailModal> {
+        self.execution_detail.as_ref()
     }
 
-    fn task_detail_mut(&mut self) -> Option<&mut TaskDetailModal> {
-        self.task_detail.as_mut()
+    fn execution_detail_mut(&mut self) -> Option<&mut ExecutionDetailModal> {
+        self.execution_detail.as_mut()
     }
 
     fn footer_text(&self) -> &'static str {
         if self.completion_is_visible() {
             "Commands: ↑/↓ select | Tab/Enter accept | Esc close"
         } else {
-            "Keys: Shift+Tab switch | Enter send | Ctrl+Enter task detail (tools; Ctrl+J/M fallback) | / opens commands | ↑/↓ scroll/select | Esc clear input | Ctrl+C quit"
+            "Keys: Shift+Tab switch | Enter send | Ctrl+Enter execution detail (events; Ctrl+J/M fallback) | / opens commands | ↑/↓ scroll/select | Esc clear input | Ctrl+C quit"
         }
     }
 
@@ -213,11 +214,11 @@ impl App {
 #[derive(Default)]
 struct ActivityState {
     agent_invoking: bool,
-    active_tasks: BTreeMap<String, ActiveTask>,
+    active_executions: BTreeMap<String, ActiveExecution>,
 }
 
 #[derive(Debug, Clone)]
-struct ActiveTask {
+struct ActiveExecution {
     action_id: String,
     status: String,
 }
@@ -238,22 +239,22 @@ impl ActivityState {
             | SessionEventRecordKind::TurnFailure { .. } => {
                 self.agent_invoking = false;
             }
-            SessionEventRecordKind::TaskStateChanged {
-                task_id,
+            SessionEventRecordKind::ExecutionStateChanged {
+                execution_id,
                 action_id,
                 status,
                 ..
             } => {
                 if status == "pending" || status == "running" {
-                    self.active_tasks.insert(
-                        task_id.clone(),
-                        ActiveTask {
+                    self.active_executions.insert(
+                        execution_id.clone(),
+                        ActiveExecution {
                             action_id: action_id.clone(),
                             status: status.clone(),
                         },
                     );
                 } else {
-                    self.active_tasks.remove(task_id);
+                    self.active_executions.remove(execution_id);
                 }
             }
             _ => {}
@@ -266,25 +267,30 @@ impl ActivityState {
         } else {
             "idle"
         };
-        let active_count = self.active_tasks.len();
+        let active_count = self.active_executions.len();
 
         if active_count == 0 {
-            return format!("agent={agent} | active_tasks=0");
+            return format!("agent={agent} | active_executions=0");
         }
 
-        let mut tasks = self
-            .active_tasks
+        let mut executions = self
+            .active_executions
             .iter()
             .take(2)
-            .map(|(task_id, task)| format!("{task_id} {} ({})", task.action_id, task.status))
+            .map(|(execution_id, execution)| {
+                format!(
+                    "{execution_id} {} ({})",
+                    execution.action_id, execution.status
+                )
+            })
             .collect::<Vec<_>>();
         if active_count > 2 {
-            tasks.push(format!("+{} more", active_count - 2));
+            executions.push(format!("+{} more", active_count - 2));
         }
 
         format!(
-            "agent={agent} | active_tasks={active_count} | {}",
-            tasks.join(" | ")
+            "agent={agent} | active_executions={active_count} | {}",
+            executions.join(" | ")
         )
     }
 }
@@ -377,9 +383,9 @@ async fn run_loop(
         let viewport_width = app.active_tab().viewport_width(rows[0]);
         app.active_tab_mut()
             .sync_scroll(viewport_height, viewport_width);
-        if let Some(detail) = app.task_detail_mut() {
-            let popup = task_detail_popup_area(terminal_area);
-            let max_scroll = task_detail_max_scroll(detail, popup);
+        if let Some(detail) = app.execution_detail_mut() {
+            let popup = execution_detail_popup_area(terminal_area);
+            let max_scroll = execution_detail_max_scroll(detail, popup);
             detail.scroll = detail.scroll.min(max_scroll);
         }
 
@@ -405,8 +411,8 @@ async fn run_loop(
                 render_completion_popup(frame, rows[0], &app.completion);
             }
 
-            if let Some(detail) = app.task_detail() {
-                render_task_detail_popup(frame, frame.area(), detail);
+            if let Some(detail) = app.execution_detail() {
+                render_execution_detail_popup(frame, frame.area(), detail);
             }
 
             frame.render_widget(
@@ -414,7 +420,7 @@ async fn run_loop(
                 rows[3],
             );
 
-            if app.task_detail().is_none() {
+            if app.execution_detail().is_none() {
                 let x = rows[2]
                     .x
                     .saturating_add(1)
@@ -437,15 +443,15 @@ async fn run_loop(
 
         let page_size = viewport_height.max(1);
 
-        if app.task_detail().is_some() {
+        if app.execution_detail().is_some() {
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 return Ok(());
             }
 
             let mut close_modal = false;
-            if let Some(detail) = app.task_detail_mut() {
-                let popup = task_detail_popup_area(terminal_area);
-                let max_scroll = task_detail_max_scroll(detail, popup);
+            if let Some(detail) = app.execution_detail_mut() {
+                let popup = execution_detail_popup_area(terminal_area);
+                let max_scroll = execution_detail_max_scroll(detail, popup);
                 match key.code {
                     KeyCode::Esc => {
                         close_modal = true;
@@ -472,7 +478,7 @@ async fn run_loop(
                 }
             }
             if close_modal {
-                app.close_task_detail();
+                app.close_execution_detail();
             }
             continue;
         }
@@ -509,8 +515,8 @@ async fn run_loop(
             .handle_key(&key, input_is_empty, viewport_height, viewport_width)
         {
             TabKeyResult::Handled => continue,
-            TabKeyResult::OpenTaskDetail(detail) => {
-                app.open_task_detail(detail);
+            TabKeyResult::OpenExecutionDetail(detail) => {
+                app.open_execution_detail(detail);
                 continue;
             }
             TabKeyResult::Ignored => {}
@@ -661,17 +667,21 @@ fn render_completion_popup(
     frame.render_stateful_widget(list, popup, &mut state);
 }
 
-fn render_task_detail_popup(frame: &mut ratatui::Frame<'_>, area: Rect, detail: &TaskDetailModal) {
-    let popup = task_detail_popup_area(area);
+fn render_execution_detail_popup(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    detail: &ExecutionDetailModal,
+) {
+    let popup = execution_detail_popup_area(area);
     frame.render_widget(Clear, popup);
 
-    let body = task_detail_body(detail);
+    let body = execution_detail_body(detail);
     let panel = Paragraph::new(body)
         .block(
             Block::default()
                 .title(format!(
-                    "Task Detail [{}] {}",
-                    detail.detail.task_id, detail.detail.action_id
+                    "Execution Detail [{}] {}",
+                    detail.detail.execution_id, detail.detail.action_id
                 ))
                 .borders(Borders::ALL),
         )
@@ -680,7 +690,7 @@ fn render_task_detail_popup(frame: &mut ratatui::Frame<'_>, area: Rect, detail: 
     frame.render_widget(panel, popup);
 }
 
-fn task_detail_popup_area(area: Rect) -> Rect {
+fn execution_detail_popup_area(area: Rect) -> Rect {
     let width = area.width.saturating_mul(4).saturating_div(5).max(40);
     let height = area.height.saturating_mul(4).saturating_div(5).max(12);
     let width = width.min(area.width.max(1));
@@ -692,14 +702,14 @@ fn task_detail_popup_area(area: Rect) -> Rect {
     Rect::new(x, y, width, height)
 }
 
-fn task_detail_max_scroll(detail: &TaskDetailModal, popup: Rect) -> u16 {
-    let content = task_detail_body(detail);
+fn execution_detail_max_scroll(detail: &ExecutionDetailModal, popup: Rect) -> u16 {
+    let content = execution_detail_body(detail);
     let content_width = popup.width.saturating_sub(2).max(1);
     let content_height = popup.height.saturating_sub(2).max(1);
     wrapped_line_count(&content, content_width).saturating_sub(content_height)
 }
 
-fn task_detail_body(detail: &TaskDetailModal) -> String {
+fn execution_detail_body(detail: &ExecutionDetailModal) -> String {
     let args = pretty_json_or_raw(&detail.detail.args_json);
     let result = if detail.detail.result_message.trim().is_empty() {
         "(empty)".to_string()
@@ -709,7 +719,7 @@ fn task_detail_body(detail: &TaskDetailModal) -> String {
 
     format!(
         "session_id: {}\n\
-task_id: {}\n\
+execution_id: {}\n\
 action_id: {}\n\
 status: {}\n\
 \n\
@@ -717,7 +727,7 @@ args_json:\n{}\n\
 \n\
 result_message:\n{}",
         detail.detail.session_id,
-        detail.detail.task_id,
+        detail.detail.execution_id,
         detail.detail.action_id,
         detail.detail.status,
         args,
@@ -828,9 +838,9 @@ mod tests {
     }
 
     #[test]
-    fn activity_line_updates_from_agent_and_task_events() {
+    fn activity_line_updates_from_agent_and_execution_events() {
         let mut activity = ActivityState::default();
-        assert_eq!(activity.render_line(), "agent=idle | active_tasks=0");
+        assert_eq!(activity.render_line(), "agent=idle | active_executions=0");
 
         activity.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
@@ -843,8 +853,8 @@ mod tests {
 
         activity.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__list".to_string(),
                 status: "running".to_string(),
                 args_json: "{}".to_string(),
@@ -853,12 +863,12 @@ mod tests {
                 result_preview: String::new(),
             },
         });
-        assert!(activity.render_line().contains("active_tasks=1"));
+        assert!(activity.render_line().contains("active_executions=1"));
 
         activity.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__list".to_string(),
                 status: "succeeded".to_string(),
                 args_json: "{}".to_string(),
@@ -867,7 +877,7 @@ mod tests {
                 result_preview: "{}".to_string(),
             },
         });
-        assert!(activity.render_line().contains("active_tasks=0"));
+        assert!(activity.render_line().contains("active_executions=0"));
 
         activity.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
@@ -877,6 +887,6 @@ mod tests {
                 history_size: 0,
             },
         });
-        assert_eq!(activity.render_line(), "agent=idle | active_tasks=0");
+        assert_eq!(activity.render_line(), "agent=idle | active_executions=0");
     }
 }

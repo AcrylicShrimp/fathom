@@ -2,22 +2,22 @@ use serde_json::{Value, json};
 
 use crate::agent::TurnSnapshot;
 use crate::pb;
-use crate::util::task_status_label;
+use crate::util::execution_status_label;
 
-pub(crate) fn task_to_json(task: &pb::Task) -> Value {
-    let status = pb::TaskStatus::try_from(task.status)
-        .map(task_status_label)
+pub(crate) fn execution_to_json(execution: &pb::Execution) -> Value {
+    let status = pb::ExecutionStatus::try_from(execution.status)
+        .map(execution_status_label)
         .unwrap_or("unknown");
 
     json!({
-        "task_id": task.task_id,
-        "session_id": task.session_id,
-        "action_id": task.action_id,
-        "args_json": task.args_json,
+        "execution_id": execution.execution_id,
+        "session_id": execution.session_id,
+        "action_id": execution.action_id,
+        "args_json": execution.args_json,
         "status": status,
-        "result_message": task.result_message,
-        "created_at_unix_ms": task.created_at_unix_ms,
-        "updated_at_unix_ms": task.updated_at_unix_ms,
+        "result_message": execution.result_message,
+        "created_at_unix_ms": execution.created_at_unix_ms,
+        "updated_at_unix_ms": execution.updated_at_unix_ms,
     })
 }
 
@@ -29,17 +29,16 @@ pub(crate) fn trigger_to_json(trigger: &pb::Trigger) -> Value {
             "user_id": message.user_id,
             "text": message.text,
         }),
-        Some(pb::trigger::Kind::TaskDone(done)) => {
-            let status = pb::TaskStatus::try_from(done.status)
-                .map(task_status_label)
-                .unwrap_or("unknown");
-            json!({
-                "type": "task_done",
-                "task_id": done.task_id,
-                "status": status,
-                "result_message": done.result_message,
-            })
-        }
+        Some(pb::trigger::Kind::ExecutionUpdate(update)) => json!({
+            "type": "execution_update",
+            "execution_id": update.execution_id,
+            "action_id": update.action_id,
+            "kind": pb::ExecutionUpdateKind::try_from(update.kind)
+                .map(|kind| format!("{kind:?}"))
+                .unwrap_or_else(|_| "Unspecified".to_string()),
+            "message": update.message,
+            "payload_message": update.payload_message,
+        }),
         Some(pb::trigger::Kind::Heartbeat(_)) => json!({ "type": "heartbeat" }),
         Some(pb::trigger::Kind::Cron(cron)) => json!({
             "type": "cron",

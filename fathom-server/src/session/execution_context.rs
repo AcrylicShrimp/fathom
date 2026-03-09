@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::session::state::SessionState;
 
 #[derive(Debug, Clone)]
-pub(crate) struct TaskExecutionContext {
+pub(crate) struct ExecutionContext {
     pub(crate) session_id: String,
     pub(crate) active_agent_id: String,
     pub(crate) participant_user_ids: Vec<String>,
@@ -12,7 +12,7 @@ pub(crate) struct TaskExecutionContext {
     pub(crate) engaged_environment_ids: Vec<String>,
 }
 
-impl TaskExecutionContext {
+impl ExecutionContext {
     pub(crate) fn from_state(state: &SessionState) -> Self {
         let participant_user_updated_at = state
             .participant_user_ids

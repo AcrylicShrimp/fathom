@@ -17,10 +17,10 @@ impl Runtime {
         )
     }
 
-    pub(crate) fn next_task_id(&self) -> String {
+    pub(crate) fn next_execution_id(&self) -> String {
         format!(
-            "task-{}",
-            self.inner.task_seq.fetch_add(1, Ordering::Relaxed) + 1
+            "execution-{}",
+            self.inner.execution_seq.fetch_add(1, Ordering::Relaxed) + 1
         )
     }
 }

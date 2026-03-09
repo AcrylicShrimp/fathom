@@ -1,9 +1,9 @@
 mod common;
 mod describe_environment;
 mod get_context;
+mod get_execution_payload;
 mod get_profile;
 mod get_session_identity_map;
-mod get_task_payload;
 mod get_time;
 mod list_profiles;
 
@@ -15,9 +15,9 @@ use serde_json::Value;
 use common::SYSTEM_ENVIRONMENT_ID;
 use describe_environment::DescribeEnvironmentAction;
 use get_context::GetContextAction;
+use get_execution_payload::GetExecutionPayloadAction;
 use get_profile::GetProfileAction;
 use get_session_identity_map::GetSessionIdentityMapAction;
-use get_task_payload::GetTaskPayloadAction;
 use get_time::GetTimeAction;
 use list_profiles::ListProfilesAction;
 
@@ -44,7 +44,7 @@ impl Environment for SystemEnvironment {
             Arc::new(ListProfilesAction),
             Arc::new(GetSessionIdentityMapAction),
             Arc::new(GetProfileAction),
-            Arc::new(GetTaskPayloadAction),
+            Arc::new(GetExecutionPayloadAction),
         ]
     }
 
@@ -59,10 +59,10 @@ impl Environment for SystemEnvironment {
                 ],
             },
             EnvironmentRecipe {
-                title: "Expand task preview into full payload".to_string(),
+                title: "Expand execution preview into full payload".to_string(),
                 steps: vec![
-                    "Start from task_started/task_finished previews in history to identify relevant task_id.".to_string(),
-                    "Call system__get_task_payload with {task_id, part} to load full args/result content.".to_string(),
+                    "Start from execution_requested and execution outcome previews in history to identify the relevant execution_id.".to_string(),
+                    "Call system__get_execution_payload with {execution_id, part} to load full args/result content.".to_string(),
                     "Use offset/limit to page large payloads instead of requesting everything at once.".to_string(),
                     "After inspecting payloads, continue planning with concrete failure/success evidence.".to_string(),
                 ],

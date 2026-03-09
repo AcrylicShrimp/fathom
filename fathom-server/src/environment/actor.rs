@@ -6,8 +6,8 @@ use tokio::sync::mpsc;
 
 use crate::environment::{EnvironmentRegistry, ResolvedAction};
 use crate::runtime::Runtime;
+use crate::session::execution_context::ExecutionContext;
 use crate::session::state::SessionCommand;
-use crate::session::task_context::TaskExecutionContext;
 use crate::util::now_unix_ms;
 
 use fathom_env::{ActionOutcome, EnvironmentSnapshot, FinalizedAction};
@@ -16,20 +16,15 @@ const EXECUTION_TIMEOUT_GRACE_MS: u64 = 250;
 
 #[derive(Debug, Clone)]
 pub(crate) struct EnvironmentCommittedAction {
-    pub(crate) task_id: String,
-    pub(crate) canonical_action_id: String,
+    pub(crate) execution_id: String,
     pub(crate) environment_id: String,
-    pub(crate) action_name: String,
-    pub(crate) env_seq: u64,
     pub(crate) succeeded: bool,
     pub(crate) message: String,
-    pub(crate) state_patch_applied: bool,
     pub(crate) state_snapshot: EnvironmentSnapshot,
 }
 
 #[derive(Clone)]
 pub(crate) struct EnvironmentActorHandle {
-    pub(crate) environment_id: String,
     command_tx: mpsc::Sender<EnvironmentActorCommand>,
 }
 
@@ -44,11 +39,11 @@ impl EnvironmentActorHandle {
 
 #[derive(Clone)]
 pub(crate) struct EnvironmentActionSubmission {
-    pub(crate) task_id: String,
+    pub(crate) execution_id: String,
     pub(crate) env_seq: u64,
     pub(crate) resolved_action: ResolvedAction,
     pub(crate) args_json: String,
-    pub(crate) execution_context: TaskExecutionContext,
+    pub(crate) execution_context: ExecutionContext,
 }
 
 pub(crate) enum EnvironmentActorCommand {
@@ -58,7 +53,7 @@ pub(crate) enum EnvironmentActorCommand {
 
 #[derive(Clone)]
 pub(crate) struct EnvironmentFinishedExecution {
-    task_id: String,
+    execution_id: String,
     env_seq: u64,
     resolved_action: ResolvedAction,
     args_json: String,
@@ -67,13 +62,12 @@ pub(crate) struct EnvironmentFinishedExecution {
 
 pub(crate) fn spawn_environment_actor(
     runtime: Runtime,
-    environment_id: String,
+    _environment_id: String,
     initial_snapshot: EnvironmentSnapshot,
     session_command_tx: mpsc::Sender<SessionCommand>,
 ) -> EnvironmentActorHandle {
     let (command_tx, command_rx) = mpsc::channel(128);
     let handle = EnvironmentActorHandle {
-        environment_id,
         command_tx: command_tx.clone(),
     };
 
@@ -127,38 +121,29 @@ async fn run_environment_actor(
                         state_patch: done.outcome.state_patch.clone(),
                     };
 
-                    let (succeeded, message, state_patch_applied) =
-                        match EnvironmentRegistry::apply_transition(
-                            &done.resolved_action,
-                            &snapshot.state_json,
-                            &finalized,
-                        ) {
-                            Ok(transition) => {
-                                if let Some(patch) = transition.state_patch {
-                                    apply_json_merge_patch(&mut snapshot.state_json, &patch);
-                                    (done.outcome.succeeded, done.outcome.message, true)
-                                } else {
-                                    (done.outcome.succeeded, done.outcome.message, false)
-                                }
+                    let (succeeded, message) = match EnvironmentRegistry::apply_transition(
+                        &done.resolved_action,
+                        &snapshot.state_json,
+                        &finalized,
+                    ) {
+                        Ok(transition) => {
+                            if let Some(patch) = transition.state_patch {
+                                apply_json_merge_patch(&mut snapshot.state_json, &patch);
+                                (done.outcome.succeeded, done.outcome.message)
+                            } else {
+                                (done.outcome.succeeded, done.outcome.message)
                             }
-                            Err(error) => (
-                                false,
-                                format!("environment transition failed: {error}"),
-                                false,
-                            ),
-                        };
+                        }
+                        Err(error) => (false, format!("environment transition failed: {error}")),
+                    };
 
                     snapshot.updated_at_unix_ms = now_unix_ms();
 
                     let committed = EnvironmentCommittedAction {
-                        task_id: done.task_id,
-                        canonical_action_id: done.resolved_action.canonical_action_id,
+                        execution_id: done.execution_id,
                         environment_id: done.resolved_action.environment_id,
-                        action_name: done.resolved_action.action_name,
-                        env_seq: done.env_seq,
                         succeeded,
                         message,
-                        state_patch_applied,
                         state_snapshot: snapshot.clone(),
                     };
 
@@ -188,7 +173,7 @@ fn maybe_start_pending(
     pending: &mut VecDeque<EnvironmentActionSubmission>,
     running_count: &mut usize,
 ) {
-    let max_parallel = runtime.task_capacity();
+    let max_parallel = runtime.execution_capacity();
     while *running_count < max_parallel {
         let Some(submission) = pending.pop_front() else {
             break;
@@ -203,7 +188,7 @@ fn maybe_start_pending(
             Ok(timeout_ms) => timeout_ms,
             Err(error) => {
                 let finished = EnvironmentFinishedExecution {
-                    task_id: submission.task_id,
+                    execution_id: submission.execution_id,
                     env_seq: submission.env_seq,
                     resolved_action: submission.resolved_action,
                     args_json: submission.args_json,
@@ -252,7 +237,7 @@ fn maybe_start_pending(
             };
 
             let finished = EnvironmentFinishedExecution {
-                task_id: submission.task_id,
+                execution_id: submission.execution_id,
                 env_seq: submission.env_seq,
                 resolved_action: submission.resolved_action,
                 args_json: submission.args_json,

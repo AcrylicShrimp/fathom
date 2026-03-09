@@ -8,7 +8,7 @@ use crate::runtime::Runtime;
 use crate::session::state::{SessionCommand, SessionState};
 
 use super::events::{enqueue_automatic_heartbeat, enqueue_trigger};
-use super::tasks::{cancel_task, handle_environment_action_committed};
+use super::tasks::{CommitTurnPolicy, cancel_execution, handle_environment_action_committed};
 use super::turn::process_turns;
 
 const AUTO_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30 * 60);
@@ -79,34 +79,37 @@ pub(crate) async fn run_session_actor(
                     SessionCommand::GetSummary { respond_to } => {
                         let _ = respond_to.send(state.to_summary());
                     }
-                    SessionCommand::ListTasks { respond_to } => {
-                        let mut tasks = state.tasks.values().cloned().collect::<Vec<_>>();
-                        tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
-                        let _ = respond_to.send(tasks);
+                    SessionCommand::ListExecutions { respond_to } => {
+                        let mut executions =
+                            state.executions.values().cloned().collect::<Vec<_>>();
+                        executions.sort_by(|a, b| a.execution_id.cmp(&b.execution_id));
+                        let _ = respond_to.send(executions);
                     }
-                    SessionCommand::CancelTask {
-                        task_id,
+                    SessionCommand::CancelExecution {
+                        execution_id,
                         respond_to,
                     } => {
                         let response =
-                            cancel_task(&runtime, &mut state, &events_tx, &task_id);
+                            cancel_execution(&runtime, &mut state, &events_tx, &execution_id);
                         let _ = respond_to.send(response);
                     }
                     SessionCommand::EnvironmentActionCommitted { committed } => {
-                        handle_environment_action_committed(
+                        let policy = handle_environment_action_committed(
                             &runtime,
                             &mut state,
                             &events_tx,
                             committed,
                         );
-                        maybe_process_turns(
-                            &runtime,
-                            &mut state,
-                            &command_tx,
-                            &events_tx,
-                            &environment_handles,
-                        )
-                        .await;
+                        if matches!(policy, CommitTurnPolicy::ResumeNow) {
+                            maybe_process_turns(
+                                &runtime,
+                                &mut state,
+                                &command_tx,
+                                &events_tx,
+                                &environment_handles,
+                            )
+                            .await;
+                        }
                     }
                 }
             }

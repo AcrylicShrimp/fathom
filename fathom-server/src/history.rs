@@ -10,7 +10,7 @@ use crate::util::now_unix_ms;
 
 use self::compaction::maybe_compact_history;
 
-pub(crate) use constants::TASK_PAYLOAD_LOOKUP_ACTION;
+pub(crate) use constants::EXECUTION_PAYLOAD_LOOKUP_ACTION;
 pub(crate) use preview::{PayloadPreview, build_payload_preview};
 pub(crate) use schema::{HistoryEvent, HistoryEventKind};
 
@@ -28,16 +28,12 @@ pub(crate) fn append_assistant_output_history(state: &mut SessionState, content:
     maybe_compact_history(state);
 }
 
-pub(crate) fn append_task_started_history(state: &mut SessionState, task: &pb::Task) {
+pub(crate) fn append_execution_requested_history(
+    state: &mut SessionState,
+    execution: &pb::Execution,
+) {
     state
         .history
-        .push(transform::task_started_line(state, task));
-    maybe_compact_history(state);
-}
-
-pub(crate) fn append_task_finished_history(state: &mut SessionState, task: &pb::Task) {
-    state
-        .history
-        .push(transform::task_finished_line(state, task));
+        .push(transform::execution_requested_line(state, execution));
     maybe_compact_history(state);
 }

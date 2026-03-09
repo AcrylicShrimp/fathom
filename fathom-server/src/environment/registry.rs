@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::runtime::Runtime;
-use crate::session::task_context::TaskExecutionContext;
+use crate::session::execution_context::ExecutionContext;
 use crate::util::now_unix_ms;
 
 use fathom_env::{
@@ -47,8 +47,32 @@ pub(crate) struct ResolvedAction {
     pub(crate) canonical_action_id: String,
     pub(crate) environment_id: String,
     pub(crate) action_name: String,
+    pub(crate) mode_support: ActionModeSupport,
     pub(crate) environment: Arc<dyn Environment>,
     pub(crate) timeout_policy: ActionTimeoutPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestedExecutionMode {
+    Await,
+    Detach,
+}
+
+impl RequestedExecutionMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Await => "await",
+            Self::Detach => "detach",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "await" => Some(Self::Await),
+            "detach" => Some(Self::Detach),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -93,7 +117,7 @@ impl EnvironmentRegistry {
         default_registry().clone()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn openai_action_definitions(&self) -> Vec<Value> {
         let environment_ids = self
             .inner
@@ -124,6 +148,7 @@ impl EnvironmentRegistry {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn known_action_ids() -> Vec<String> {
         default_registry()
             .inner
@@ -131,22 +156,6 @@ impl EnvironmentRegistry {
             .keys()
             .cloned()
             .collect::<Vec<_>>()
-    }
-
-    pub(crate) fn discovery_action_ids() -> Vec<String> {
-        default_registry()
-            .inner
-            .actions
-            .values()
-            .filter_map(|entry| {
-                let spec = entry.action.spec();
-                if spec.discovery {
-                    Some(entry.canonical_action_id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 
     pub(crate) fn default_engaged_environment_ids() -> Vec<String> {
@@ -204,7 +213,7 @@ impl EnvironmentRegistry {
         Some(canonical_action_id(&environment_id, &action_name))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn validate(action_id: &str, args: &Value) -> Result<String, String> {
         let environment_ids = default_registry()
             .inner
@@ -232,6 +241,7 @@ impl EnvironmentRegistry {
             ));
         }
         validate_reasoning_arg(&canonical_action_id, args)?;
+        validate_execution_mode_arg(&canonical_action_id, args, entry.action.spec().mode_support)?;
         entry.action.validate(args)?;
         Ok(canonical_action_id)
     }
@@ -241,13 +251,9 @@ impl EnvironmentRegistry {
         default_registry().resolve_by_canonical_id(&canonical_action_id)
     }
 
-    pub(crate) fn resolve_canonical(canonical_action_id: &str) -> Option<ResolvedAction> {
-        default_registry().resolve_by_canonical_id(canonical_action_id)
-    }
-
     pub(crate) async fn execute_action(
         runtime: &Runtime,
-        context: &TaskExecutionContext,
+        context: &ExecutionContext,
         resolved: &ResolvedAction,
         args_json: &str,
         environment_state: &Value,
@@ -370,6 +376,7 @@ impl EnvironmentRegistry {
             canonical_action_id: entry.canonical_action_id.clone(),
             environment_id: entry.environment_id.to_string(),
             action_name: entry.action_name.to_string(),
+            mode_support: entry.action.spec().mode_support,
             environment: entry.environment.clone(),
             timeout_policy: entry.timeout_policy.clone(),
         })
@@ -418,6 +425,7 @@ impl EnvironmentRegistry {
 
 const ACTION_REASONING_KEY: &str = "reasoning";
 const ACTION_REASONING_MAX_BYTES: usize = 1_024;
+const ACTION_EXECUTION_MODE_KEY: &str = "execution_mode";
 
 fn with_reasoning_schema(input_schema: Value) -> Value {
     let Value::Object(mut schema) = input_schema else {
@@ -443,6 +451,15 @@ fn ensure_schema_object_properties(schema: &mut Map<String, Value>) {
                 "minLength": 1,
                 "maxLength": ACTION_REASONING_MAX_BYTES,
                 "description": "Short reason for why this action is needed now."
+            })
+        });
+    properties
+        .entry(ACTION_EXECUTION_MODE_KEY.to_string())
+        .or_insert_with(|| {
+            json!({
+                "type": "string",
+                "enum": ["await", "detach"],
+                "description": "Optional execution mode override. Omit this field or use `await` unless the capability surface says the tool supports detach."
             })
         });
 }
@@ -485,6 +502,56 @@ fn validate_reasoning_arg(action_id: &str, args: &Value) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_execution_mode_arg(
+    action_id: &str,
+    args: &Value,
+    mode_support: ActionModeSupport,
+) -> Result<(), String> {
+    let Some(args) = args.as_object() else {
+        return Err("action arguments must be a JSON object".to_string());
+    };
+    let Some(raw_mode) = args.get(ACTION_EXECUTION_MODE_KEY) else {
+        return Ok(());
+    };
+    let raw_mode = raw_mode.as_str().ok_or_else(|| {
+        format!(
+            "action `{action_id}` validation failed: field `{ACTION_EXECUTION_MODE_KEY}` must be a string when set"
+        )
+    })?;
+    let Some(mode) = RequestedExecutionMode::parse(raw_mode) else {
+        return Err(format!(
+            "action `{action_id}` validation failed: field `{ACTION_EXECUTION_MODE_KEY}` must be `await` or `detach`"
+        ));
+    };
+    if mode == RequestedExecutionMode::Detach && mode_support != ActionModeSupport::AwaitOrDetach {
+        return Err(format!(
+            "action `{action_id}` validation failed: detach is not allowed for this tool; use await"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn requested_execution_mode_from_args_json(
+    args_json: &str,
+) -> Result<RequestedExecutionMode, String> {
+    let Ok(value) = serde_json::from_str::<Value>(args_json) else {
+        return Ok(RequestedExecutionMode::Await);
+    };
+    let Some(args) = value.as_object() else {
+        return Ok(RequestedExecutionMode::Await);
+    };
+    let Some(raw_mode) = args.get(ACTION_EXECUTION_MODE_KEY) else {
+        return Ok(RequestedExecutionMode::Await);
+    };
+    let Some(raw_mode) = raw_mode.as_str() else {
+        return Err(format!(
+            "field `{ACTION_EXECUTION_MODE_KEY}` must be a string when set"
+        ));
+    };
+    RequestedExecutionMode::parse(raw_mode)
+        .ok_or_else(|| format!("field `{ACTION_EXECUTION_MODE_KEY}` must be `await` or `detach`"))
+}
+
 fn strip_runtime_fields_from_args_json(args_json: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<Value>(args_json) else {
         return args_json.to_string();
@@ -493,6 +560,7 @@ fn strip_runtime_fields_from_args_json(args_json: &str) -> String {
         return args_json.to_string();
     };
     args.remove(ACTION_REASONING_KEY);
+    args.remove(ACTION_EXECUTION_MODE_KEY);
     serde_json::to_string(&value).unwrap_or_else(|_| args_json.to_string())
 }
 
@@ -517,9 +585,13 @@ fn register_environment(
 mod tests {
     use std::collections::BTreeSet;
 
+    use fathom_env::ActionModeSupport;
     use serde_json::json;
 
-    use super::{ActionTimeoutPolicy, EnvironmentRegistry};
+    use super::{
+        ActionTimeoutPolicy, EnvironmentRegistry, RequestedExecutionMode,
+        requested_execution_mode_from_args_json, validate_execution_mode_arg,
+    };
 
     #[test]
     fn known_actions_align_with_openai_definitions() {
@@ -717,5 +789,76 @@ mod tests {
         assert!(value.get("reasoning").is_none());
         assert_eq!(value["query"], "seti");
         assert_eq!(value["count"], 5);
+    }
+
+    #[test]
+    fn strips_execution_mode_field_for_execution() {
+        let raw =
+            r#"{"query":"seti","count":5,"reasoning":"need sources","execution_mode":"detach"}"#;
+        let stripped = super::strip_runtime_fields_from_args_json(raw);
+        let value: serde_json::Value =
+            serde_json::from_str(&stripped).expect("stripped args must be valid json");
+        assert!(value.get("reasoning").is_none());
+        assert!(value.get("execution_mode").is_none());
+        assert_eq!(value["query"], "seti");
+        assert_eq!(value["count"], 5);
+    }
+
+    #[test]
+    fn requested_execution_mode_defaults_to_await() {
+        let mode = requested_execution_mode_from_args_json(
+            r#"{"query":"seti","reasoning":"need sources"}"#,
+        )
+        .expect("mode should parse");
+        assert_eq!(mode, RequestedExecutionMode::Await);
+    }
+
+    #[test]
+    fn requested_execution_mode_accepts_detach() {
+        let mode = requested_execution_mode_from_args_json(
+            r#"{"query":"seti","reasoning":"need sources","execution_mode":"detach"}"#,
+        )
+        .expect("mode should parse");
+        assert_eq!(mode, RequestedExecutionMode::Detach);
+    }
+
+    #[test]
+    fn requested_execution_mode_rejects_invalid_values() {
+        let error = requested_execution_mode_from_args_json(
+            r#"{"query":"seti","reasoning":"need sources","execution_mode":"later"}"#,
+        )
+        .expect_err("invalid mode must be rejected");
+        assert!(error.contains("must be `await` or `detach`"));
+    }
+
+    #[test]
+    fn validate_execution_mode_allows_omitted_mode() {
+        let result = validate_execution_mode_arg(
+            "filesystem__list",
+            &json!({"path":".","reasoning":"inspect workspace"}),
+            ActionModeSupport::AwaitOnly,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_execution_mode_rejects_detach_for_await_only_tool() {
+        let error = validate_execution_mode_arg(
+            "filesystem__list",
+            &json!({"path":".","reasoning":"inspect workspace","execution_mode":"detach"}),
+            ActionModeSupport::AwaitOnly,
+        )
+        .expect_err("detach must be rejected for await_only tools");
+        assert!(error.contains("detach is not allowed"));
+    }
+
+    #[test]
+    fn validate_execution_mode_accepts_detach_for_detach_capable_tool() {
+        let result = validate_execution_mode_arg(
+            "system__get_context",
+            &json!({"reasoning":"inspect runtime","execution_mode":"detach"}),
+            ActionModeSupport::AwaitOrDetach,
+        );
+        assert!(result.is_ok());
     }
 }

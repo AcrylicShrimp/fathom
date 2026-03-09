@@ -144,12 +144,15 @@ impl Runtime {
             .map_err(|_| Status::unavailable("session actor unavailable"))?
     }
 
-    pub(crate) async fn list_tasks(&self, session_id: &str) -> Result<Vec<pb::Task>, Status> {
+    pub(crate) async fn list_executions(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<pb::Execution>, Status> {
         let session = self.get_session(session_id).await?;
         let (response_tx, response_rx) = oneshot::channel();
         session
             .command_tx
-            .send(SessionCommand::ListTasks {
+            .send(SessionCommand::ListExecutions {
                 respond_to: response_tx,
             })
             .await
@@ -159,17 +162,17 @@ impl Runtime {
             .map_err(|_| Status::unavailable("session actor unavailable"))
     }
 
-    pub(crate) async fn cancel_task(
+    pub(crate) async fn cancel_execution(
         &self,
         session_id: &str,
-        task_id: String,
-    ) -> Result<pb::CancelTaskResponse, Status> {
+        execution_id: String,
+    ) -> Result<pb::CancelExecutionResponse, Status> {
         let session = self.get_session(session_id).await?;
         let (response_tx, response_rx) = oneshot::channel();
         session
             .command_tx
-            .send(SessionCommand::CancelTask {
-                task_id,
+            .send(SessionCommand::CancelExecution {
+                execution_id,
                 respond_to: response_tx,
             })
             .await

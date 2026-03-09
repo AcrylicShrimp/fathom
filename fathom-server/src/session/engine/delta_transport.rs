@@ -10,8 +10,8 @@ use crate::session::state::SessionState;
 use crate::util::now_unix_ms;
 
 use super::assistant_stream::TurnAssistantStreamEmitter;
-use super::events::emit_event;
-use super::tool_dispatch::{TurnToolDispatcher, emit_tool_call_event};
+use super::events::{emit_event, emit_execution_update_event};
+use super::tool_dispatch::TurnToolDispatcher;
 
 pub(super) struct TurnDeltaTransport<'a> {
     session_id: String,
@@ -53,10 +53,10 @@ impl<'a> TurnDeltaTransport<'a> {
                 self.tool_dispatcher
                     .dispatch_action_invocation(action_invocation);
             }
-            ModelDeltaEvent::ActionArgsDelta(note) => emit_tool_call_event(
+            ModelDeltaEvent::ActionArgsDelta(note) => emit_execution_update_event(
                 self.events_tx,
                 &self.session_id,
-                pb::ToolCallPhase::ArgumentsDelta,
+                pb::ExecutionUpdatePhase::ArgumentsDelta,
                 note.call_key,
                 note.call_id,
                 note.action_id,
@@ -65,10 +65,10 @@ impl<'a> TurnDeltaTransport<'a> {
                 String::new(),
                 String::new(),
             ),
-            ModelDeltaEvent::ActionArgsDone(note) => emit_tool_call_event(
+            ModelDeltaEvent::ActionArgsDone(note) => emit_execution_update_event(
                 self.events_tx,
                 &self.session_id,
-                pb::ToolCallPhase::ArgumentsReady,
+                pb::ExecutionUpdatePhase::ArgumentsReady,
                 note.call_key,
                 note.call_id,
                 note.action_id,

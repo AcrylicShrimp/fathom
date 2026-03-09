@@ -20,8 +20,7 @@ use diagnostics::DiagnosticsSink;
 
 pub(crate) const EVENT_BUFFER_SIZE: usize = 256;
 pub(crate) const SESSION_CMD_BUFFER_SIZE: usize = 128;
-pub(crate) const DEFAULT_TASK_CAPACITY: usize = 4;
-pub(crate) const DEFAULT_TASK_RUNTIME_MS: u64 = 500;
+pub(crate) const DEFAULT_EXECUTION_CAPACITY: usize = 4;
 
 #[derive(Clone)]
 pub(crate) struct Runtime {
@@ -35,36 +34,43 @@ struct RuntimeInner {
     workspace_root: PathBuf,
     session_seq: AtomicU64,
     trigger_seq: AtomicU64,
-    task_seq: AtomicU64,
-    task_capacity: usize,
-    task_runtime_ms: u64,
+    execution_seq: AtomicU64,
+    execution_capacity: usize,
     orchestrator: AgentOrchestrator,
     diagnostics: DiagnosticsSink,
 }
 
 impl Runtime {
-    pub(crate) fn new(task_capacity: usize, task_runtime_ms: u64) -> Self {
+    pub(crate) fn new(execution_capacity: usize, _execution_runtime_ms: u64) -> Self {
         let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self::new_with_workspace_root(task_capacity, task_runtime_ms, workspace_root)
+        Self::new_with_workspace_root(execution_capacity, _execution_runtime_ms, workspace_root)
             .unwrap_or_else(|_| {
-                Self::new_unchecked(task_capacity, task_runtime_ms, PathBuf::from("."))
+                Self::new_unchecked(
+                    execution_capacity,
+                    _execution_runtime_ms,
+                    PathBuf::from("."),
+                )
             })
     }
 
     pub(crate) fn new_with_workspace_root(
-        task_capacity: usize,
-        task_runtime_ms: u64,
+        execution_capacity: usize,
+        _execution_runtime_ms: u64,
         workspace_root: PathBuf,
     ) -> anyhow::Result<Self> {
         let workspace_root = workspace::canonicalize_workspace_root(workspace_root)?;
         Ok(Self::new_unchecked(
-            task_capacity,
-            task_runtime_ms,
+            execution_capacity,
+            _execution_runtime_ms,
             workspace_root,
         ))
     }
 
-    fn new_unchecked(task_capacity: usize, task_runtime_ms: u64, workspace_root: PathBuf) -> Self {
+    fn new_unchecked(
+        execution_capacity: usize,
+        _execution_runtime_ms: u64,
+        workspace_root: PathBuf,
+    ) -> Self {
         let diagnostics = DiagnosticsSink::new(workspace_root.join(".fathom").join("diagnostics"));
         Self {
             inner: Arc::new(RuntimeInner {
@@ -74,21 +80,16 @@ impl Runtime {
                 workspace_root,
                 session_seq: AtomicU64::new(0),
                 trigger_seq: AtomicU64::new(0),
-                task_seq: AtomicU64::new(0),
-                task_capacity,
-                task_runtime_ms,
+                execution_seq: AtomicU64::new(0),
+                execution_capacity,
                 orchestrator: AgentOrchestrator::new(),
                 diagnostics,
             }),
         }
     }
 
-    pub(crate) fn task_capacity(&self) -> usize {
-        self.inner.task_capacity
-    }
-
-    pub(crate) fn task_runtime_ms(&self) -> u64 {
-        self.inner.task_runtime_ms
+    pub(crate) fn execution_capacity(&self) -> usize {
+        self.inner.execution_capacity
     }
 
     pub(crate) fn workspace_root(&self) -> &Path {

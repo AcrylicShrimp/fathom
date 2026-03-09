@@ -7,12 +7,13 @@ mod tool_catalog;
 mod types;
 
 pub(crate) use types::{
-    ActionInvocation, AgentTurnOutcome, CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot,
-    CapabilitySurfaceSnapshot, CapabilityToolSnapshot, HarnessContractSnapshot,
-    IdentityEnvelopeSnapshot, InFlightActionHint, ModelDeltaEvent, ModelInvocationOutcome,
-    ParticipantEnvelopeSnapshot, PromptMessage, PromptMessageBundle, ResolvedPayloadLookupHint,
-    SessionAnchorSnapshot, SessionBaselineSnapshot, SessionCompactionSnapshot, StreamNote,
-    SummaryBlockRefSnapshot, SystemTimeContext, ToolModeSupport, TurnSnapshot,
+    ActionInvocation, ActionModeSupportSnapshot, AgentTurnOutcome, CapabilityActionSnapshot,
+    CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
+    HarnessContractSnapshot, IdentityEnvelopeSnapshot, InFlightActionHint, ModelDeltaEvent,
+    ModelInvocationOutcome, ParticipantEnvelopeSnapshot, PromptMessage, PromptMessageBundle,
+    ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot,
+    SessionCompactionSnapshot, StreamNote, SummaryBlockRefSnapshot, SystemTimeContext,
+    TurnSnapshot,
 };
 
 use std::sync::Arc;
@@ -341,7 +342,7 @@ mod tests {
                         name: "Filesystem".to_string(),
                         description: "Stateful filesystem environment rooted at a base path."
                             .to_string(),
-                        tools: vec![],
+                        actions: vec![],
                         recipes: vec![],
                     }],
                 },

@@ -8,38 +8,38 @@ use crate::tabs::Tab;
 use crate::view::{EventRecord, SessionEventRecordKind};
 
 #[derive(Debug, Clone)]
-struct RunningTask {
+struct RunningExecution {
     action_id: String,
     status: String,
     args_preview: String,
 }
 
-pub(crate) struct RunningTasksTab {
-    tasks: BTreeMap<String, RunningTask>,
+pub(crate) struct RunningExecutionsTab {
+    executions: BTreeMap<String, RunningExecution>,
     scroll: u16,
     follow: bool,
 }
 
-impl RunningTasksTab {
+impl RunningExecutionsTab {
     pub(crate) fn new() -> Self {
         Self {
-            tasks: BTreeMap::new(),
+            executions: BTreeMap::new(),
             scroll: 0,
             follow: true,
         }
     }
 
-    fn on_task_state_changed(
+    fn on_execution_state_changed(
         &mut self,
-        task_id: &str,
+        execution_id: &str,
         action_id: &str,
         status: &str,
         args_preview: &str,
     ) {
         if is_active_status(status) {
-            self.tasks.insert(
-                task_id.to_string(),
-                RunningTask {
+            self.executions.insert(
+                execution_id.to_string(),
+                RunningExecution {
                     action_id: action_id.to_string(),
                     status: status.to_string(),
                     args_preview: args_preview.to_string(),
@@ -48,20 +48,20 @@ impl RunningTasksTab {
             return;
         }
 
-        self.tasks.remove(task_id);
+        self.executions.remove(execution_id);
     }
 
     fn text(&self) -> String {
-        if self.tasks.is_empty() {
-            return "(no running tasks)".to_string();
+        if self.executions.is_empty() {
+            return "(no running executions)".to_string();
         }
 
-        self.tasks
+        self.executions
             .iter()
-            .map(|(task_id, task)| {
+            .map(|(execution_id, execution)| {
                 format!(
-                    "{task_id} {} -> {} args={}",
-                    task.action_id, task.status, task.args_preview
+                    "{execution_id} {} -> {} args={}",
+                    execution.action_id, execution.status, execution.args_preview
                 )
             })
             .collect::<Vec<_>>()
@@ -77,14 +77,14 @@ impl RunningTasksTab {
     }
 }
 
-impl Tab for RunningTasksTab {
+impl Tab for RunningExecutionsTab {
     fn on_event(&mut self, event: &EventRecord) {
         let EventRecord::Session { kind, .. } = event else {
             return;
         };
 
-        let SessionEventRecordKind::TaskStateChanged {
-            task_id,
+        let SessionEventRecordKind::ExecutionStateChanged {
+            execution_id,
             action_id,
             status,
             args_preview,
@@ -94,7 +94,7 @@ impl Tab for RunningTasksTab {
             return;
         };
 
-        self.on_task_state_changed(task_id, action_id, status, args_preview);
+        self.on_execution_state_changed(execution_id, action_id, status, args_preview);
     }
 
     fn render(&self, frame: &mut Frame<'_>, area: Rect, session_id: &str) {
@@ -104,9 +104,9 @@ impl Tab for RunningTasksTab {
             .block(
                 Block::default()
                     .title(format!(
-                        "tasks:running [{}] ({mode}) count={}",
+                        "executions:running [{}] ({mode}) count={}",
                         session_id,
-                        self.tasks.len()
+                        self.executions.len()
                     ))
                     .borders(Borders::ALL),
             )
@@ -172,17 +172,17 @@ fn wrapped_line_count(text: &str, width: u16) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::RunningTasksTab;
+    use super::RunningExecutionsTab;
     use crate::tabs::Tab;
     use crate::view::{EventRecord, SessionEventRecordKind};
 
     #[test]
-    fn tracks_only_active_tasks() {
-        let mut tab = RunningTasksTab::new();
+    fn tracks_only_active_executions() {
+        let mut tab = RunningExecutionsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__list".to_string(),
                 status: "running".to_string(),
                 args_json: r#"{"path":"."}"#.to_string(),
@@ -192,12 +192,15 @@ mod tests {
             },
         });
 
-        assert!(tab.text().contains("task-1 filesystem__list -> running"));
+        assert!(
+            tab.text()
+                .contains("execution-1 filesystem__list -> running")
+        );
 
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__list".to_string(),
                 status: "succeeded".to_string(),
                 args_json: r#"{"path":"."}"#.to_string(),
@@ -207,12 +210,12 @@ mod tests {
             },
         });
 
-        assert_eq!(tab.text(), "(no running tasks)");
+        assert_eq!(tab.text(), "(no running executions)");
     }
 
     #[test]
-    fn ignores_non_task_events() {
-        let mut tab = RunningTasksTab::new();
+    fn ignores_non_execution_events() {
+        let mut tab = RunningExecutionsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::TurnStarted {
@@ -221,16 +224,16 @@ mod tests {
             },
         });
 
-        assert_eq!(tab.text(), "(no running tasks)");
+        assert_eq!(tab.text(), "(no running executions)");
     }
 
     #[test]
     fn scroll_up_disables_follow() {
-        let mut tab = RunningTasksTab::new();
+        let mut tab = RunningExecutionsTab::new();
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
-            kind: SessionEventRecordKind::TaskStateChanged {
-                task_id: "task-1".to_string(),
+            kind: SessionEventRecordKind::ExecutionStateChanged {
+                execution_id: "execution-1".to_string(),
                 action_id: "filesystem__list".to_string(),
                 status: "running".to_string(),
                 args_json: r#"{"path":"."}"#.to_string(),

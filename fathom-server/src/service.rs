@@ -9,7 +9,7 @@ use tonic::{Request, Response, Status};
 
 use crate::pb;
 use crate::pb::runtime_service_server::RuntimeService;
-use crate::runtime::{DEFAULT_TASK_CAPACITY, DEFAULT_TASK_RUNTIME_MS, Runtime};
+use crate::runtime::{DEFAULT_EXECUTION_CAPACITY, Runtime};
 use crate::util::now_unix_ms;
 
 #[derive(Clone)]
@@ -20,7 +20,7 @@ pub struct FathomRuntimeService {
 impl Default for FathomRuntimeService {
     fn default() -> Self {
         Self {
-            runtime: Runtime::new(DEFAULT_TASK_CAPACITY, DEFAULT_TASK_RUNTIME_MS),
+            runtime: Runtime::new(DEFAULT_EXECUTION_CAPACITY, 0),
         }
     }
 }
@@ -29,8 +29,8 @@ impl FathomRuntimeService {
     pub fn with_workspace_root(workspace_root: PathBuf) -> Result<Self> {
         Ok(Self {
             runtime: Runtime::new_with_workspace_root(
-                DEFAULT_TASK_CAPACITY,
-                DEFAULT_TASK_RUNTIME_MS,
+                DEFAULT_EXECUTION_CAPACITY,
+                0,
                 workspace_root,
             )?,
         })
@@ -104,32 +104,32 @@ impl RuntimeService for FathomRuntimeService {
         Ok(Response::new(Box::pin(stream)))
     }
 
-    async fn list_tasks(
+    async fn list_executions(
         &self,
-        request: Request<pb::ListTasksRequest>,
-    ) -> Result<Response<pb::ListTasksResponse>, Status> {
+        request: Request<pb::ListExecutionsRequest>,
+    ) -> Result<Response<pb::ListExecutionsResponse>, Status> {
         let request = request.into_inner();
         if request.session_id.trim().is_empty() {
             return Err(Status::invalid_argument("session_id is required"));
         }
-        let tasks = self.runtime.list_tasks(&request.session_id).await?;
-        Ok(Response::new(pb::ListTasksResponse { tasks }))
+        let executions = self.runtime.list_executions(&request.session_id).await?;
+        Ok(Response::new(pb::ListExecutionsResponse { executions }))
     }
 
-    async fn cancel_task(
+    async fn cancel_execution(
         &self,
-        request: Request<pb::CancelTaskRequest>,
-    ) -> Result<Response<pb::CancelTaskResponse>, Status> {
+        request: Request<pb::CancelExecutionRequest>,
+    ) -> Result<Response<pb::CancelExecutionResponse>, Status> {
         let request = request.into_inner();
         if request.session_id.trim().is_empty() {
             return Err(Status::invalid_argument("session_id is required"));
         }
-        if request.task_id.trim().is_empty() {
-            return Err(Status::invalid_argument("task_id is required"));
+        if request.execution_id.trim().is_empty() {
+            return Err(Status::invalid_argument("execution_id is required"));
         }
         let response = self
             .runtime
-            .cancel_task(&request.session_id, request.task_id)
+            .cancel_execution(&request.session_id, request.execution_id)
             .await?;
         Ok(Response::new(response))
     }

@@ -51,3 +51,32 @@ pub(super) fn emit_event(
         warn!(%session_id, "dropping event because no subscribers are attached");
     }
 }
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_execution_update_event(
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+    session_id: &str,
+    phase: pb::ExecutionUpdatePhase,
+    call_key: String,
+    call_id: Option<String>,
+    action_id: Option<String>,
+    execution_id: Option<String>,
+    args_delta: String,
+    args_json: String,
+    detail: String,
+) {
+    emit_event(
+        events_tx,
+        session_id,
+        pb::session_event::Kind::ExecutionUpdate(pb::ExecutionUpdateEvent {
+            phase: phase as i32,
+            call_key,
+            call_id: call_id.unwrap_or_default(),
+            action_id: action_id.unwrap_or_default(),
+            execution_id: execution_id.unwrap_or_default(),
+            args_delta,
+            args_json,
+            detail,
+        }),
+    );
+}

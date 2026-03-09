@@ -1,9 +1,9 @@
 use super::Runtime;
 use crate::agent::{
-    CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
-    CapabilityToolSnapshot, HarnessContractSnapshot, IdentityEnvelopeSnapshot, InFlightActionHint,
-    ParticipantEnvelopeSnapshot, ResolvedPayloadLookupHint, SessionAnchorSnapshot,
-    SessionBaselineSnapshot, ToolModeSupport, TurnSnapshot,
+    ActionModeSupportSnapshot, CapabilityActionSnapshot, CapabilityEnvironmentSnapshot,
+    CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot, HarnessContractSnapshot,
+    IdentityEnvelopeSnapshot, InFlightActionHint, ParticipantEnvelopeSnapshot,
+    ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot, TurnSnapshot,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::pb;
@@ -29,8 +29,8 @@ impl Runtime {
             .pending_payload_lookups
             .iter()
             .map(|lookup| ResolvedPayloadLookupHint {
-                lookup_task_id: lookup.lookup_task_id.clone(),
-                task_id: lookup.task_id.clone(),
+                lookup_execution_id: lookup.lookup_execution_id.clone(),
+                execution_id: lookup.execution_id.clone(),
                 part: lookup.part.clone(),
                 offset: lookup.offset,
                 next_offset: lookup.next_offset,
@@ -101,16 +101,17 @@ impl Runtime {
             .iter()
             .filter_map(|environment_id| {
                 let environment = EnvironmentRegistry::environment_summary(environment_id)?;
-                let mut tools = EnvironmentRegistry::environment_action_summaries(environment_id)?
-                    .into_iter()
-                    .map(|action| CapabilityToolSnapshot {
-                        tool_name: action.id,
-                        description: action.description,
-                        mode_support: map_mode_support(action.mode_support),
-                        discovery: action.discovery,
-                    })
-                    .collect::<Vec<_>>();
-                tools.sort_by(|a, b| a.tool_name.cmp(&b.tool_name));
+                let mut actions =
+                    EnvironmentRegistry::environment_action_summaries(environment_id)?
+                        .into_iter()
+                        .map(|action| CapabilityActionSnapshot {
+                            action_id: action.id,
+                            description: action.description,
+                            mode_support: map_mode_support(action.mode_support),
+                            discovery: action.discovery,
+                        })
+                        .collect::<Vec<_>>();
+                actions.sort_by(|a, b| a.action_id.cmp(&b.action_id));
                 let mut recipes = environment
                     .recipes
                     .into_iter()
@@ -124,7 +125,7 @@ impl Runtime {
                     id: environment.id,
                     name: environment.name,
                     description: environment.description,
-                    tools,
+                    actions,
                     recipes,
                 })
             })
@@ -166,7 +167,7 @@ impl Runtime {
             .in_flight_actions
             .values()
             .map(|action| InFlightActionHint {
-                task_id: action.task_id.clone(),
+                execution_id: action.execution_id.clone(),
                 canonical_action_id: action.canonical_action_id.clone(),
                 environment_id: action.environment_id.clone(),
                 action_name: action.action_name.clone(),
@@ -181,7 +182,7 @@ impl Runtime {
             a.environment_id
                 .cmp(&b.environment_id)
                 .then(a.env_seq.cmp(&b.env_seq))
-                .then(a.task_id.cmp(&b.task_id))
+                .then(a.execution_id.cmp(&b.execution_id))
         });
         in_flight_actions
     }
@@ -203,10 +204,10 @@ fn participant_envelope_source_revision(state: &SessionState) -> String {
         .join(",")
 }
 
-fn map_mode_support(mode_support: ActionModeSupport) -> ToolModeSupport {
+fn map_mode_support(mode_support: ActionModeSupport) -> ActionModeSupportSnapshot {
     match mode_support {
-        ActionModeSupport::AwaitOnly => ToolModeSupport::AwaitOnly,
-        ActionModeSupport::AwaitOrDetach => ToolModeSupport::AwaitOrDetach,
+        ActionModeSupport::AwaitOnly => ActionModeSupportSnapshot::AwaitOnly,
+        ActionModeSupport::AwaitOrDetach => ActionModeSupportSnapshot::AwaitOrDetach,
     }
 }
 
@@ -215,10 +216,13 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::Runtime;
-    use crate::agent::ToolModeSupport;
+    use crate::agent::{
+        ActionModeSupportSnapshot, SessionCompactionSnapshot, SummaryBlockRefSnapshot,
+    };
     use crate::environment::EnvironmentRegistry;
     use crate::session::SessionState;
     use crate::util::{default_agent_profile, default_user_profile};
+    use serde_json::json;
 
     #[test]
     fn turn_snapshot_builds_stable_prefix_layers() {
@@ -299,7 +303,7 @@ mod tests {
                 .capability_surface
                 .environments
                 .iter()
-                .all(|environment| !environment.tools.is_empty())
+                .all(|environment| !environment.actions.is_empty())
         );
         assert!(
             snapshot
@@ -307,8 +311,77 @@ mod tests {
                 .capability_surface
                 .environments
                 .iter()
-                .flat_map(|environment| environment.tools.iter())
-                .all(|tool| tool.mode_support == ToolModeSupport::AwaitOnly)
+                .flat_map(|environment| environment.actions.iter())
+                .any(|action| action.mode_support == ActionModeSupportSnapshot::AwaitOrDetach)
         );
+        assert!(
+            snapshot
+                .session_baseline
+                .capability_surface
+                .environments
+                .iter()
+                .flat_map(|environment| environment.actions.iter())
+                .all(|action| matches!(
+                    action.mode_support,
+                    ActionModeSupportSnapshot::AwaitOnly | ActionModeSupportSnapshot::AwaitOrDetach
+                ))
+        );
+    }
+
+    #[test]
+    fn turn_snapshot_rebuilds_stable_prefix_from_authoritative_state_even_with_compaction() {
+        let runtime = Runtime::new(2, 10);
+        let user_id = "user-a".to_string();
+        let mut state = SessionState::new(
+            "session-1".to_string(),
+            "agent-a".to_string(),
+            vec![user_id.clone()],
+            default_agent_profile("agent-a"),
+            HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
+            EnvironmentRegistry::default_engaged_environment_ids()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            EnvironmentRegistry::initial_environment_snapshots()
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
+        );
+
+        state.agent_profile_copy.display_name = "Updated Agent".to_string();
+        state
+            .participant_user_profiles_copy
+            .get_mut("user-a")
+            .expect("participant profile")
+            .name = "Updated User".to_string();
+        state.engaged_environment_ids =
+            BTreeSet::from(["filesystem".to_string(), "shell".to_string()]);
+        state.compaction = SessionCompactionSnapshot {
+            last_compacted_history_index: 24,
+            summary_blocks: vec![SummaryBlockRefSnapshot {
+                id: "history-summary-000024".to_string(),
+                source_range_start: 0,
+                source_range_end: 24,
+                summary_text: "history-summary-000024 source=[0,24) execution_requested=9 awaited_execution_succeeded=9 actions=[system__get_time] users=[user-stale]".to_string(),
+                created_at_unix_ms: 1_765_000_000_000,
+            }],
+        };
+
+        let snapshot = runtime.build_turn_snapshot(&state, 1, &[]);
+
+        assert_eq!(
+            snapshot.identity_envelope.material["display_name"],
+            json!("Updated Agent")
+        );
+        assert_eq!(
+            snapshot.session_baseline.participant_envelope.material["participants"][0]["name"],
+            json!("Updated User")
+        );
+        let environment_ids = snapshot
+            .session_baseline
+            .capability_surface
+            .environments
+            .iter()
+            .map(|environment| environment.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(environment_ids, vec!["filesystem", "shell"]);
     }
 }

@@ -8,7 +8,7 @@ pub(crate) enum HistoryActorKind {
     User,
     Assistant,
     System,
-    Task,
+    Execution,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,8 +28,20 @@ pub(crate) enum HistoryEventKind {
     TriggerUnknown,
     #[serde(rename = "trigger_user_message")]
     TriggerUserMessage(UserMessageHistoryPayload),
-    #[serde(rename = "trigger_task_done")]
-    TriggerTaskDone(TaskDoneHistoryPayload),
+    #[serde(rename = "execution_requested")]
+    ExecutionRequested(ExecutionRequestedHistoryPayload),
+    #[serde(rename = "awaited_execution_succeeded")]
+    AwaitedExecutionSucceeded(ExecutionSucceededHistoryPayload),
+    #[serde(rename = "awaited_execution_failed")]
+    AwaitedExecutionFailed(ExecutionFailedHistoryPayload),
+    #[serde(rename = "execution_detached")]
+    ExecutionDetached(ExecutionDetachedHistoryPayload),
+    #[serde(rename = "detached_execution_succeeded")]
+    DetachedExecutionSucceeded(ExecutionSucceededHistoryPayload),
+    #[serde(rename = "detached_execution_failed")]
+    DetachedExecutionFailed(ExecutionFailedHistoryPayload),
+    #[serde(rename = "execution_rejected")]
+    ExecutionRejected(ExecutionRejectedHistoryPayload),
     #[serde(rename = "trigger_heartbeat")]
     TriggerHeartbeat,
     #[serde(rename = "trigger_cron")]
@@ -38,10 +50,6 @@ pub(crate) enum HistoryEventKind {
     TriggerRefreshProfile(RefreshProfileHistoryPayload),
     #[serde(rename = "assistant_output")]
     AssistantOutput(AssistantOutputHistoryPayload),
-    #[serde(rename = "task_started")]
-    TaskStarted(TaskStartedHistoryPayload),
-    #[serde(rename = "task_finished")]
-    TaskFinished(TaskFinishedHistoryPayload),
 }
 
 impl HistoryEventKind {
@@ -49,29 +57,37 @@ impl HistoryEventKind {
         match self {
             Self::TriggerUnknown => "other",
             Self::TriggerUserMessage(_) => "user_message",
-            Self::TriggerTaskDone(_) => "task_done",
+            Self::ExecutionRequested(_) => "execution_requested",
+            Self::AwaitedExecutionSucceeded(_) => "awaited_execution_succeeded",
+            Self::AwaitedExecutionFailed(_) => "awaited_execution_failed",
+            Self::ExecutionDetached(_) => "execution_detached",
+            Self::DetachedExecutionSucceeded(_) => "detached_execution_succeeded",
+            Self::DetachedExecutionFailed(_) => "detached_execution_failed",
+            Self::ExecutionRejected(_) => "execution_rejected",
             Self::TriggerHeartbeat => "heartbeat",
             Self::TriggerCron(_) => "cron",
             Self::TriggerRefreshProfile(_) => "refresh_profile",
             Self::AssistantOutput(_) => "assistant_output",
-            Self::TaskStarted(_) => "task_started",
-            Self::TaskFinished(_) => "task_finished",
         }
     }
 
     pub(crate) fn status(&self) -> Option<&str> {
         match self {
-            Self::TriggerTaskDone(payload) => Some(&payload.status),
-            Self::TaskStarted(payload) => Some(&payload.status),
-            Self::TaskFinished(payload) => Some(&payload.status),
+            Self::ExecutionRequested(payload) => Some(&payload.status),
             _ => None,
         }
     }
 
     pub(crate) fn canonical_action_id(&self) -> Option<&str> {
         match self {
-            Self::TaskStarted(payload) => Some(&payload.canonical_action_id),
-            Self::TaskFinished(payload) => Some(&payload.canonical_action_id),
+            Self::ExecutionRequested(payload) => Some(&payload.canonical_action_id),
+            Self::AwaitedExecutionSucceeded(payload)
+            | Self::DetachedExecutionSucceeded(payload) => Some(&payload.canonical_action_id),
+            Self::AwaitedExecutionFailed(payload) | Self::DetachedExecutionFailed(payload) => {
+                Some(&payload.canonical_action_id)
+            }
+            Self::ExecutionDetached(payload) => Some(&payload.canonical_action_id),
+            Self::ExecutionRejected(payload) => Some(&payload.canonical_action_id),
             _ => None,
         }
     }
@@ -80,13 +96,6 @@ impl HistoryEventKind {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct UserMessageHistoryPayload {
     pub(crate) text: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct TaskDoneHistoryPayload {
-    pub(crate) status: String,
-    pub(crate) result_preview: PayloadPreview,
-    pub(crate) lookup_action: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,21 +115,37 @@ pub(crate) struct AssistantOutputHistoryPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct TaskStartedHistoryPayload {
+pub(crate) struct ExecutionRequestedHistoryPayload {
     pub(crate) canonical_action_id: String,
     pub(crate) environment_id: String,
     pub(crate) action_name: String,
+    pub(crate) execution_mode: String,
     pub(crate) status: String,
     pub(crate) args_preview: PayloadPreview,
     pub(crate) lookup_action: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct TaskFinishedHistoryPayload {
+pub(crate) struct ExecutionSucceededHistoryPayload {
     pub(crate) canonical_action_id: String,
-    pub(crate) environment_id: String,
-    pub(crate) action_name: String,
-    pub(crate) status: String,
-    pub(crate) result_preview: PayloadPreview,
-    pub(crate) lookup_action: String,
+    pub(crate) payload_preview: PayloadPreview,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ExecutionFailedHistoryPayload {
+    pub(crate) canonical_action_id: String,
+    pub(crate) message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) payload_preview: Option<PayloadPreview>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ExecutionDetachedHistoryPayload {
+    pub(crate) canonical_action_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ExecutionRejectedHistoryPayload {
+    pub(crate) canonical_action_id: String,
+    pub(crate) message: String,
 }

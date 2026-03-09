@@ -6,11 +6,13 @@ use crate::agent::ActionInvocation;
 use crate::environment::EnvironmentActorHandle;
 use crate::pb;
 use crate::runtime::Runtime;
-use crate::session::diagnostics::task_to_json;
+use crate::session::diagnostics::execution_to_json;
 use crate::session::state::SessionState;
 
-use super::events::emit_event;
-use super::tasks::{queue_task, queued_action_output};
+use super::events::emit_execution_update_event;
+use super::tasks::{
+    QueuedExecutionOutcome, queue_execution, queued_action_output, settled_execution_output,
+};
 
 pub(super) struct TurnToolDispatcher<'a> {
     runtime: &'a Runtime,
@@ -37,37 +39,62 @@ impl<'a> TurnToolDispatcher<'a> {
     }
 
     pub(super) fn dispatch_action_invocation(&mut self, action_invocation: ActionInvocation) {
-        let action_id = action_invocation.action_id;
-        let args_json = action_invocation.args_json;
-        let call_key = action_invocation.call_key;
-        let call_id = action_invocation.call_id;
-        let task = queue_task(
+        let action_id = action_invocation.action_id.clone();
+        let args_json = action_invocation.args_json.clone();
+        let call_key = action_invocation.call_key.clone();
+        let call_id = action_invocation.call_id.clone();
+        let queued = queue_execution(
             self.runtime,
             self.state,
             self.events_tx,
             self.environment_handles,
-            action_id.clone(),
-            args_json.clone(),
+            action_invocation,
         );
+        let phase = match queued.outcome {
+            QueuedExecutionOutcome::AwaitAccepted => None,
+            QueuedExecutionOutcome::DetachedAccepted => {
+                Some(pb::ExecutionUpdatePhase::ExecutionDetached)
+            }
+            QueuedExecutionOutcome::Rejected => Some(pb::ExecutionUpdatePhase::ExecutionRejected),
+        };
+        let detail = match phase {
+            Some(pb::ExecutionUpdatePhase::ExecutionDetached) => queued_action_output(
+                &queued.execution,
+                call_id.as_deref(),
+                crate::environment::RequestedExecutionMode::Detach,
+            ),
+            Some(pb::ExecutionUpdatePhase::ExecutionRejected) => settled_execution_output(
+                &queued.execution,
+                pb::ExecutionUpdatePhase::ExecutionRejected,
+            ),
+            _ => String::new(),
+        };
 
-        emit_tool_call_event(
-            self.events_tx,
-            &self.state.session_id,
-            pb::ToolCallPhase::Queued,
-            call_key.clone(),
-            call_id.clone(),
-            Some(action_id.clone()),
-            Some(task.task_id.clone()),
-            String::new(),
-            args_json.clone(),
-            queued_action_output(&task, call_id.as_deref()),
-        );
+        if let Some(phase) = phase {
+            emit_execution_update_event(
+                self.events_tx,
+                &self.state.session_id,
+                phase,
+                call_key.clone(),
+                call_id.clone(),
+                Some(action_id.clone()),
+                Some(queued.execution.execution_id.clone()),
+                String::new(),
+                args_json.clone(),
+                detail,
+            );
+        }
         self.dispatched_actions.push(serde_json::json!({
             "action_id": action_id,
             "args_json": args_json,
             "call_key": call_key,
             "call_id": call_id,
-            "queued_task": task_to_json(&task),
+            "queued_execution": execution_to_json(&queued.execution),
+            "dispatch_outcome": match queued.outcome {
+                QueuedExecutionOutcome::AwaitAccepted => "await_accepted",
+                QueuedExecutionOutcome::DetachedAccepted => "detached_accepted",
+                QueuedExecutionOutcome::Rejected => "rejected",
+            },
         }));
     }
 
@@ -76,47 +103,18 @@ impl<'a> TurnToolDispatcher<'a> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn emit_tool_call_event(
-    events_tx: &broadcast::Sender<pb::SessionEvent>,
-    session_id: &str,
-    phase: pb::ToolCallPhase,
-    call_key: String,
-    call_id: Option<String>,
-    action_id: Option<String>,
-    task_id: Option<String>,
-    args_delta: String,
-    args_json: String,
-    detail: String,
-) {
-    emit_event(
-        events_tx,
-        session_id,
-        pb::session_event::Kind::ToolCall(pb::ToolCallEvent {
-            phase: phase as i32,
-            call_key,
-            call_id: call_id.unwrap_or_default(),
-            action_id: action_id.unwrap_or_default(),
-            task_id: task_id.unwrap_or_default(),
-            args_delta,
-            args_json,
-            detail,
-        }),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
 
-    use tokio::sync::broadcast;
+    use tokio::sync::{broadcast, mpsc};
 
     use super::TurnToolDispatcher;
     use crate::agent::ActionInvocation;
-    use crate::environment::EnvironmentRegistry;
+    use crate::environment::{EnvironmentRegistry, spawn_environment_actor};
     use crate::pb;
     use crate::runtime::Runtime;
-    use crate::session::SessionState;
+    use crate::session::{SessionCommand, SessionState};
     use crate::util::{default_agent_profile, default_user_profile};
 
     fn test_state() -> SessionState {
@@ -137,7 +135,8 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_action_invocation_records_dispatch_and_emits_queued_tool_call() {
+    fn dispatch_action_invocation_records_dispatch_and_emits_rejected_execution_update_without_runtime()
+     {
         let runtime = Runtime::new(2, 10);
         let (events_tx, mut events_rx) = broadcast::channel(16);
         let mut state = test_state();
@@ -146,32 +145,83 @@ mod tests {
         let mut dispatcher =
             TurnToolDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
         dispatcher.dispatch_action_invocation(ActionInvocation {
-            action_id: "filesystem__list".to_string(),
-            args_json: "{\"path\":\".\"}".to_string(),
+            action_id: "shell__run".to_string(),
+            args_json:
+                "{\"command\":\"pwd\",\"reasoning\":\"run in background\",\"execution_mode\":\"detach\"}"
+                    .to_string(),
             call_key: "call-key-1".to_string(),
             call_id: Some("call-id-1".to_string()),
         });
 
         assert_eq!(dispatcher.action_dispatches().len(), 1);
 
-        let mut tool_call = None;
+        let mut execution_update = None;
         while let Ok(event) = events_rx.try_recv() {
-            if let Some(pb::session_event::Kind::ToolCall(item)) = event.kind {
-                tool_call = Some(item);
+            if let Some(pb::session_event::Kind::ExecutionUpdate(item)) = event.kind {
+                execution_update = Some(item);
                 break;
             }
         }
 
-        let tool_call = tool_call.expect("queued tool call event");
-        assert_eq!(tool_call.phase, pb::ToolCallPhase::Queued as i32);
-        assert_eq!(tool_call.call_key, "call-key-1");
-        assert_eq!(tool_call.call_id, "call-id-1");
-        assert_eq!(tool_call.action_id, "filesystem__list");
-        assert!(!tool_call.task_id.is_empty());
-        assert!(
-            tool_call
-                .detail
-                .contains("queued action `filesystem__list`")
+        let execution_update = execution_update.expect("rejected execution update event");
+        assert_eq!(
+            execution_update.phase,
+            pb::ExecutionUpdatePhase::ExecutionRejected as i32
         );
+        assert_eq!(execution_update.call_key, "call-key-1");
+        assert_eq!(execution_update.call_id, "call-id-1");
+        assert_eq!(execution_update.action_id, "shell__run");
+        assert!(!execution_update.execution_id.is_empty());
+        assert!(execution_update.detail.contains("execution_rejected"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_action_invocation_emits_execution_detached_for_detach_capable_tool() {
+        let runtime = Runtime::new(2, 10);
+        let (events_tx, mut events_rx) = broadcast::channel(16);
+        let mut state = test_state();
+        let (session_command_tx, _session_command_rx) = mpsc::channel::<SessionCommand>(16);
+        let shell_snapshot = state
+            .environment_snapshots
+            .get("shell")
+            .cloned()
+            .expect("shell snapshot");
+        let shell_handle = spawn_environment_actor(
+            runtime.clone(),
+            "shell".to_string(),
+            shell_snapshot,
+            session_command_tx,
+        );
+        let environment_handles = HashMap::from([("shell".to_string(), shell_handle)]);
+
+        let mut dispatcher =
+            TurnToolDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
+        dispatcher.dispatch_action_invocation(ActionInvocation {
+            action_id: "shell__run".to_string(),
+            args_json:
+                "{\"command\":\"pwd\",\"reasoning\":\"run in background\",\"execution_mode\":\"detach\"}"
+                    .to_string(),
+            call_key: "call-key-1".to_string(),
+            call_id: Some("call-id-1".to_string()),
+        });
+
+        let mut execution_update = None;
+        while let Ok(event) = events_rx.try_recv() {
+            if let Some(pb::session_event::Kind::ExecutionUpdate(item)) = event.kind {
+                execution_update = Some(item);
+                break;
+            }
+        }
+
+        let execution_update = execution_update.expect("detached execution update event");
+        assert_eq!(
+            execution_update.phase,
+            pb::ExecutionUpdatePhase::ExecutionDetached as i32
+        );
+        assert_eq!(execution_update.call_key, "call-key-1");
+        assert_eq!(execution_update.call_id, "call-id-1");
+        assert_eq!(execution_update.action_id, "shell__run");
+        assert!(!execution_update.execution_id.is_empty());
+        assert!(execution_update.detail.contains("mode=detach"));
     }
 }

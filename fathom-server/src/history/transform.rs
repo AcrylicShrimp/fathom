@@ -1,15 +1,17 @@
 use fathom_env::parse_action_id;
 
-use crate::history::TASK_PAYLOAD_LOOKUP_ACTION;
+use crate::environment::{RequestedExecutionMode, requested_execution_mode_from_args_json};
+use crate::history::EXECUTION_PAYLOAD_LOOKUP_ACTION;
 use crate::history::preview::build_payload_preview;
 use crate::history::schema::{
-    AssistantOutputHistoryPayload, CronHistoryPayload, HistoryActorKind, HistoryEvent,
-    HistoryEventKind, RefreshProfileHistoryPayload, TaskDoneHistoryPayload,
-    TaskFinishedHistoryPayload, TaskStartedHistoryPayload, UserMessageHistoryPayload,
+    AssistantOutputHistoryPayload, CronHistoryPayload, ExecutionDetachedHistoryPayload,
+    ExecutionFailedHistoryPayload, ExecutionRejectedHistoryPayload,
+    ExecutionRequestedHistoryPayload, ExecutionSucceededHistoryPayload, HistoryActorKind,
+    HistoryEvent, HistoryEventKind, RefreshProfileHistoryPayload, UserMessageHistoryPayload,
 };
 use crate::pb;
 use crate::session::state::SessionState;
-use crate::util::{refresh_scope_label, task_status_label};
+use crate::util::{execution_status_label, refresh_scope_label};
 
 pub(crate) fn trigger_line(state: &SessionState, trigger: &pb::Trigger) -> HistoryEvent {
     let Some(kind) = trigger.kind.as_ref() else {
@@ -32,24 +34,13 @@ pub(crate) fn trigger_line(state: &SessionState, trigger: &pb::Trigger) -> Histo
                 text: message.text.clone(),
             }),
         },
-        pb::trigger::Kind::TaskDone(done) => {
-            let status = pb::TaskStatus::try_from(done.status)
-                .map(task_status_label)
-                .unwrap_or("unknown");
-            let result_ref = format!("task://{}/result", done.task_id);
-            let result_preview = build_payload_preview(&done.result_message, result_ref);
-            HistoryEvent {
-                ts_unix_ms: trigger.created_at_unix_ms,
-                actor_kind: HistoryActorKind::Task,
-                actor_id: done.task_id.clone(),
-                profile_ref: active_agent_profile_ref(state),
-                kind: HistoryEventKind::TriggerTaskDone(TaskDoneHistoryPayload {
-                    status: status.to_string(),
-                    result_preview,
-                    lookup_action: TASK_PAYLOAD_LOOKUP_ACTION.to_string(),
-                }),
-            }
-        }
+        pb::trigger::Kind::ExecutionUpdate(update) => HistoryEvent {
+            ts_unix_ms: trigger.created_at_unix_ms,
+            actor_kind: HistoryActorKind::Execution,
+            actor_id: update.execution_id.clone(),
+            profile_ref: active_agent_profile_ref(state),
+            kind: execution_update_history_kind(update),
+        },
         pb::trigger::Kind::Heartbeat(_) => HistoryEvent {
             ts_unix_ms: trigger.created_at_unix_ms,
             actor_kind: HistoryActorKind::System,
@@ -100,56 +91,97 @@ pub(crate) fn assistant_output_line(
     }
 }
 
-pub(crate) fn task_started_line(state: &SessionState, task: &pb::Task) -> HistoryEvent {
-    let args_ref = format!("task://{}/args", task.task_id);
-    let args_preview = build_payload_preview(&task.args_json, args_ref);
-    let status = pb::TaskStatus::try_from(task.status)
-        .map(task_status_label)
+pub(crate) fn execution_requested_line(
+    state: &SessionState,
+    execution: &pb::Execution,
+) -> HistoryEvent {
+    let args_ref = format!("execution://{}/args", execution.execution_id);
+    let args_preview = build_payload_preview(&execution.args_json, args_ref);
+    let status = pb::ExecutionStatus::try_from(execution.status)
+        .map(execution_status_label)
         .unwrap_or("unknown");
-    let (environment_id, action_name) = parse_task_action_id(&task.action_id);
+    let (environment_id, action_name) = parse_action_identity(&execution.action_id);
+    let execution_mode = requested_execution_mode_from_args_json(&execution.args_json)
+        .unwrap_or(RequestedExecutionMode::Await)
+        .as_str()
+        .to_string();
 
     HistoryEvent {
-        ts_unix_ms: task.updated_at_unix_ms,
-        actor_kind: HistoryActorKind::Task,
-        actor_id: task.task_id.clone(),
+        ts_unix_ms: execution.updated_at_unix_ms,
+        actor_kind: HistoryActorKind::Execution,
+        actor_id: execution.execution_id.clone(),
         profile_ref: active_agent_profile_ref(state),
-        kind: HistoryEventKind::TaskStarted(TaskStartedHistoryPayload {
-            canonical_action_id: task.action_id.clone(),
+        kind: HistoryEventKind::ExecutionRequested(ExecutionRequestedHistoryPayload {
+            canonical_action_id: execution.action_id.clone(),
             environment_id,
             action_name,
+            execution_mode,
             status: status.to_string(),
             args_preview,
-            lookup_action: TASK_PAYLOAD_LOOKUP_ACTION.to_string(),
+            lookup_action: EXECUTION_PAYLOAD_LOOKUP_ACTION.to_string(),
         }),
     }
 }
 
-pub(crate) fn task_finished_line(state: &SessionState, task: &pb::Task) -> HistoryEvent {
-    let result_ref = format!("task://{}/result", task.task_id);
-    let result_preview = build_payload_preview(&task.result_message, result_ref);
-    let status = pb::TaskStatus::try_from(task.status)
-        .map(task_status_label)
-        .unwrap_or("unknown");
-    let (environment_id, action_name) = parse_task_action_id(&task.action_id);
-
-    HistoryEvent {
-        ts_unix_ms: task.updated_at_unix_ms,
-        actor_kind: HistoryActorKind::Task,
-        actor_id: task.task_id.clone(),
-        profile_ref: active_agent_profile_ref(state),
-        kind: HistoryEventKind::TaskFinished(TaskFinishedHistoryPayload {
-            canonical_action_id: task.action_id.clone(),
-            environment_id,
-            action_name,
-            status: status.to_string(),
-            result_preview,
-            lookup_action: TASK_PAYLOAD_LOOKUP_ACTION.to_string(),
-        }),
-    }
-}
-
-fn parse_task_action_id(action_id: &str) -> (String, String) {
+fn parse_action_identity(action_id: &str) -> (String, String) {
     parse_action_id(action_id).unwrap_or_else(|| ("unknown".to_string(), action_id.to_string()))
+}
+
+fn execution_update_history_kind(update: &pb::ExecutionUpdateTrigger) -> HistoryEventKind {
+    let payload_preview = if update.payload_message.trim().is_empty() {
+        None
+    } else {
+        Some(build_payload_preview(
+            &update.payload_message,
+            format!("execution://{}/result", update.execution_id),
+        ))
+    };
+    let kind = pb::ExecutionUpdateKind::try_from(update.kind)
+        .unwrap_or(pb::ExecutionUpdateKind::Unspecified);
+
+    match kind {
+        pb::ExecutionUpdateKind::AwaitedExecutionSucceeded => {
+            HistoryEventKind::AwaitedExecutionSucceeded(ExecutionSucceededHistoryPayload {
+                canonical_action_id: update.action_id.clone(),
+                payload_preview: payload_preview.unwrap_or_else(|| {
+                    build_payload_preview("", format!("execution://{}/result", update.execution_id))
+                }),
+            })
+        }
+        pb::ExecutionUpdateKind::AwaitedExecutionFailed => {
+            HistoryEventKind::AwaitedExecutionFailed(ExecutionFailedHistoryPayload {
+                canonical_action_id: update.action_id.clone(),
+                message: update.message.clone(),
+                payload_preview,
+            })
+        }
+        pb::ExecutionUpdateKind::ExecutionDetached => {
+            HistoryEventKind::ExecutionDetached(ExecutionDetachedHistoryPayload {
+                canonical_action_id: update.action_id.clone(),
+            })
+        }
+        pb::ExecutionUpdateKind::DetachedExecutionSucceeded => {
+            HistoryEventKind::DetachedExecutionSucceeded(ExecutionSucceededHistoryPayload {
+                canonical_action_id: update.action_id.clone(),
+                payload_preview: payload_preview.unwrap_or_else(|| {
+                    build_payload_preview("", format!("execution://{}/result", update.execution_id))
+                }),
+            })
+        }
+        pb::ExecutionUpdateKind::DetachedExecutionFailed => {
+            HistoryEventKind::DetachedExecutionFailed(ExecutionFailedHistoryPayload {
+                canonical_action_id: update.action_id.clone(),
+                message: update.message.clone(),
+                payload_preview,
+            })
+        }
+        pb::ExecutionUpdateKind::ExecutionRejected | pb::ExecutionUpdateKind::Unspecified => {
+            HistoryEventKind::ExecutionRejected(ExecutionRejectedHistoryPayload {
+                canonical_action_id: update.action_id.clone(),
+                message: update.message.clone(),
+            })
+        }
+    }
 }
 
 fn active_agent_profile_ref(state: &SessionState) -> String {

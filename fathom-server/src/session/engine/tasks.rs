@@ -3,182 +3,273 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 use tonic::Status;
 
+use crate::agent::ActionInvocation;
 use crate::environment::{
     EnvironmentActionSubmission, EnvironmentActorHandle, EnvironmentCommittedAction,
-    EnvironmentRegistry,
+    EnvironmentRegistry, RequestedExecutionMode, requested_execution_mode_from_args_json,
 };
 use crate::history;
 use crate::history::build_payload_preview;
 use crate::pb;
 use crate::runtime::Runtime;
-use crate::session::diagnostics::task_to_json;
-use crate::session::payload_lookup::resolve_from_task;
-use crate::session::state::{InFlightActionState, SessionState};
-use crate::session::task_context::TaskExecutionContext;
-use crate::util::{now_unix_ms, task_status_label};
+use crate::session::diagnostics::execution_to_json;
+use crate::session::execution_context::ExecutionContext;
+use crate::session::payload_lookup::resolve_from_execution;
+use crate::session::state::{ActiveExecutionState, InFlightActionState, SessionState};
+use crate::util::{execution_status_label, now_unix_ms};
+use fathom_env::ActionModeSupport;
 
-use super::events::{emit_event, enqueue_trigger};
+use super::events::{emit_event, emit_execution_update_event, enqueue_trigger};
 
-pub(super) fn queue_task(
+pub(super) struct QueuedExecution {
+    pub(super) execution: pb::Execution,
+    pub(super) outcome: QueuedExecutionOutcome,
+}
+
+pub(super) enum QueuedExecutionOutcome {
+    AwaitAccepted,
+    DetachedAccepted,
+    Rejected,
+}
+
+pub(super) enum CommitTurnPolicy {
+    ResumeNow,
+    DeferUntilFutureTrigger,
+}
+
+pub(super) fn queue_execution(
     runtime: &Runtime,
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
     environment_handles: &HashMap<String, EnvironmentActorHandle>,
-    action_id: String,
-    args_json: String,
-) -> pb::Task {
-    let task_id = runtime.next_task_id();
+    action_invocation: ActionInvocation,
+) -> QueuedExecution {
+    let ActionInvocation {
+        action_id,
+        args_json,
+        call_key,
+        call_id,
+    } = action_invocation;
+    let execution_id = runtime.next_execution_id();
     let now = now_unix_ms();
+    let requested_mode = requested_execution_mode_from_args_json(&args_json);
 
-    let resolved = EnvironmentRegistry::resolve(&action_id);
-
-    let mut task = pb::Task {
-        task_id: task_id.clone(),
+    let mut execution = pb::Execution {
+        execution_id: execution_id.clone(),
         session_id: state.session_id.clone(),
         action_id: action_id.clone(),
         args_json: args_json.clone(),
-        status: pb::TaskStatus::Running as i32,
+        status: pb::ExecutionStatus::Running as i32,
         result_message: String::new(),
         created_at_unix_ms: now,
         updated_at_unix_ms: now,
     };
+    let mut outcome = QueuedExecutionOutcome::Rejected;
 
-    if let Some(resolved_action) = resolved {
-        if !state
-            .engaged_environment_ids
-            .contains(&resolved_action.environment_id)
-        {
-            task.status = pb::TaskStatus::Failed as i32;
-            task.result_message = format!(
-                "environment `{}` is not engaged for this session",
-                resolved_action.environment_id
-            );
-        } else if let Some(handle) = environment_handles.get(&resolved_action.environment_id) {
-            let env_seq = state.allocate_environment_seq(&resolved_action.environment_id);
-            let execution_context = TaskExecutionContext::from_state(state);
+    match requested_mode {
+        Ok(requested_mode) => {
+            let resolved = EnvironmentRegistry::resolve(&action_id);
+            if let Some(resolved_action) = resolved {
+                if !state
+                    .engaged_environment_ids
+                    .contains(&resolved_action.environment_id)
+                {
+                    execution.status = pb::ExecutionStatus::Failed as i32;
+                    execution.result_message = format!(
+                        "environment `{}` is not engaged for this session",
+                        resolved_action.environment_id
+                    );
+                } else if requested_mode == RequestedExecutionMode::Detach
+                    && resolved_action.mode_support != ActionModeSupport::AwaitOrDetach
+                {
+                    execution.status = pb::ExecutionStatus::Failed as i32;
+                    execution.result_message = format!(
+                        "detach is not allowed for `{}`; use await",
+                        resolved_action.canonical_action_id
+                    );
+                } else if let Some(handle) =
+                    environment_handles.get(&resolved_action.environment_id)
+                {
+                    let env_seq = state.allocate_environment_seq(&resolved_action.environment_id);
+                    let execution_context = ExecutionContext::from_state(state);
 
-            let args_preview = serde_json::to_string(&build_payload_preview(
-                &task.args_json,
-                format!("task://{}/args", task.task_id),
-            ))
-            .unwrap_or_else(|_| "{\"head\":\"<unavailable>\",\"tail\":\"\"}".to_string());
+                    let args_preview = serde_json::to_string(&build_payload_preview(
+                        &execution.args_json,
+                        format!("execution://{}/args", execution.execution_id),
+                    ))
+                    .unwrap_or_else(|_| "{\"head\":\"<unavailable>\",\"tail\":\"\"}".to_string());
 
-            state.in_flight_actions.insert(
-                task_id.clone(),
-                InFlightActionState {
-                    task_id: task_id.clone(),
-                    canonical_action_id: resolved_action.canonical_action_id.clone(),
-                    environment_id: resolved_action.environment_id.clone(),
-                    action_name: resolved_action.action_name.clone(),
-                    env_seq,
-                    status: "executing".to_string(),
-                    submitted_at_unix_ms: now,
-                    args_preview,
-                },
-            );
+                    state.active_executions.insert(
+                        execution_id.clone(),
+                        ActiveExecutionState {
+                            requested_mode,
+                            call_key: call_key.clone(),
+                            call_id: call_id.clone(),
+                        },
+                    );
 
-            let submission = EnvironmentActionSubmission {
-                task_id: task_id.clone(),
-                env_seq,
-                resolved_action,
-                args_json: task.args_json.clone(),
-                execution_context,
-            };
+                    if requested_mode == RequestedExecutionMode::Await {
+                        state.in_flight_actions.insert(
+                            execution_id.clone(),
+                            InFlightActionState {
+                                execution_id: execution_id.clone(),
+                                canonical_action_id: resolved_action.canonical_action_id.clone(),
+                                environment_id: resolved_action.environment_id.clone(),
+                                action_name: resolved_action.action_name.clone(),
+                                env_seq,
+                                status: "executing".to_string(),
+                                submitted_at_unix_ms: now,
+                                args_preview,
+                            },
+                        );
+                        outcome = QueuedExecutionOutcome::AwaitAccepted;
+                    } else {
+                        outcome = QueuedExecutionOutcome::DetachedAccepted;
+                    }
 
-            let handle = handle.clone();
-            tokio::spawn(async move {
-                handle.submit(submission).await;
-            });
-        } else {
-            task.status = pb::TaskStatus::Failed as i32;
-            task.result_message = format!(
-                "environment runtime `{}` is unavailable",
-                resolved_action.environment_id
-            );
+                    let submission = EnvironmentActionSubmission {
+                        execution_id: execution_id.clone(),
+                        env_seq,
+                        resolved_action,
+                        args_json: execution.args_json.clone(),
+                        execution_context,
+                    };
+
+                    let handle = handle.clone();
+                    tokio::spawn(async move {
+                        handle.submit(submission).await;
+                    });
+                } else {
+                    execution.status = pb::ExecutionStatus::Failed as i32;
+                    execution.result_message = format!(
+                        "environment runtime `{}` is unavailable",
+                        resolved_action.environment_id
+                    );
+                }
+            } else {
+                execution.status = pb::ExecutionStatus::Failed as i32;
+                execution.result_message = format!("unknown action `{action_id}`");
+            }
         }
-    } else {
-        task.status = pb::TaskStatus::Failed as i32;
-        task.result_message = format!("unknown action `{action_id}`");
+        Err(error) => {
+            execution.status = pb::ExecutionStatus::Failed as i32;
+            execution.result_message = error;
+        }
     }
 
-    state.tasks.insert(task_id.clone(), task.clone());
+    state
+        .executions
+        .insert(execution_id.clone(), execution.clone());
 
     emit_event(
         events_tx,
         &state.session_id,
-        pb::session_event::Kind::TaskStateChanged(pb::TaskStateChangedEvent {
-            task: Some(task.clone()),
+        pb::session_event::Kind::ExecutionStateChanged(pb::ExecutionStateChangedEvent {
+            execution: Some(execution.clone()),
         }),
     );
 
-    history::append_task_started_history(state, &task);
+    history::append_execution_requested_history(state, &execution);
     runtime.diagnostics().append_session_record(
         &state.session_id,
         serde_json::json!({
             "ts_unix_ms": now_unix_ms(),
-            "event": "task.started",
+            "event": "execution.started",
             "session_id": state.session_id,
-            "task": task_to_json(&task),
+            "execution": execution_to_json(&execution),
         }),
     );
 
-    if task.status == pb::TaskStatus::Failed as i32 {
-        history::append_task_finished_history(state, &task);
+    if matches!(outcome, QueuedExecutionOutcome::Rejected) {
         runtime.diagnostics().append_session_record(
             &state.session_id,
             serde_json::json!({
                 "ts_unix_ms": now_unix_ms(),
-                "event": "task.finished",
+                "event": "execution.rejected",
                 "session_id": state.session_id,
-                "task": task_to_json(&task),
+                "execution": execution_to_json(&execution),
             }),
         );
-        enqueue_task_done_trigger(runtime, state, events_tx, &task);
+        enqueue_execution_update_trigger(
+            runtime,
+            state,
+            events_tx,
+            build_execution_update_trigger(
+                runtime,
+                &execution.execution_id,
+                &execution.action_id,
+                pb::ExecutionUpdateKind::ExecutionRejected,
+                execution.result_message.clone(),
+                String::new(),
+            ),
+        );
+    } else if matches!(outcome, QueuedExecutionOutcome::DetachedAccepted) {
+        enqueue_execution_update_trigger(
+            runtime,
+            state,
+            events_tx,
+            build_execution_update_trigger(
+                runtime,
+                &execution.execution_id,
+                &execution.action_id,
+                pb::ExecutionUpdateKind::ExecutionDetached,
+                String::new(),
+                String::new(),
+            ),
+        );
     }
 
-    task
+    QueuedExecution { execution, outcome }
 }
 
-pub(super) fn cancel_task(
+pub(super) fn cancel_execution(
     _runtime: &Runtime,
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
-    task_id: &str,
-) -> Result<pb::CancelTaskResponse, Status> {
-    let Some(task) = state.tasks.get_mut(task_id) else {
-        return Err(Status::not_found("task not found"));
+    execution_id: &str,
+) -> Result<pb::CancelExecutionResponse, Status> {
+    let Some(execution) = state.executions.get(execution_id) else {
+        return Err(Status::not_found("execution not found"));
     };
 
-    let status = pb::TaskStatus::try_from(task.status).unwrap_or(pb::TaskStatus::Unspecified);
+    let status =
+        pb::ExecutionStatus::try_from(execution.status).unwrap_or(pb::ExecutionStatus::Unspecified);
     let is_terminal = matches!(
         status,
-        pb::TaskStatus::Succeeded | pb::TaskStatus::Failed | pb::TaskStatus::Canceled
+        pb::ExecutionStatus::Succeeded
+            | pb::ExecutionStatus::Failed
+            | pb::ExecutionStatus::Canceled
     );
     if is_terminal {
-        return Ok(pb::CancelTaskResponse {
+        return Ok(pb::CancelExecutionResponse {
             canceled: false,
-            task: Some(task.clone()),
+            execution: Some(execution.clone()),
         });
     }
 
-    state.in_flight_actions.remove(task_id);
+    state.in_flight_actions.remove(execution_id);
+    state.active_executions.remove(execution_id);
 
-    task.status = pb::TaskStatus::Canceled as i32;
-    task.result_message = "canceled by request".to_string();
-    task.updated_at_unix_ms = now_unix_ms();
-    let task_snapshot = task.clone();
+    let execution = state
+        .executions
+        .get_mut(execution_id)
+        .expect("execution must exist after terminality check");
+    execution.status = pb::ExecutionStatus::Canceled as i32;
+    execution.result_message = "canceled by request".to_string();
+    execution.updated_at_unix_ms = now_unix_ms();
+    let execution_snapshot = execution.clone();
 
     emit_event(
         events_tx,
         &state.session_id,
-        pb::session_event::Kind::TaskStateChanged(pb::TaskStateChangedEvent {
-            task: Some(task_snapshot.clone()),
+        pb::session_event::Kind::ExecutionStateChanged(pb::ExecutionStateChangedEvent {
+            execution: Some(execution_snapshot.clone()),
         }),
     );
 
-    Ok(pb::CancelTaskResponse {
+    Ok(pb::CancelExecutionResponse {
         canceled: true,
-        task: Some(task_snapshot),
+        execution: Some(execution_snapshot),
     })
 }
 
@@ -187,96 +278,186 @@ pub(super) fn handle_environment_action_committed(
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
     committed: EnvironmentCommittedAction,
-) {
+) -> CommitTurnPolicy {
     if !state
         .engaged_environment_ids
         .contains(&committed.environment_id)
     {
-        return;
+        return CommitTurnPolicy::DeferUntilFutureTrigger;
     }
 
     state
         .environment_snapshots
         .insert(committed.environment_id.clone(), committed.state_snapshot);
 
-    let Some(task) = state.tasks.get_mut(&committed.task_id) else {
-        return;
+    state.in_flight_actions.remove(&committed.execution_id);
+    let execution_state = state.active_executions.remove(&committed.execution_id);
+    let Some(execution) = state.executions.get_mut(&committed.execution_id) else {
+        return CommitTurnPolicy::DeferUntilFutureTrigger;
     };
 
-    state.in_flight_actions.remove(&committed.task_id);
-
-    let status = pb::TaskStatus::try_from(task.status).unwrap_or(pb::TaskStatus::Unspecified);
-    if status == pb::TaskStatus::Canceled {
-        return;
+    let status =
+        pb::ExecutionStatus::try_from(execution.status).unwrap_or(pb::ExecutionStatus::Unspecified);
+    if status == pb::ExecutionStatus::Canceled {
+        return CommitTurnPolicy::DeferUntilFutureTrigger;
     }
-    if !matches!(status, pb::TaskStatus::Running | pb::TaskStatus::Pending) {
-        return;
+    if !matches!(
+        status,
+        pb::ExecutionStatus::Running | pb::ExecutionStatus::Pending
+    ) {
+        return CommitTurnPolicy::DeferUntilFutureTrigger;
     }
 
-    task.status = if committed.succeeded {
-        pb::TaskStatus::Succeeded as i32
+    execution.status = if committed.succeeded {
+        pb::ExecutionStatus::Succeeded as i32
     } else {
-        pb::TaskStatus::Failed as i32
+        pb::ExecutionStatus::Failed as i32
     };
-    task.result_message = committed.message;
-    task.updated_at_unix_ms = now_unix_ms();
-    let task_snapshot = task.clone();
+    execution.result_message = committed.message;
+    execution.updated_at_unix_ms = now_unix_ms();
+    let execution_snapshot = execution.clone();
 
     emit_event(
         events_tx,
         &state.session_id,
-        pb::session_event::Kind::TaskStateChanged(pb::TaskStateChangedEvent {
-            task: Some(task_snapshot.clone()),
+        pb::session_event::Kind::ExecutionStateChanged(pb::ExecutionStateChangedEvent {
+            execution: Some(execution_snapshot.clone()),
         }),
     );
-    history::append_task_finished_history(state, &task_snapshot);
     runtime.diagnostics().append_session_record(
         &state.session_id,
         serde_json::json!({
             "ts_unix_ms": now_unix_ms(),
-            "event": "task.finished",
+            "event": "execution.finished",
             "session_id": state.session_id,
-            "task": task_to_json(&task_snapshot),
+            "execution": execution_to_json(&execution_snapshot),
         }),
     );
-    if let Some(lookup) = resolve_from_task(&task_snapshot) {
+    if let Some(lookup) = resolve_from_execution(&execution_snapshot) {
         state.push_pending_payload_lookup(lookup);
     }
 
-    enqueue_task_done_trigger(runtime, state, events_tx, &task_snapshot);
+    let requested_mode = execution_state
+        .as_ref()
+        .map(|state| state.requested_mode)
+        .or_else(|| requested_execution_mode_from_args_json(&execution_snapshot.args_json).ok())
+        .unwrap_or(RequestedExecutionMode::Await);
+    let (trigger_kind, phase, policy) =
+        outcome_phase_for_commit(requested_mode, committed.succeeded);
+    let detail = settled_execution_output(&execution_snapshot, phase);
+
+    emit_execution_update_event(
+        events_tx,
+        &state.session_id,
+        phase,
+        execution_state
+            .as_ref()
+            .map(|item| item.call_key.clone())
+            .unwrap_or_default(),
+        execution_state
+            .as_ref()
+            .and_then(|item| item.call_id.clone()),
+        Some(execution_snapshot.action_id.clone()),
+        Some(execution_snapshot.execution_id.clone()),
+        String::new(),
+        String::new(),
+        detail,
+    );
+    enqueue_execution_update_trigger(
+        runtime,
+        state,
+        events_tx,
+        build_execution_update_trigger(
+            runtime,
+            &execution_snapshot.execution_id,
+            &execution_snapshot.action_id,
+            trigger_kind,
+            if committed.succeeded {
+                String::new()
+            } else {
+                execution_snapshot.result_message.clone()
+            },
+            execution_snapshot.result_message.clone(),
+        ),
+    );
+    policy
 }
 
-fn enqueue_task_done_trigger(
-    runtime: &Runtime,
+fn enqueue_execution_update_trigger(
+    _runtime: &Runtime,
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
-    task: &pb::Task,
+    trigger: pb::Trigger,
 ) {
-    let trigger = pb::Trigger {
-        trigger_id: runtime.next_trigger_id(),
-        created_at_unix_ms: now_unix_ms(),
-        kind: Some(pb::trigger::Kind::TaskDone(pb::TaskDoneTrigger {
-            task_id: task.task_id.clone(),
-            status: task.status,
-            result_message: task.result_message.clone(),
-        })),
-    };
     enqueue_trigger(state, events_tx, trigger);
 }
 
-pub(super) fn queued_action_output(task: &pb::Task, call_id: Option<&str>) -> String {
-    let status = pb::TaskStatus::try_from(task.status)
-        .map(task_status_label)
-        .unwrap_or("unknown");
-    let call_suffix = call_id
-        .map(|value| format!(" call_id={value}"))
-        .unwrap_or_default();
-    let reasoning_suffix = extract_reasoning_suffix(&task.args_json);
+fn build_execution_update_trigger(
+    runtime: &Runtime,
+    execution_id: &str,
+    action_id: &str,
+    kind: pb::ExecutionUpdateKind,
+    message: String,
+    payload_message: String,
+) -> pb::Trigger {
+    pb::Trigger {
+        trigger_id: runtime.next_trigger_id(),
+        created_at_unix_ms: now_unix_ms(),
+        kind: Some(pb::trigger::Kind::ExecutionUpdate(
+            pb::ExecutionUpdateTrigger {
+                execution_id: execution_id.to_string(),
+                action_id: action_id.to_string(),
+                kind: kind as i32,
+                message,
+                payload_message,
+            },
+        )),
+    }
+}
 
-    format!(
-        "queued action `{}` as {} ({status}){}{}",
-        task.action_id, task.task_id, call_suffix, reasoning_suffix
-    )
+pub(super) fn settled_execution_output(
+    execution: &pb::Execution,
+    phase: pb::ExecutionUpdatePhase,
+) -> String {
+    let status = pb::ExecutionStatus::try_from(execution.status)
+        .map(execution_status_label)
+        .unwrap_or("unknown");
+    match phase {
+        pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded
+        | pb::ExecutionUpdatePhase::DetachedExecutionSucceeded => format!(
+            "{} execution `{}` finished as {}",
+            phase_label(phase),
+            execution.execution_id,
+            status
+        ),
+        pb::ExecutionUpdatePhase::AwaitedExecutionFailed
+        | pb::ExecutionUpdatePhase::DetachedExecutionFailed => {
+            format!(
+                "{} execution `{}` finished as {} message={}",
+                phase_label(phase),
+                execution.execution_id,
+                status,
+                truncate_inline(&execution.result_message, 180)
+            )
+        }
+        pb::ExecutionUpdatePhase::ExecutionDetached => {
+            format!(
+                "{} execution `{}`",
+                phase_label(phase),
+                execution.execution_id
+            )
+        }
+        pb::ExecutionUpdatePhase::ExecutionRejected => format!(
+            "{} execution `{}` message={}",
+            phase_label(phase),
+            execution.execution_id,
+            truncate_inline(&execution.result_message, 180)
+        ),
+        _ => format!(
+            "execution `{}` finished as {}",
+            execution.execution_id, status
+        ),
+    }
 }
 
 fn extract_reasoning_suffix(args_json: &str) -> String {
@@ -304,4 +485,381 @@ fn extract_reasoning_suffix(args_json: &str) -> String {
         reasoning.to_string()
     };
     format!(" reasoning={reasoning}")
+}
+
+pub(super) fn queued_action_output(
+    execution: &pb::Execution,
+    call_id: Option<&str>,
+    requested_mode: RequestedExecutionMode,
+) -> String {
+    let status = pb::ExecutionStatus::try_from(execution.status)
+        .map(execution_status_label)
+        .unwrap_or("unknown");
+    let call_suffix = call_id
+        .map(|value| format!(" call_id={value}"))
+        .unwrap_or_default();
+    let reasoning_suffix = extract_reasoning_suffix(&execution.args_json);
+    let mode_suffix = if requested_mode == RequestedExecutionMode::Detach {
+        " mode=detach"
+    } else {
+        ""
+    };
+
+    format!(
+        "submitted action `{}` as {} ({status}){}{}{}",
+        execution.action_id, execution.execution_id, call_suffix, mode_suffix, reasoning_suffix
+    )
+}
+
+fn outcome_phase_for_commit(
+    requested_mode: RequestedExecutionMode,
+    succeeded: bool,
+) -> (
+    pb::ExecutionUpdateKind,
+    pb::ExecutionUpdatePhase,
+    CommitTurnPolicy,
+) {
+    match (requested_mode, succeeded) {
+        (RequestedExecutionMode::Await, true) => (
+            pb::ExecutionUpdateKind::AwaitedExecutionSucceeded,
+            pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded,
+            CommitTurnPolicy::ResumeNow,
+        ),
+        (RequestedExecutionMode::Await, false) => (
+            pb::ExecutionUpdateKind::AwaitedExecutionFailed,
+            pb::ExecutionUpdatePhase::AwaitedExecutionFailed,
+            CommitTurnPolicy::ResumeNow,
+        ),
+        (RequestedExecutionMode::Detach, true) => (
+            pb::ExecutionUpdateKind::DetachedExecutionSucceeded,
+            pb::ExecutionUpdatePhase::DetachedExecutionSucceeded,
+            CommitTurnPolicy::DeferUntilFutureTrigger,
+        ),
+        (RequestedExecutionMode::Detach, false) => (
+            pb::ExecutionUpdateKind::DetachedExecutionFailed,
+            pb::ExecutionUpdatePhase::DetachedExecutionFailed,
+            CommitTurnPolicy::DeferUntilFutureTrigger,
+        ),
+    }
+}
+
+fn phase_label(phase: pb::ExecutionUpdatePhase) -> &'static str {
+    match phase {
+        pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded => "awaited_execution_succeeded",
+        pb::ExecutionUpdatePhase::AwaitedExecutionFailed => "awaited_execution_failed",
+        pb::ExecutionUpdatePhase::ExecutionDetached => "execution_detached",
+        pb::ExecutionUpdatePhase::DetachedExecutionSucceeded => "detached_execution_succeeded",
+        pb::ExecutionUpdatePhase::DetachedExecutionFailed => "detached_execution_failed",
+        pb::ExecutionUpdatePhase::ExecutionRejected => "execution_rejected",
+        pb::ExecutionUpdatePhase::ArgumentsDelta => "arguments_delta",
+        pb::ExecutionUpdatePhase::ArgumentsReady => "arguments_ready",
+        pb::ExecutionUpdatePhase::Unspecified => "unspecified",
+    }
+}
+
+fn truncate_inline(value: &str, max_chars: usize) -> String {
+    let value = value.replace('\n', "\\n");
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeSet, HashMap};
+
+    use tokio::sync::{broadcast, mpsc};
+
+    use super::{
+        CommitTurnPolicy, QueuedExecutionOutcome, handle_environment_action_committed,
+        queue_execution,
+    };
+    use crate::agent::ActionInvocation;
+    use crate::environment::{
+        EnvironmentCommittedAction, EnvironmentRegistry, RequestedExecutionMode,
+        spawn_environment_actor,
+    };
+    use crate::pb;
+    use crate::runtime::Runtime;
+    use crate::session::state::{ActiveExecutionState, InFlightActionState};
+    use crate::session::{SessionCommand, SessionState};
+    use crate::util::{default_agent_profile, default_user_profile};
+
+    fn test_state() -> SessionState {
+        let user_id = "user-a".to_string();
+        SessionState::new(
+            "session-1".to_string(),
+            "agent-a".to_string(),
+            vec![user_id.clone()],
+            default_agent_profile("agent-a"),
+            HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
+            EnvironmentRegistry::default_engaged_environment_ids()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            EnvironmentRegistry::initial_environment_snapshots()
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
+        )
+    }
+
+    #[test]
+    fn queue_execution_rejects_illegal_detach_and_enqueues_execution_rejected_trigger() {
+        let runtime = Runtime::new(2, 10);
+        let (events_tx, _) = broadcast::channel(16);
+        let mut state = test_state();
+        let environment_handles = HashMap::new();
+
+        let queued = queue_execution(
+            &runtime,
+            &mut state,
+            &events_tx,
+            &environment_handles,
+            ActionInvocation {
+                action_id: "filesystem__list".to_string(),
+                args_json:
+                    r#"{"path":".","reasoning":"inspect workspace","execution_mode":"detach"}"#
+                        .to_string(),
+                call_key: "call-key-1".to_string(),
+                call_id: Some("call-id-1".to_string()),
+            },
+        );
+
+        assert!(matches!(queued.outcome, QueuedExecutionOutcome::Rejected));
+        assert!(state.in_flight_actions.is_empty());
+
+        let trigger = state
+            .trigger_queue
+            .back()
+            .expect("execution_rejected trigger");
+        let pb::trigger::Kind::ExecutionUpdate(update) =
+            trigger.kind.as_ref().expect("trigger kind")
+        else {
+            panic!("expected execution update trigger");
+        };
+        assert_eq!(update.execution_id, queued.execution.execution_id);
+        assert_eq!(update.action_id, "filesystem__list");
+        assert_eq!(
+            pb::ExecutionUpdateKind::try_from(update.kind).expect("execution update kind"),
+            pb::ExecutionUpdateKind::ExecutionRejected
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_execution_detach_acceptance_enqueues_execution_detached_without_blocking() {
+        let runtime = Runtime::new(2, 10);
+        let (events_tx, _) = broadcast::channel(16);
+        let mut state = test_state();
+        let (session_command_tx, _session_command_rx) = mpsc::channel::<SessionCommand>(16);
+        let shell_snapshot = state
+            .environment_snapshots
+            .get("shell")
+            .cloned()
+            .expect("shell snapshot");
+        let shell_handle = spawn_environment_actor(
+            runtime.clone(),
+            "shell".to_string(),
+            shell_snapshot,
+            session_command_tx,
+        );
+        let environment_handles = HashMap::from([("shell".to_string(), shell_handle)]);
+
+        let queued = queue_execution(
+            &runtime,
+            &mut state,
+            &events_tx,
+            &environment_handles,
+            ActionInvocation {
+                action_id: "shell__run".to_string(),
+                args_json:
+                    r#"{"command":"pwd","reasoning":"run asynchronously","execution_mode":"detach"}"#
+                        .to_string(),
+                call_key: "call-key-1".to_string(),
+                call_id: Some("call-id-1".to_string()),
+            },
+        );
+
+        assert!(matches!(
+            queued.outcome,
+            QueuedExecutionOutcome::DetachedAccepted
+        ));
+        assert!(state.in_flight_actions.is_empty());
+        assert!(
+            state
+                .active_executions
+                .contains_key(&queued.execution.execution_id)
+        );
+
+        let trigger = state
+            .trigger_queue
+            .back()
+            .expect("execution_detached trigger");
+        let pb::trigger::Kind::ExecutionUpdate(update) =
+            trigger.kind.as_ref().expect("trigger kind")
+        else {
+            panic!("expected execution update trigger");
+        };
+        assert_eq!(
+            pb::ExecutionUpdateKind::try_from(update.kind).expect("execution update kind"),
+            pb::ExecutionUpdateKind::ExecutionDetached
+        );
+    }
+
+    #[test]
+    fn awaited_commit_resumes_agent_and_emits_awaited_execution_trigger() {
+        let runtime = Runtime::new(2, 10);
+        let (events_tx, mut events_rx) = broadcast::channel(16);
+        let mut state = test_state();
+        let created_at = 100;
+        let updated_at = 110;
+        let execution_id = "execution-1".to_string();
+        let execution = pb::Execution {
+            execution_id: execution_id.clone(),
+            session_id: state.session_id.clone(),
+            action_id: "filesystem__list".to_string(),
+            args_json: r#"{"path":".","reasoning":"inspect workspace"}"#.to_string(),
+            status: pb::ExecutionStatus::Running as i32,
+            result_message: String::new(),
+            created_at_unix_ms: created_at,
+            updated_at_unix_ms: updated_at,
+        };
+        state.executions.insert(execution_id.clone(), execution);
+        state.in_flight_actions.insert(
+            execution_id.clone(),
+            InFlightActionState {
+                execution_id: execution_id.clone(),
+                canonical_action_id: "filesystem__list".to_string(),
+                environment_id: "filesystem".to_string(),
+                action_name: "list".to_string(),
+                env_seq: 1,
+                status: "executing".to_string(),
+                submitted_at_unix_ms: created_at,
+                args_preview: "{}".to_string(),
+            },
+        );
+        state.active_executions.insert(
+            execution_id.clone(),
+            ActiveExecutionState {
+                requested_mode: RequestedExecutionMode::Await,
+                call_key: "call-key-1".to_string(),
+                call_id: Some("call-id-1".to_string()),
+            },
+        );
+
+        let committed = EnvironmentCommittedAction {
+            execution_id: execution_id.clone(),
+            environment_id: "filesystem".to_string(),
+            succeeded: true,
+            message: r#"{"entries":["Cargo.toml"]}"#.to_string(),
+            state_snapshot: state
+                .environment_snapshots
+                .get("filesystem")
+                .cloned()
+                .expect("filesystem snapshot"),
+        };
+
+        let policy =
+            handle_environment_action_committed(&runtime, &mut state, &events_tx, committed);
+
+        assert!(matches!(policy, CommitTurnPolicy::ResumeNow));
+        let trigger = state
+            .trigger_queue
+            .back()
+            .expect("awaited execution trigger");
+        let pb::trigger::Kind::ExecutionUpdate(update) =
+            trigger.kind.as_ref().expect("trigger kind")
+        else {
+            panic!("expected execution update trigger");
+        };
+        assert_eq!(
+            pb::ExecutionUpdateKind::try_from(update.kind).expect("execution update kind"),
+            pb::ExecutionUpdateKind::AwaitedExecutionSucceeded
+        );
+        let execution_update =
+            collect_execution_update_event(&mut events_rx).expect("execution update event");
+        assert_eq!(
+            execution_update.phase,
+            pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded as i32
+        );
+    }
+
+    #[test]
+    fn detached_commit_defers_agent_wakeup_and_emits_detached_execution_trigger() {
+        let runtime = Runtime::new(2, 10);
+        let (events_tx, mut events_rx) = broadcast::channel(16);
+        let mut state = test_state();
+        let created_at = 100;
+        let updated_at = 110;
+        let execution_id = "execution-2".to_string();
+        let execution = pb::Execution {
+            execution_id: execution_id.clone(),
+            session_id: state.session_id.clone(),
+            action_id: "shell__run".to_string(),
+            args_json:
+                r#"{"command":"pwd","reasoning":"run asynchronously","execution_mode":"detach"}"#
+                    .to_string(),
+            status: pb::ExecutionStatus::Running as i32,
+            result_message: String::new(),
+            created_at_unix_ms: created_at,
+            updated_at_unix_ms: updated_at,
+        };
+        state.executions.insert(execution_id.clone(), execution);
+        state.active_executions.insert(
+            execution_id.clone(),
+            ActiveExecutionState {
+                requested_mode: RequestedExecutionMode::Detach,
+                call_key: "call-key-2".to_string(),
+                call_id: Some("call-id-2".to_string()),
+            },
+        );
+
+        let committed = EnvironmentCommittedAction {
+            execution_id: execution_id.clone(),
+            environment_id: "shell".to_string(),
+            succeeded: true,
+            message: r#"{"stdout":"/tmp"}"#.to_string(),
+            state_snapshot: state
+                .environment_snapshots
+                .get("shell")
+                .cloned()
+                .expect("shell snapshot"),
+        };
+
+        let policy =
+            handle_environment_action_committed(&runtime, &mut state, &events_tx, committed);
+
+        assert!(matches!(policy, CommitTurnPolicy::DeferUntilFutureTrigger));
+        let trigger = state
+            .trigger_queue
+            .back()
+            .expect("detached execution trigger");
+        let pb::trigger::Kind::ExecutionUpdate(update) =
+            trigger.kind.as_ref().expect("trigger kind")
+        else {
+            panic!("expected execution update trigger");
+        };
+        assert_eq!(
+            pb::ExecutionUpdateKind::try_from(update.kind).expect("execution update kind"),
+            pb::ExecutionUpdateKind::DetachedExecutionSucceeded
+        );
+        let execution_update =
+            collect_execution_update_event(&mut events_rx).expect("execution update event");
+        assert_eq!(
+            execution_update.phase,
+            pb::ExecutionUpdatePhase::DetachedExecutionSucceeded as i32
+        );
+    }
+
+    fn collect_execution_update_event(
+        events_rx: &mut broadcast::Receiver<pb::SessionEvent>,
+    ) -> Option<pb::ExecutionUpdateEvent> {
+        while let Ok(event) = events_rx.try_recv() {
+            if let Some(pb::session_event::Kind::ExecutionUpdate(item)) = event.kind {
+                return Some(item);
+            }
+        }
+        None
+    }
 }

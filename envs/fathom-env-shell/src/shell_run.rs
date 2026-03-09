@@ -33,7 +33,7 @@ impl Action for ShellRunAction {
                 "additionalProperties": false
             }),
             discovery: false,
-            mode_support: ActionModeSupport::AwaitOnly,
+            mode_support: ActionModeSupport::AwaitOrDetach,
             max_timeout_ms: ACTION_MAX_TIMEOUT_MS,
             desired_timeout_ms: Some(ACTION_DESIRED_TIMEOUT_MS),
         }

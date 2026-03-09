@@ -7,21 +7,21 @@ service RuntimeService {
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc EnqueueTrigger(EnqueueTriggerRequest) returns (EnqueueTriggerResponse);
   rpc AttachSessionEvents(AttachSessionEventsRequest) returns (stream SessionEvent);
-  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
-  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+  rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
   rpc GetUserProfile(GetUserProfileRequest) returns (GetUserProfileResponse);
   rpc UpsertUserProfile(UpsertUserProfileRequest) returns (UpsertUserProfileResponse);
   rpc GetAgentProfile(GetAgentProfileRequest) returns (GetAgentProfileResponse);
   rpc UpsertAgentProfile(UpsertAgentProfileRequest) returns (UpsertAgentProfileResponse);
 }
 
-enum TaskStatus {
-  TASK_STATUS_UNSPECIFIED = 0;
-  TASK_STATUS_PENDING = 1;
-  TASK_STATUS_RUNNING = 2;
-  TASK_STATUS_SUCCEEDED = 3;
-  TASK_STATUS_FAILED = 4;
-  TASK_STATUS_CANCELED = 5;
+enum ExecutionStatus {
+  EXECUTION_STATUS_UNSPECIFIED = 0;
+  EXECUTION_STATUS_PENDING = 1;
+  EXECUTION_STATUS_RUNNING = 2;
+  EXECUTION_STATUS_SUCCEEDED = 3;
+  EXECUTION_STATUS_FAILED = 4;
+  EXECUTION_STATUS_CANCELED = 5;
 }
 
 enum RefreshScope {
@@ -54,12 +54,12 @@ message UserProfile {
   int64 updated_at_unix_ms = 7;
 }
 
-message Task {
-  string task_id = 1;
+message Execution {
+  string execution_id = 1;
   string session_id = 2;
   string action_id = 3;
   string args_json = 4;
-  TaskStatus status = 5;
+  ExecutionStatus status = 5;
   string result_message = 6;
   int64 created_at_unix_ms = 7;
   int64 updated_at_unix_ms = 8;
@@ -70,10 +70,22 @@ message UserMessageTrigger {
   string text = 2;
 }
 
-message TaskDoneTrigger {
-  string task_id = 1;
-  TaskStatus status = 2;
-  string result_message = 3;
+enum ExecutionUpdateKind {
+  EXECUTION_UPDATE_KIND_UNSPECIFIED = 0;
+  EXECUTION_UPDATE_KIND_AWAITED_EXECUTION_SUCCEEDED = 1;
+  EXECUTION_UPDATE_KIND_AWAITED_EXECUTION_FAILED = 2;
+  EXECUTION_UPDATE_KIND_EXECUTION_DETACHED = 3;
+  EXECUTION_UPDATE_KIND_DETACHED_EXECUTION_SUCCEEDED = 4;
+  EXECUTION_UPDATE_KIND_DETACHED_EXECUTION_FAILED = 5;
+  EXECUTION_UPDATE_KIND_EXECUTION_REJECTED = 6;
+}
+
+message ExecutionUpdateTrigger {
+  string execution_id = 1;
+  string action_id = 2;
+  ExecutionUpdateKind kind = 3;
+  string message = 4;
+  string payload_message = 5;
 }
 
 message HeartbeatTrigger {}
@@ -92,10 +104,10 @@ message Trigger {
   int64 created_at_unix_ms = 2;
   oneof kind {
     UserMessageTrigger user_message = 10;
-    TaskDoneTrigger task_done = 11;
     HeartbeatTrigger heartbeat = 12;
     CronTrigger cron = 13;
     RefreshProfileTrigger refresh_profile = 14;
+    ExecutionUpdateTrigger execution_update = 15;
   }
 }
 
@@ -120,8 +132,8 @@ message AssistantOutputEvent {
   string stream_id = 2;
 }
 
-message TaskStateChangedEvent {
-  Task task = 1;
+message ExecutionStateChangedEvent {
+  Execution execution = 1;
 }
 
 message ProfileRefreshedEvent {
@@ -143,19 +155,24 @@ message SystemNoticeEvent {
   string message = 3;
 }
 
-enum ToolCallPhase {
-  TOOL_CALL_PHASE_UNSPECIFIED = 0;
-  TOOL_CALL_PHASE_ARGUMENTS_DELTA = 1;
-  TOOL_CALL_PHASE_ARGUMENTS_READY = 2;
-  TOOL_CALL_PHASE_QUEUED = 3;
+enum ExecutionUpdatePhase {
+  EXECUTION_UPDATE_PHASE_UNSPECIFIED = 0;
+  EXECUTION_UPDATE_PHASE_ARGUMENTS_DELTA = 1;
+  EXECUTION_UPDATE_PHASE_ARGUMENTS_READY = 2;
+  EXECUTION_UPDATE_PHASE_AWAITED_EXECUTION_SUCCEEDED = 3;
+  EXECUTION_UPDATE_PHASE_AWAITED_EXECUTION_FAILED = 4;
+  EXECUTION_UPDATE_PHASE_EXECUTION_DETACHED = 5;
+  EXECUTION_UPDATE_PHASE_DETACHED_EXECUTION_SUCCEEDED = 6;
+  EXECUTION_UPDATE_PHASE_DETACHED_EXECUTION_FAILED = 7;
+  EXECUTION_UPDATE_PHASE_EXECUTION_REJECTED = 8;
 }
 
-message ToolCallEvent {
-  ToolCallPhase phase = 1;
+message ExecutionUpdateEvent {
+  ExecutionUpdatePhase phase = 1;
   string call_key = 2;
   string call_id = 3;
   string action_id = 4;
-  string task_id = 5;
+  string execution_id = 5;
   string args_delta = 6;
   string args_json = 7;
   string detail = 8;
@@ -189,13 +206,13 @@ message SessionEvent {
     TurnStartedEvent turn_started = 11;
     TurnEndedEvent turn_ended = 12;
     AssistantOutputEvent assistant_output = 13;
-    TaskStateChangedEvent task_state_changed = 14;
+    ExecutionStateChangedEvent execution_state_changed = 14;
     ProfileRefreshedEvent profile_refreshed = 15;
     AgentStreamEvent agent_stream = 16;
     TurnFailureEvent turn_failure = 17;
     AssistantStreamEvent assistant_stream = 18;
     SystemNoticeEvent system_notice = 19;
-    ToolCallEvent tool_call = 20;
+    ExecutionUpdateEvent execution_update = 20;
   }
 }
 
@@ -208,8 +225,8 @@ message SessionSummary {
   repeated UserProfile participant_user_profiles_copy = 6;
   uint64 queued_trigger_count = 7;
   uint64 history_entry_count = 8;
-  uint64 pending_task_count = 9;
-  uint64 running_task_count = 10;
+  uint64 pending_execution_count = 9;
+  uint64 running_execution_count = 10;
 }
 
 message CreateSessionRequest {
@@ -241,22 +258,22 @@ message AttachSessionEventsRequest {
   string session_id = 1;
 }
 
-message ListTasksRequest {
+message ListExecutionsRequest {
   string session_id = 1;
 }
 
-message ListTasksResponse {
-  repeated Task tasks = 1;
+message ListExecutionsResponse {
+  repeated Execution executions = 1;
 }
 
-message CancelTaskRequest {
+message CancelExecutionRequest {
   string session_id = 1;
-  string task_id = 2;
+  string execution_id = 2;
 }
 
-message CancelTaskResponse {
+message CancelExecutionResponse {
   bool canceled = 1;
-  Task task = 2;
+  Execution execution = 2;
 }
 
 message GetUserProfileRequest {

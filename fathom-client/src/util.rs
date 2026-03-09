@@ -1,13 +1,13 @@
 use crate::pb;
 
-pub(crate) fn task_status_label(status: pb::TaskStatus) -> &'static str {
+pub(crate) fn execution_status_label(status: pb::ExecutionStatus) -> &'static str {
     match status {
-        pb::TaskStatus::Unspecified => "unspecified",
-        pb::TaskStatus::Pending => "pending",
-        pb::TaskStatus::Running => "running",
-        pb::TaskStatus::Succeeded => "succeeded",
-        pb::TaskStatus::Failed => "failed",
-        pb::TaskStatus::Canceled => "canceled",
+        pb::ExecutionStatus::Unspecified => "unspecified",
+        pb::ExecutionStatus::Pending => "pending",
+        pb::ExecutionStatus::Running => "running",
+        pb::ExecutionStatus::Succeeded => "succeeded",
+        pb::ExecutionStatus::Failed => "failed",
+        pb::ExecutionStatus::Canceled => "canceled",
     }
 }
 
