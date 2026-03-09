@@ -16,7 +16,8 @@ use crate::agent::types::{
 };
 
 const RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
-const DEFAULT_MODEL: &str = "gpt-5.2-codex";
+const DEFAULT_MODEL: &str = "gpt-5.4";
+const DEFAULT_REASONING_EFFORT: &str = "high";
 const DEFAULT_TIMEOUT_SECS: u64 = 45;
 
 #[derive(Debug, Clone)]
@@ -92,6 +93,9 @@ impl OpenAiModelAdapter {
                 .collect::<Vec<_>>();
             let body = json!({
                 "model": DEFAULT_MODEL,
+                "reasoning": {
+                    "effort": DEFAULT_REASONING_EFFORT,
+                },
                 "stream": true,
                 "input": input_messages,
                 "tools": action_catalog.openai_action_definitions(),
