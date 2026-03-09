@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
@@ -38,18 +38,6 @@ pub(crate) enum SessionCommand {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct InFlightActionState {
-    pub(crate) execution_id: String,
-    pub(crate) canonical_action_id: String,
-    pub(crate) environment_id: String,
-    pub(crate) action_name: String,
-    pub(crate) env_seq: u64,
-    pub(crate) status: String,
-    pub(crate) submitted_at_unix_ms: i64,
-    pub(crate) args_preview: String,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct ActiveExecutionState {
     pub(crate) requested_mode: RequestedExecutionMode,
     pub(crate) call_key: String,
@@ -69,7 +57,7 @@ pub(crate) struct SessionState {
     pub(crate) engaged_environment_ids: BTreeSet<String>,
     pub(crate) environment_snapshots: HashMap<String, EnvironmentSnapshot>,
     pub(crate) next_environment_seq: HashMap<String, u64>,
-    pub(crate) in_flight_actions: HashMap<String, InFlightActionState>,
+    pub(crate) in_flight_actions: HashSet<String>,
     pub(crate) active_executions: HashMap<String, ActiveExecutionState>,
     pub(crate) pending_payload_lookups: Vec<ResolvedPayloadLookup>,
     pub(crate) next_agent_invocation_seq: u64,
@@ -106,7 +94,7 @@ impl SessionState {
             engaged_environment_ids,
             environment_snapshots,
             next_environment_seq,
-            in_flight_actions: HashMap::new(),
+            in_flight_actions: HashSet::new(),
             active_executions: HashMap::new(),
             pending_payload_lookups: Vec::new(),
             next_agent_invocation_seq: 0,

@@ -2,18 +2,17 @@ mod action_catalog;
 mod model_adapter;
 mod openai;
 mod prompt;
-mod prompt_assembler;
+mod prompt_input_builder;
 mod retry;
 mod types;
 
 pub(crate) use types::{
     ActionInvocation, ActionModeSupportSnapshot, AgentTurnOutcome, CapabilityActionSnapshot,
     CapabilityEnvironmentSnapshot, CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot,
-    HarnessContractSnapshot, IdentityEnvelopeSnapshot, InFlightActionHint, ModelDeltaEvent,
-    ModelInvocationOutcome, ParticipantEnvelopeSnapshot, PromptMessage, PromptMessageBundle,
-    ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot,
-    SessionCompactionSnapshot, StreamNote, SummaryBlockRefSnapshot, SystemTimeContext,
-    TurnSnapshot,
+    CompiledPrompt, HarnessContractSnapshot, IdentityEnvelopeSnapshot, ModelDeltaEvent,
+    ModelInvocationOutcome, ParticipantEnvelopeSnapshot, PromptMessage, ResolvedPayloadLookupHint,
+    SessionAnchorSnapshot, SessionBaselineSnapshot, SessionCompactionSnapshot, StreamNote,
+    SummaryBlockRefSnapshot, SystemTimeContext, TurnSnapshot,
 };
 
 use std::sync::Arc;
@@ -22,13 +21,14 @@ use crate::environment::EnvironmentRegistry;
 pub(crate) use action_catalog::SessionActionCatalog;
 use model_adapter::{ModelAdapter, UnavailableModelAdapter};
 use openai::OpenAiModelAdapter;
-use prompt_assembler::PromptAssembler;
+use prompt::PromptCompiler;
+use prompt_input_builder::build_prompt_input;
 
 #[derive(Clone)]
 pub(crate) struct AgentOrchestrator {
     model_adapter: Arc<dyn ModelAdapter>,
     environment_registry: EnvironmentRegistry,
-    prompt_assembler: PromptAssembler,
+    prompt_compiler: PromptCompiler,
 }
 
 impl AgentOrchestrator {
@@ -40,7 +40,7 @@ impl AgentOrchestrator {
         Self::from_parts(
             model_adapter,
             EnvironmentRegistry::new(),
-            PromptAssembler::new(),
+            PromptCompiler::new(),
         )
     }
 
@@ -48,8 +48,9 @@ impl AgentOrchestrator {
         &self,
         snapshot: &TurnSnapshot,
         retry_feedback: Option<&str>,
-    ) -> PromptMessageBundle {
-        self.prompt_assembler.assemble(snapshot, retry_feedback)
+    ) -> CompiledPrompt {
+        let input = build_prompt_input(snapshot, retry_feedback);
+        self.prompt_compiler.compile(&input)
     }
 
     fn session_action_catalog(&self, snapshot: &TurnSnapshot) -> SessionActionCatalog {
@@ -59,12 +60,12 @@ impl AgentOrchestrator {
     fn from_parts(
         model_adapter: Arc<dyn ModelAdapter>,
         environment_registry: EnvironmentRegistry,
-        prompt_assembler: PromptAssembler,
+        prompt_compiler: PromptCompiler,
     ) -> Self {
         Self {
             model_adapter,
             environment_registry,
-            prompt_assembler,
+            prompt_compiler,
         }
     }
 
@@ -73,14 +74,14 @@ impl AgentOrchestrator {
         Self::from_parts(
             model_adapter,
             EnvironmentRegistry::new(),
-            PromptAssembler::new(),
+            PromptCompiler::new(),
         )
     }
 
     pub(crate) async fn run_turn<F>(
         &self,
         snapshot: &TurnSnapshot,
-        initial_prompt_bundle: PromptMessageBundle,
+        initial_prompt_bundle: CompiledPrompt,
         mut on_event: F,
     ) -> AgentTurnOutcome
     where
@@ -116,10 +117,10 @@ impl AgentOrchestrator {
                 phase: "agent.prompt.summary".to_string(),
                 detail: format!(
                     "messages={} estimated_tokens={} compaction_applied={} dedup_dropped={}",
-                    prompt_bundle.stats.messages_count,
-                    prompt_bundle.stats.estimated_prompt_tokens,
-                    prompt_bundle.stats.compaction_applied,
-                    prompt_bundle.stats.dedup_dropped_events
+                    prompt_bundle.diagnostics.messages_count,
+                    prompt_bundle.diagnostics.estimated_prompt_tokens,
+                    prompt_bundle.diagnostics.compaction_applied,
+                    prompt_bundle.diagnostics.dedup_dropped_events
                 ),
             }));
             let event_sink: &mut model_adapter::ModelEventSink<'_> = &mut on_event;
@@ -136,12 +137,12 @@ impl AgentOrchestrator {
                     diagnostics.extend(invocation_outcome.diagnostics);
                     diagnostics.push(format!(
                         "prompt_messages={} estimated_tokens={} compaction_applied={} timeline_raw={} timeline_compacted={} dedup_dropped={}",
-                        prompt_bundle.stats.messages_count,
-                        prompt_bundle.stats.estimated_prompt_tokens,
-                        prompt_bundle.stats.compaction_applied,
-                        prompt_bundle.stats.timeline_raw_events,
-                        prompt_bundle.stats.timeline_compacted_events,
-                        prompt_bundle.stats.dedup_dropped_events
+                        prompt_bundle.diagnostics.messages_count,
+                        prompt_bundle.diagnostics.estimated_prompt_tokens,
+                        prompt_bundle.diagnostics.compaction_applied,
+                        prompt_bundle.diagnostics.timeline_raw_events,
+                        prompt_bundle.diagnostics.timeline_compacted_events,
+                        prompt_bundle.diagnostics.dedup_dropped_events
                     ));
                     diagnostics.push(format!(
                         "action_calls_dispatched={} assistant_outputs={} on attempt {}",
@@ -159,12 +160,12 @@ impl AgentOrchestrator {
                     diagnostics.extend(invocation_outcome.diagnostics);
                     diagnostics.push(format!(
                         "prompt_messages={} estimated_tokens={} compaction_applied={} timeline_raw={} timeline_compacted={} dedup_dropped={}",
-                        prompt_bundle.stats.messages_count,
-                        prompt_bundle.stats.estimated_prompt_tokens,
-                        prompt_bundle.stats.compaction_applied,
-                        prompt_bundle.stats.timeline_raw_events,
-                        prompt_bundle.stats.timeline_compacted_events,
-                        prompt_bundle.stats.dedup_dropped_events
+                        prompt_bundle.diagnostics.messages_count,
+                        prompt_bundle.diagnostics.estimated_prompt_tokens,
+                        prompt_bundle.diagnostics.compaction_applied,
+                        prompt_bundle.diagnostics.timeline_raw_events,
+                        prompt_bundle.diagnostics.timeline_compacted_events,
+                        prompt_bundle.diagnostics.dedup_dropped_events
                     ));
                     diagnostics.push(format!(
                         "no action call or assistant output generated on attempt {}",
@@ -243,11 +244,11 @@ mod tests {
 
     use super::build_retry_feedback;
     use super::model_adapter::{ModelAdapter, ModelAdapterFuture, ModelEventSink};
-    use super::types::PromptBuildStats;
+    use super::types::PromptDiagnostics;
     use super::{
         AgentOrchestrator, CapabilityEnvironmentSnapshot, CapabilitySurfaceSnapshot,
-        HarnessContractSnapshot, IdentityEnvelopeSnapshot, ModelDeltaEvent, ModelInvocationOutcome,
-        ParticipantEnvelopeSnapshot, PromptMessage, PromptMessageBundle, SessionAnchorSnapshot,
+        CompiledPrompt, HarnessContractSnapshot, IdentityEnvelopeSnapshot, ModelDeltaEvent,
+        ModelInvocationOutcome, ParticipantEnvelopeSnapshot, PromptMessage, SessionAnchorSnapshot,
         SessionBaselineSnapshot, SessionCompactionSnapshot, TurnSnapshot,
     };
     use crate::util::default_agent_profile;
@@ -309,8 +310,6 @@ mod tests {
     fn test_snapshot() -> TurnSnapshot {
         let agent_profile = default_agent_profile("agent-default");
         TurnSnapshot {
-            session_id: "session-1".to_string(),
-            turn_id: 1,
             harness_contract: HarnessContractSnapshot {
                 runtime_version: "0.1.0".to_string(),
                 contract_schema_version: 1,
@@ -352,7 +351,6 @@ mod tests {
                     material: json!({"participants": []}),
                 },
             },
-            in_flight_actions: vec![],
             resolved_payload_lookups: vec![],
             triggers: vec![],
             recent_history: vec![],
@@ -392,16 +390,16 @@ mod tests {
         ]));
         let orchestrator = AgentOrchestrator::with_model_adapter(fake_adapter.clone());
         let snapshot = test_snapshot();
-        let initial_prompt_bundle = PromptMessageBundle {
+        let initial_prompt_bundle = CompiledPrompt {
             messages: vec![PromptMessage::new(
                 "user",
                 "initial_turn",
                 "initial prompt".to_string(),
             )],
-            stats: PromptBuildStats {
+            diagnostics: PromptDiagnostics {
                 estimated_prompt_tokens: 3,
                 messages_count: 1,
-                ..PromptBuildStats::default()
+                ..PromptDiagnostics::default()
             },
         };
         let mut events = Vec::<ModelDeltaEvent>::new();
@@ -440,7 +438,7 @@ mod tests {
         let snapshot = test_snapshot();
 
         let outcome = orchestrator
-            .run_turn(&snapshot, PromptMessageBundle::default(), |_| {})
+            .run_turn(&snapshot, CompiledPrompt::default(), |_| {})
             .await;
 
         assert!(outcome.failed);

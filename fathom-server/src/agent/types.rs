@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::history::HistoryEvent;
+use crate::history::{HistoryEvent, PayloadPreview};
 use fathom_protocol::pb;
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,14 +22,26 @@ pub(crate) struct SessionCompactionSnapshot {
     pub(crate) summary_blocks: Vec<SummaryBlockRefSnapshot>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct TurnSnapshot {
-    pub(crate) session_id: String,
-    pub(crate) turn_id: u64,
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptStablePrefix {
     pub(crate) harness_contract: HarnessContractSnapshot,
     pub(crate) identity_envelope: IdentityEnvelopeSnapshot,
     pub(crate) session_baseline: SessionBaselineSnapshot,
-    pub(crate) in_flight_actions: Vec<InFlightActionHint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptInput {
+    pub(crate) stable_prefix: PromptStablePrefix,
+    pub(crate) transcript_events: Vec<PromptEvent>,
+    pub(crate) pending_events: Vec<PromptEvent>,
+    pub(crate) compaction_blocks: Vec<SummaryBlockRefSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TurnSnapshot {
+    pub(crate) harness_contract: HarnessContractSnapshot,
+    pub(crate) identity_envelope: IdentityEnvelopeSnapshot,
+    pub(crate) session_baseline: SessionBaselineSnapshot,
     pub(crate) resolved_payload_lookups: Vec<ResolvedPayloadLookupHint>,
     pub(crate) triggers: Vec<pb::Trigger>,
     pub(crate) recent_history: Vec<HistoryEvent>,
@@ -114,6 +126,98 @@ pub(crate) struct ParticipantEnvelopeSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptUserMessage {
+    pub(crate) user_id: String,
+    pub(crate) text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptAssistantOutput {
+    pub(crate) content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptExecutionRequested {
+    pub(crate) execution_id: String,
+    pub(crate) action_id: String,
+    pub(crate) execution_mode: String,
+    pub(crate) args_preview: PayloadPreview,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptExecutionSucceeded {
+    pub(crate) execution_id: String,
+    pub(crate) action_id: String,
+    pub(crate) payload_preview: PayloadPreview,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptExecutionFailed {
+    pub(crate) execution_id: String,
+    pub(crate) action_id: String,
+    pub(crate) message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) payload_preview: Option<PayloadPreview>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptExecutionDetached {
+    pub(crate) execution_id: String,
+    pub(crate) action_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptExecutionRejected {
+    pub(crate) execution_id: String,
+    pub(crate) action_id: String,
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptPayloadLookupAvailable {
+    pub(crate) lookup_execution_id: String,
+    pub(crate) execution_id: String,
+    pub(crate) part: String,
+    pub(crate) offset: usize,
+    pub(crate) next_offset: Option<usize>,
+    pub(crate) full_bytes: usize,
+    pub(crate) source_truncated: bool,
+    pub(crate) payload_chunk: String,
+    pub(crate) injected_truncated: bool,
+    pub(crate) injected_omitted_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptCron {
+    pub(crate) key: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptRefreshProfile {
+    pub(crate) scope: String,
+    pub(crate) user_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event", content = "payload", rename_all = "snake_case")]
+pub(crate) enum PromptEvent {
+    UserMessage(PromptUserMessage),
+    AssistantOutput(PromptAssistantOutput),
+    ExecutionRequested(PromptExecutionRequested),
+    AwaitedExecutionSucceeded(PromptExecutionSucceeded),
+    AwaitedExecutionFailed(PromptExecutionFailed),
+    ExecutionDetached(PromptExecutionDetached),
+    DetachedExecutionSucceeded(PromptExecutionSucceeded),
+    DetachedExecutionFailed(PromptExecutionFailed),
+    ExecutionRejected(PromptExecutionRejected),
+    PayloadLookupAvailable(PromptPayloadLookupAvailable),
+    RetryFeedback(PromptAssistantOutput),
+    Heartbeat,
+    Cron(PromptCron),
+    RefreshProfile(PromptRefreshProfile),
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct SystemTimeContext {
     pub(crate) generated_at_unix_ms: i64,
     pub(crate) utc_rfc3339: String,
@@ -121,18 +225,6 @@ pub(crate) struct SystemTimeContext {
     pub(crate) local_timezone_name: String,
     pub(crate) local_utc_offset: String,
     pub(crate) time_source: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct InFlightActionHint {
-    pub(crate) execution_id: String,
-    pub(crate) canonical_action_id: String,
-    pub(crate) environment_id: String,
-    pub(crate) action_name: String,
-    pub(crate) env_seq: u64,
-    pub(crate) status: String,
-    pub(crate) submitted_at_unix_ms: i64,
-    pub(crate) args_preview: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,7 +268,7 @@ impl PromptMessage {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct PromptMessageStat {
+pub(crate) struct PromptMessageDiagnostic {
     pub(crate) label: String,
     pub(crate) role: String,
     pub(crate) estimated_tokens: usize,
@@ -184,7 +276,7 @@ pub(crate) struct PromptMessageStat {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
-pub(crate) struct PromptBuildStats {
+pub(crate) struct PromptDiagnostics {
     pub(crate) estimated_prompt_tokens: usize,
     pub(crate) messages_count: usize,
     pub(crate) stable_prefix_hash: String,
@@ -193,16 +285,16 @@ pub(crate) struct PromptBuildStats {
     pub(crate) timeline_raw_events: usize,
     pub(crate) timeline_compacted_events: usize,
     pub(crate) dedup_dropped_events: usize,
-    pub(crate) per_message: Vec<PromptMessageStat>,
+    pub(crate) per_message: Vec<PromptMessageDiagnostic>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
-pub(crate) struct PromptMessageBundle {
+pub(crate) struct CompiledPrompt {
     pub(crate) messages: Vec<PromptMessage>,
-    pub(crate) stats: PromptBuildStats,
+    pub(crate) diagnostics: PromptDiagnostics,
 }
 
-impl PromptMessageBundle {
+impl CompiledPrompt {
     pub(crate) fn as_debug_prompt(&self) -> String {
         let mut sections = Vec::with_capacity(self.messages.len());
         for message in &self.messages {

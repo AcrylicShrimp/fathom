@@ -1,4 +1,4 @@
-use crate::agent::{PromptMessageBundle, TurnSnapshot};
+use crate::agent::{CompiledPrompt, TurnSnapshot};
 use crate::runtime::Runtime;
 use crate::session::diagnostics::{trigger_to_json, turn_snapshot_to_json};
 use crate::session::state::SessionState;
@@ -31,7 +31,7 @@ pub(super) fn write_invocation_context(
     turn_id: u64,
     invocation_seq: u64,
     snapshot: &TurnSnapshot,
-    prompt_bundle: &PromptMessageBundle,
+    prompt_bundle: &CompiledPrompt,
 ) {
     runtime.diagnostics().write_invocation_context(
         &state.session_id,
@@ -45,7 +45,7 @@ pub(super) fn write_invocation_context(
             "snapshot": turn_snapshot_to_json(snapshot),
             "prompt": prompt_bundle.as_debug_prompt(),
             "prompt_messages": prompt_bundle.messages.clone(),
-            "prompt_stats": prompt_bundle.stats.clone(),
+            "prompt_diagnostics": prompt_bundle.diagnostics.clone(),
         }),
     );
 }

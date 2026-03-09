@@ -2,8 +2,8 @@ use super::Runtime;
 use crate::agent::{
     ActionModeSupportSnapshot, CapabilityActionSnapshot, CapabilityEnvironmentSnapshot,
     CapabilityRecipeSnapshot, CapabilitySurfaceSnapshot, HarnessContractSnapshot,
-    IdentityEnvelopeSnapshot, InFlightActionHint, ParticipantEnvelopeSnapshot,
-    ResolvedPayloadLookupHint, SessionAnchorSnapshot, SessionBaselineSnapshot, TurnSnapshot,
+    IdentityEnvelopeSnapshot, ParticipantEnvelopeSnapshot, ResolvedPayloadLookupHint,
+    SessionAnchorSnapshot, SessionBaselineSnapshot, TurnSnapshot,
 };
 use crate::environment::EnvironmentRegistry;
 use crate::session::SessionState;
@@ -15,7 +15,6 @@ impl Runtime {
     pub(crate) fn build_turn_snapshot(
         &self,
         state: &SessionState,
-        turn_id: u64,
         triggers: &[pb::Trigger],
     ) -> TurnSnapshot {
         const HISTORY_WINDOW_SIZE: usize = 80;
@@ -43,12 +42,9 @@ impl Runtime {
             .collect::<Vec<_>>();
 
         TurnSnapshot {
-            session_id: state.session_id.clone(),
-            turn_id,
             harness_contract: self.build_harness_contract_snapshot(),
             identity_envelope: self.build_identity_envelope_snapshot(state),
             session_baseline: self.build_session_baseline_snapshot(state),
-            in_flight_actions: self.build_in_flight_action_hints(state),
             resolved_payload_lookups,
             triggers: triggers.to_vec(),
             recent_history,
@@ -161,31 +157,6 @@ impl Runtime {
             }),
         }
     }
-
-    fn build_in_flight_action_hints(&self, state: &SessionState) -> Vec<InFlightActionHint> {
-        let in_flight_actions = state
-            .in_flight_actions
-            .values()
-            .map(|action| InFlightActionHint {
-                execution_id: action.execution_id.clone(),
-                canonical_action_id: action.canonical_action_id.clone(),
-                environment_id: action.environment_id.clone(),
-                action_name: action.action_name.clone(),
-                env_seq: action.env_seq,
-                status: action.status.clone(),
-                submitted_at_unix_ms: action.submitted_at_unix_ms,
-                args_preview: action.args_preview.clone(),
-            })
-            .collect::<Vec<_>>();
-        let mut in_flight_actions = in_flight_actions;
-        in_flight_actions.sort_by(|a, b| {
-            a.environment_id
-                .cmp(&b.environment_id)
-                .then(a.env_seq.cmp(&b.env_seq))
-                .then(a.execution_id.cmp(&b.execution_id))
-        });
-        in_flight_actions
-    }
 }
 
 fn participant_envelope_source_revision(state: &SessionState) -> String {
@@ -242,7 +213,7 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
         );
 
-        let snapshot = runtime.build_turn_snapshot(&state, 1, &[]);
+        let snapshot = runtime.build_turn_snapshot(&state, &[]);
         assert_eq!(snapshot.harness_contract.contract_schema_version, 1);
         assert_eq!(
             snapshot.identity_envelope.source_revision,
@@ -289,7 +260,7 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
         );
 
-        let snapshot = runtime.build_turn_snapshot(&state, 1, &[]);
+        let snapshot = runtime.build_turn_snapshot(&state, &[]);
         assert!(
             !snapshot
                 .session_baseline
@@ -365,7 +336,7 @@ mod tests {
             }],
         };
 
-        let snapshot = runtime.build_turn_snapshot(&state, 1, &[]);
+        let snapshot = runtime.build_turn_snapshot(&state, &[]);
 
         assert_eq!(
             snapshot.identity_envelope.material["display_name"],

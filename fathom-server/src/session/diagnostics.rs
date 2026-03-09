@@ -67,16 +67,12 @@ pub(crate) fn turn_snapshot_to_json(snapshot: &TurnSnapshot) -> Value {
         .collect::<Vec<_>>();
 
     json!({
-        "session_id": snapshot.session_id,
-        "turn_id": snapshot.turn_id,
         "harness_contract": serde_json::to_value(&snapshot.harness_contract)
             .unwrap_or_else(|_| json!({"error": "failed_to_serialize_harness_contract"})),
         "identity_envelope": serde_json::to_value(&snapshot.identity_envelope)
             .unwrap_or_else(|_| json!({"error": "failed_to_serialize_identity_envelope"})),
         "session_baseline": serde_json::to_value(&snapshot.session_baseline)
             .unwrap_or_else(|_| json!({"error": "failed_to_serialize_session_baseline"})),
-        "in_flight_actions": serde_json::to_value(&snapshot.in_flight_actions)
-            .unwrap_or_else(|_| json!({"error": "failed_to_serialize_in_flight_actions"})),
         "resolved_payload_lookups": snapshot.resolved_payload_lookups,
         "triggers": triggers,
         "recent_history": snapshot.recent_history,

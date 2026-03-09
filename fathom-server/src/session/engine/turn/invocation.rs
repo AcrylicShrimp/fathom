@@ -26,7 +26,7 @@ pub(super) async fn run_agent_invocation(
     prepared: &mut PreparedTurn,
 ) -> AgentTurnSummary {
     let assistant_output_start_len = prepared.assistant_outputs.len();
-    let snapshot = runtime.build_turn_snapshot(state, turn_id, &prepared.agent_triggers);
+    let snapshot = runtime.build_turn_snapshot(state, &prepared.agent_triggers);
     let orchestrator = runtime.agent_orchestrator();
     let prompt_bundle = orchestrator.assemble_prompt_bundle(&snapshot, None);
 

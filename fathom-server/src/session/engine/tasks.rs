@@ -9,12 +9,11 @@ use crate::environment::{
     EnvironmentRegistry, RequestedExecutionMode, requested_execution_mode_from_args_json,
 };
 use crate::history;
-use crate::history::build_payload_preview;
 use crate::runtime::Runtime;
 use crate::session::diagnostics::execution_to_json;
 use crate::session::execution_context::ExecutionContext;
 use crate::session::payload_lookup::resolve_from_execution;
-use crate::session::state::{ActiveExecutionState, InFlightActionState, SessionState};
+use crate::session::state::{ActiveExecutionState, SessionState};
 use crate::util::now_unix_ms;
 use fathom_env::ActionModeSupport;
 use fathom_protocol::pb;
@@ -94,12 +93,6 @@ pub(super) fn queue_execution(
                     let env_seq = state.allocate_environment_seq(&resolved_action.environment_id);
                     let execution_context = ExecutionContext::from_state(state);
 
-                    let args_preview = serde_json::to_string(&build_payload_preview(
-                        &execution.args_json,
-                        format!("execution://{}/args", execution.execution_id),
-                    ))
-                    .unwrap_or_else(|_| "{\"head\":\"<unavailable>\",\"tail\":\"\"}".to_string());
-
                     state.active_executions.insert(
                         execution_id.clone(),
                         ActiveExecutionState {
@@ -110,19 +103,7 @@ pub(super) fn queue_execution(
                     );
 
                     if requested_mode == RequestedExecutionMode::Await {
-                        state.in_flight_actions.insert(
-                            execution_id.clone(),
-                            InFlightActionState {
-                                execution_id: execution_id.clone(),
-                                canonical_action_id: resolved_action.canonical_action_id.clone(),
-                                environment_id: resolved_action.environment_id.clone(),
-                                action_name: resolved_action.action_name.clone(),
-                                env_seq,
-                                status: "executing".to_string(),
-                                submitted_at_unix_ms: now,
-                                args_preview,
-                            },
-                        );
+                        state.in_flight_actions.insert(execution_id.clone());
                         outcome = QueuedExecutionOutcome::AwaitAccepted;
                     } else {
                         outcome = QueuedExecutionOutcome::DetachedAccepted;
@@ -570,7 +551,7 @@ mod tests {
         spawn_environment_actor,
     };
     use crate::runtime::Runtime;
-    use crate::session::state::{ActiveExecutionState, InFlightActionState};
+    use crate::session::state::ActiveExecutionState;
     use crate::session::{SessionCommand, SessionState};
     use crate::util::{default_agent_profile, default_user_profile};
     use fathom_protocol::pb;
@@ -713,19 +694,7 @@ mod tests {
             updated_at_unix_ms: updated_at,
         };
         state.executions.insert(execution_id.clone(), execution);
-        state.in_flight_actions.insert(
-            execution_id.clone(),
-            InFlightActionState {
-                execution_id: execution_id.clone(),
-                canonical_action_id: "filesystem__list".to_string(),
-                environment_id: "filesystem".to_string(),
-                action_name: "list".to_string(),
-                env_seq: 1,
-                status: "executing".to_string(),
-                submitted_at_unix_ms: created_at,
-                args_preview: "{}".to_string(),
-            },
-        );
+        state.in_flight_actions.insert(execution_id.clone());
         state.active_executions.insert(
             execution_id.clone(),
             ActiveExecutionState {
