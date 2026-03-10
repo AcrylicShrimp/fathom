@@ -14,16 +14,23 @@ pub(crate) fn build_prompt_input(
     context: &AgentInvocationContext,
     retry_feedback: Option<&str>,
 ) -> PromptInput {
-    let transcript_events = context
+    let mut transcript_events = context
         .recent_history
         .iter()
         .filter_map(prompt_event_from_history_event)
         .collect::<Vec<_>>();
-    let mut pending_events = context
+    let mut pending_events = Vec::new();
+    for event in context
         .triggers
         .iter()
         .filter_map(prompt_event_from_trigger)
-        .collect::<Vec<_>>();
+    {
+        if is_append_only_prompt_event(&event) {
+            transcript_events.push(event);
+        } else {
+            pending_events.push(event);
+        }
+    }
     let mut seen_payload_slices = HashSet::new();
     pending_events.extend(
         context
@@ -70,6 +77,21 @@ pub(crate) fn build_prompt_input(
         pending_events,
         compaction_blocks: context.compaction.summary_blocks.clone(),
     }
+}
+
+fn is_append_only_prompt_event(event: &PromptEvent) -> bool {
+    matches!(
+        event,
+        PromptEvent::UserMessage(_)
+            | PromptEvent::AssistantOutput(_)
+            | PromptEvent::ExecutionRequested(_)
+            | PromptEvent::AwaitedExecutionSucceeded(_)
+            | PromptEvent::AwaitedExecutionFailed(_)
+            | PromptEvent::ExecutionDetached(_)
+            | PromptEvent::DetachedExecutionSucceeded(_)
+            | PromptEvent::DetachedExecutionFailed(_)
+            | PromptEvent::ExecutionRejected(_)
+    )
 }
 
 fn prompt_event_from_history_event(event: &HistoryEvent) -> Option<PromptEvent> {
@@ -412,9 +434,10 @@ mod tests {
 
         let input = build_prompt_input(&context, None);
 
-        assert_eq!(input.pending_events.len(), 3);
+        assert_eq!(input.transcript_events.len(), 3);
+        assert!(input.pending_events.is_empty());
         assert!(matches!(
-            input.pending_events.first(),
+            input.transcript_events.first(),
             Some(PromptEvent::AwaitedExecutionSucceeded(item))
                 if item.execution_id == "execution-1"
                     && item.action_id == "filesystem__list"
@@ -422,7 +445,7 @@ mod tests {
                     && item.payload_preview.head.contains("\"src\"")
         ));
         assert!(matches!(
-            input.pending_events.get(1),
+            input.transcript_events.get(1),
             Some(PromptEvent::DetachedExecutionFailed(item))
                 if item.execution_id == "execution-2"
                     && item.action_id == "shell__run"
@@ -432,12 +455,35 @@ mod tests {
                             && preview.head.contains("stderr: boom"))
         ));
         assert!(matches!(
-            input.pending_events.get(2),
+            input.transcript_events.get(2),
             Some(PromptEvent::ExecutionRejected(item))
                 if item.execution_id == "execution-3"
                     && item.action_id == "shell__run"
                     && item.message == "detach is not allowed for shell__run"
         ));
+    }
+
+    #[test]
+    fn build_prompt_input_promotes_user_message_triggers_into_transcript_events() {
+        let mut context = base_context(vec![]);
+        context.triggers = vec![pb::Trigger {
+            trigger_id: "trigger-1".to_string(),
+            created_at_unix_ms: 1_765_000_000_100,
+            kind: Some(pb::trigger::Kind::UserMessage(pb::UserMessageTrigger {
+                user_id: "user-default".to_string(),
+                text: "inspect this".to_string(),
+            })),
+        }];
+
+        let input = build_prompt_input(&context, None);
+
+        assert_eq!(input.transcript_events.len(), 1);
+        assert!(matches!(
+            input.transcript_events.first(),
+            Some(PromptEvent::UserMessage(message))
+                if message.user_id == "user-default" && message.text == "inspect this"
+        ));
+        assert!(input.pending_events.is_empty());
     }
 
     #[test]

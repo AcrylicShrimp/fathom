@@ -1,9 +1,9 @@
 use crate::agent::types::{PromptEvent, PromptInput};
 use serde_json::{Map, Value};
 
+use super::MAX_LOOKUP_PAYLOAD_CHARS;
 use super::timeline::TimelineEvent;
-use super::util::{preview_to_inline, truncate_inline};
-use super::{MAX_INLINE_TEXT_CHARS, MAX_LOOKUP_PAYLOAD_CHARS};
+use super::util::truncate_inline;
 
 pub(super) fn build_harness_contract_block(input: &PromptInput) -> String {
     [
@@ -410,17 +410,12 @@ pub(super) fn build_tail_event_lines(input: &PromptInput) -> Vec<String> {
         lines.extend(render_pending_prompt_event_lines(event));
     }
 
-    if lines.is_empty() {
-        lines.push("event_log_empty".to_string());
-    }
-
     lines
 }
 
 pub(super) fn render_event_transcript_lines(
     summaries: &[String],
     events: &[TimelineEvent],
-    tail_event_lines: &[String],
 ) -> Vec<String> {
     let mut lines = Vec::new();
     if !summaries.is_empty() {
@@ -438,68 +433,11 @@ pub(super) fn render_event_transcript_lines(
             lines.push(event.line.clone());
         }
     }
-
-    if !tail_event_lines.is_empty() {
-        lines.push(String::new());
-        lines.push("### Pending Events".to_string());
-        for line in tail_event_lines {
-            lines.push(line.clone());
-        }
-    }
     lines
 }
 
 fn render_pending_prompt_event_lines(event: &PromptEvent) -> Vec<String> {
     match event {
-        PromptEvent::UserMessage(payload) => vec![format!(
-            "pending_trigger user_message user={} text={}",
-            payload.user_id,
-            truncate_inline(&payload.text, MAX_INLINE_TEXT_CHARS)
-        )],
-        PromptEvent::AwaitedExecutionSucceeded(payload) => vec![format!(
-            "pending_trigger awaited_execution_succeeded execution_id={} action_id={} payload_preview={}",
-            payload.execution_id,
-            payload.action_id,
-            preview_to_inline(&payload.payload_preview)
-        )],
-        PromptEvent::AwaitedExecutionFailed(payload) => vec![format!(
-            "pending_trigger awaited_execution_failed execution_id={} action_id={} message={}{}",
-            payload.execution_id,
-            payload.action_id,
-            truncate_inline(&payload.message, MAX_INLINE_TEXT_CHARS),
-            payload
-                .payload_preview
-                .as_ref()
-                .map(|preview| format!(" payload_preview={}", preview_to_inline(preview)))
-                .unwrap_or_default()
-        )],
-        PromptEvent::ExecutionDetached(payload) => vec![format!(
-            "pending_trigger execution_detached execution_id={} action_id={}",
-            payload.execution_id, payload.action_id
-        )],
-        PromptEvent::DetachedExecutionSucceeded(payload) => vec![format!(
-            "pending_trigger detached_execution_succeeded execution_id={} action_id={} payload_preview={}",
-            payload.execution_id,
-            payload.action_id,
-            preview_to_inline(&payload.payload_preview)
-        )],
-        PromptEvent::DetachedExecutionFailed(payload) => vec![format!(
-            "pending_trigger detached_execution_failed execution_id={} action_id={} message={}{}",
-            payload.execution_id,
-            payload.action_id,
-            truncate_inline(&payload.message, MAX_INLINE_TEXT_CHARS),
-            payload
-                .payload_preview
-                .as_ref()
-                .map(|preview| format!(" payload_preview={}", preview_to_inline(preview)))
-                .unwrap_or_default()
-        )],
-        PromptEvent::ExecutionRejected(payload) => vec![format!(
-            "pending_trigger execution_rejected execution_id={} action_id={} message={}",
-            payload.execution_id,
-            payload.action_id,
-            truncate_inline(&payload.message, MAX_INLINE_TEXT_CHARS)
-        )],
         PromptEvent::PayloadLookupAvailable(payload) => vec![
             format!(
                 "resolved_payload_lookup lookup_execution_id={} execution_id={} part={} offset={} next_offset={} full_bytes={} source_truncated={} injected_truncated={} injected_omitted_bytes={}",
@@ -525,14 +463,22 @@ fn render_pending_prompt_event_lines(event: &PromptEvent) -> Vec<String> {
             "retry_feedback {}",
             truncate_inline(&payload.content, MAX_LOOKUP_PAYLOAD_CHARS)
         )],
-        PromptEvent::Heartbeat => vec!["pending_trigger heartbeat".to_string()],
-        PromptEvent::Cron(payload) => {
-            vec![format!("pending_trigger cron key={}", payload.key)]
+        PromptEvent::Heartbeat => vec!["heartbeat".to_string()],
+        PromptEvent::Cron(payload) => vec![format!("cron key={}", payload.key)],
+        PromptEvent::RefreshProfile(payload) => {
+            vec![format!(
+                "refresh_profile scope={} user_id={}",
+                payload.scope, payload.user_id
+            )]
         }
-        PromptEvent::RefreshProfile(payload) => vec![format!(
-            "pending_trigger refresh_profile scope={} user_id={}",
-            payload.scope, payload.user_id
-        )],
-        PromptEvent::AssistantOutput(_) | PromptEvent::ExecutionRequested(_) => Vec::new(),
+        PromptEvent::UserMessage(_)
+        | PromptEvent::AssistantOutput(_)
+        | PromptEvent::ExecutionRequested(_)
+        | PromptEvent::AwaitedExecutionSucceeded(_)
+        | PromptEvent::AwaitedExecutionFailed(_)
+        | PromptEvent::ExecutionDetached(_)
+        | PromptEvent::DetachedExecutionSucceeded(_)
+        | PromptEvent::DetachedExecutionFailed(_)
+        | PromptEvent::ExecutionRejected(_) => Vec::new(),
     }
 }

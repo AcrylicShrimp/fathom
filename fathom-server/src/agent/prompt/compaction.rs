@@ -183,6 +183,6 @@ fn summarize_timeline_batch(index: usize, batch: &[TimelineEvent]) -> String {
 }
 
 fn estimate_timeline_tokens(summaries: &[String], events: &[TimelineEvent]) -> usize {
-    let lines = render_event_transcript_lines(summaries, events, &[]);
+    let lines = render_event_transcript_lines(summaries, events);
     estimate_tokens(&lines.join("\n"))
 }

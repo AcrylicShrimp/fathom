@@ -16,7 +16,7 @@ impl Action for FsListAction {
         ActionSpec {
             capability_domain_id: FILESYSTEM_CAPABILITY_DOMAIN_ID,
             action_name: "list",
-            description: "List directory entries at a relative path under the current base path. Use `.` for the root directory; supports recursive listing, hidden entries, and bounded results.",
+            description: "List directory entries at a non-empty relative path under the current base path; use `.` for the root directory. Supports recursive listing, hidden entries, and bounded results.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

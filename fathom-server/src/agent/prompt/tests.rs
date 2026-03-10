@@ -221,10 +221,7 @@ fn event_transcript_includes_pending_events_and_lookup_availability() {
     let bundle = compile_input(&input);
     let debug_prompt = bundle.as_debug_prompt();
 
-    assert!(
-        debug_prompt
-            .contains("pending_trigger user_message user=user-default text=inspect the payload")
-    );
+    assert!(debug_prompt.contains("## Pending Inputs"));
     assert!(debug_prompt.contains(
         "resolved_payload_lookup lookup_execution_id=lookup-1 execution_id=execution-1 part=result offset=0"
     ));
@@ -298,6 +295,56 @@ fn transcript_preserves_execution_event_order() {
 
     assert!(execution_request_index < detached_index);
     assert!(detached_index < success_index);
+}
+
+#[test]
+fn transcript_messages_remain_prefix_append_only_as_history_grows() {
+    let mut base_transcript_input = base_input();
+    base_transcript_input.transcript_events = vec![
+        PromptEvent::AssistantOutput(PromptAssistantOutput {
+            content: "earlier answer".to_string(),
+        }),
+        PromptEvent::UserMessage(PromptUserMessage {
+            user_id: "user-default".to_string(),
+            text: "next question".to_string(),
+        }),
+    ];
+
+    let base_bundle = compile_input(&base_transcript_input);
+    let base_prompt = base_bundle.as_debug_prompt();
+    assert!(!base_prompt.contains("## Pending Inputs"));
+
+    let base_event_message = base_bundle
+        .messages
+        .iter()
+        .find(|message| message.label == "event_transcript")
+        .expect("event transcript message")
+        .content
+        .clone();
+    assert!(base_event_message.contains("assistant_output content=earlier answer"));
+    assert!(base_event_message.contains("user_message user=user-default text=next question"));
+
+    let mut grown_transcript_input = base_input();
+    grown_transcript_input.transcript_events = vec![
+        PromptEvent::AssistantOutput(PromptAssistantOutput {
+            content: "earlier answer".to_string(),
+        }),
+        PromptEvent::UserMessage(PromptUserMessage {
+            user_id: "user-default".to_string(),
+            text: "next question".to_string(),
+        }),
+        PromptEvent::AssistantOutput(PromptAssistantOutput {
+            content: "latest answer".to_string(),
+        }),
+    ];
+
+    let grown_event_message = compile_input(&grown_transcript_input)
+        .messages
+        .into_iter()
+        .find(|message| message.label == "event_transcript")
+        .expect("event transcript message")
+        .content;
+    assert!(grown_event_message.starts_with(&base_event_message));
 }
 
 #[test]

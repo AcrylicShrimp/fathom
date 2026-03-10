@@ -63,6 +63,7 @@ impl CapabilityDomain for FilesystemCapabilityDomain {
                 title: "Inspect files and directories".to_string(),
                 steps: vec![
                     "Use `filesystem__get_base_path` when you need to inspect the current filesystem root for this domain.".to_string(),
+                    "Do not use empty path values; use path '.' to target the root directory.".to_string(),
                     "Use `filesystem__list` with `path: \".\"` or a relative directory to discover entries under the current base path.".to_string(),
                     "Use `filesystem__read` on a specific relative file path once you know the target.".to_string(),
                     "For large files, set `offset_line` and `limit_lines` to inspect only the relevant window.".to_string(),

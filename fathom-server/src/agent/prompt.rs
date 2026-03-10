@@ -63,14 +63,23 @@ impl PromptCompiler {
                 non_timeline_estimated,
             );
 
-        let event_lines =
-            render_event_transcript_lines(&summary_lines, &timeline_events, &tail_event_lines);
+        let event_lines = render_event_transcript_lines(&summary_lines, &timeline_events);
         let event_messages = chunk_section_messages(
             "event_transcript",
             "## Event Transcript",
             &event_lines,
             TIMELINE_SECTION_MAX_TOKENS,
         );
+        let tail_messages = if tail_event_lines.is_empty() {
+            Vec::new()
+        } else {
+            chunk_section_messages(
+                "pending_inputs",
+                "## Pending Inputs",
+                &tail_event_lines,
+                TIMELINE_SECTION_MAX_TOKENS,
+            )
+        };
 
         let mut bundle = CompiledPrompt::default();
         push_message(
@@ -95,6 +104,9 @@ impl PromptCompiler {
             estimate_tokens,
         );
         for (label, content) in event_messages {
+            push_message(&mut bundle, "user", &label, content, estimate_tokens);
+        }
+        for (label, content) in tail_messages {
             push_message(&mut bundle, "user", &label, content, estimate_tokens);
         }
 

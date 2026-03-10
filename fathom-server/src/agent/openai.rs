@@ -27,6 +27,14 @@ struct PartialActionCall {
     arguments: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenAiUsageMetrics {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cached_input_tokens: u64,
+}
+
 #[derive(Clone)]
 pub(crate) struct OpenAiModelAdapter {
     http: reqwest::Client,
@@ -210,6 +218,7 @@ impl OpenAiModelAdapter {
         let mut diagnostics = Vec::new();
         let mut active_assistant_output = String::new();
         let mut assistant_outputs = Vec::new();
+        let mut usage_emitted = false;
 
         while let Some(chunk_result) = stream.next().await {
             let bytes = chunk_result.map_err(|error| {
@@ -255,6 +264,7 @@ impl OpenAiModelAdapter {
                     &mut diagnostics,
                     &mut active_assistant_output,
                     &mut assistant_outputs,
+                    &mut usage_emitted,
                 )?;
             }
         }
@@ -302,6 +312,7 @@ fn handle_stream_event<F>(
     diagnostics: &mut Vec<String>,
     active_assistant_output: &mut String,
     assistant_outputs: &mut Vec<String>,
+    usage_emitted: &mut bool,
 ) -> Result<(), ModelAdapterError>
 where
     F: FnMut(ModelDeltaEvent) + Send,
@@ -315,6 +326,8 @@ where
         phase: "openai.stream.event".to_string(),
         detail: event_type.to_string(),
     }));
+
+    maybe_emit_usage_metrics(&value, usage_emitted, diagnostics, on_event);
 
     match event_type {
         "response.output_item.added" | "response.output_item.done" => {
@@ -699,4 +712,229 @@ fn truncate_for_log(value: &str) -> String {
     }
 
     format!("{}… ({} bytes omitted)", &value[..MAX], value.len() - MAX)
+}
+
+fn maybe_emit_usage_metrics<F>(
+    value: &Value,
+    usage_emitted: &mut bool,
+    diagnostics: &mut Vec<String>,
+    on_event: &mut F,
+) where
+    F: FnMut(ModelDeltaEvent) + Send,
+{
+    if *usage_emitted {
+        return;
+    }
+
+    let Some(metrics) = extract_usage_metrics(value) else {
+        return;
+    };
+
+    let detail = format!(
+        "input_tokens={} cached_input_tokens={} output_tokens={} total_tokens={}",
+        metrics.input_tokens,
+        metrics.cached_input_tokens,
+        metrics.output_tokens,
+        metrics.total_tokens
+    );
+    on_event(ModelDeltaEvent::StreamNote(StreamNote {
+        phase: "openai.response.usage".to_string(),
+        detail: detail.clone(),
+    }));
+    diagnostics.push(format!("openai_usage {detail}"));
+    *usage_emitted = true;
+}
+
+fn extract_usage_metrics(value: &Value) -> Option<OpenAiUsageMetrics> {
+    let usage = value
+        .get("response")
+        .and_then(|response| response.get("usage"))
+        .or_else(|| value.get("usage"))?;
+
+    let input_tokens = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64)?;
+    let output_tokens = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_tokens = usage
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(input_tokens + output_tokens);
+    let cached_input_tokens = usage
+        .get("input_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .or_else(|| {
+            usage
+                .get("prompt_tokens_details")
+                .and_then(|details| details.get("cached_tokens"))
+        })
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    Some(OpenAiUsageMetrics {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cached_input_tokens,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use serde_json::json;
+
+    use super::{
+        OpenAiUsageMetrics, PartialActionCall, extract_usage_metrics, handle_stream_event,
+    };
+    use crate::agent::SessionActionCatalog;
+    use crate::agent::types::{
+        AgentInvocationContext, CapabilitySurface, HarnessContract, IdentityEnvelope,
+        ModelDeltaEvent, ParticipantEnvelope, SessionAnchor, SessionBaseline, SessionCompaction,
+    };
+    use crate::capability_domain::CapabilityDomainRegistry;
+
+    fn empty_action_catalog() -> SessionActionCatalog {
+        SessionActionCatalog::from_context(
+            CapabilityDomainRegistry::new(),
+            &AgentInvocationContext {
+                harness_contract: HarnessContract {
+                    runtime_version: "0.1.0".to_string(),
+                    contract_schema_version: 1,
+                },
+                identity_envelope: IdentityEnvelope {
+                    schema_version: 1,
+                    source_revision: "agent-default@spec:1@updated:1".to_string(),
+                    material: json!({"display_name": "Agent Default"}),
+                },
+                session_baseline: SessionBaseline {
+                    session_anchor: SessionAnchor {
+                        session_id: "session-1".to_string(),
+                        started_at_unix_ms: 1,
+                    },
+                    capability_surface: CapabilitySurface {
+                        capability_domains: vec![],
+                    },
+                    participant_envelope: ParticipantEnvelope {
+                        schema_version: 1,
+                        source_revision: "participants@1".to_string(),
+                        material: json!({"participants": []}),
+                    },
+                },
+                resolved_payload_lookups: vec![],
+                triggers: vec![],
+                recent_history: vec![],
+                compaction: SessionCompaction::default(),
+            },
+        )
+    }
+
+    #[test]
+    fn extracts_cached_prompt_tokens_from_response_usage() {
+        let metrics = extract_usage_metrics(&json!({
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 1200,
+                    "output_tokens": 50,
+                    "total_tokens": 1250,
+                    "input_tokens_details": {
+                        "cached_tokens": 900
+                    }
+                }
+            }
+        }))
+        .expect("usage should parse");
+
+        assert_eq!(
+            metrics,
+            OpenAiUsageMetrics {
+                input_tokens: 1200,
+                output_tokens: 50,
+                total_tokens: 1250,
+                cached_input_tokens: 900,
+            }
+        );
+    }
+
+    #[test]
+    fn response_completed_emits_usage_note_once() {
+        let action_catalog = empty_action_catalog();
+        let mut events = Vec::<ModelDeltaEvent>::new();
+        let mut partial_calls = HashMap::<String, PartialActionCall>::new();
+        let mut dispatched_keys = HashSet::<String>::new();
+        let mut action_call_count = 0usize;
+        let mut diagnostics = Vec::<String>::new();
+        let mut active_assistant_output = String::new();
+        let mut assistant_outputs = Vec::<String>::new();
+        let mut usage_emitted = false;
+
+        let usage_event = json!({
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 1200,
+                    "output_tokens": 50,
+                    "total_tokens": 1250,
+                    "input_tokens_details": {
+                        "cached_tokens": 900
+                    }
+                }
+            }
+        });
+
+        handle_stream_event(
+            usage_event.clone(),
+            &action_catalog,
+            &mut |event| events.push(event),
+            &mut partial_calls,
+            &mut dispatched_keys,
+            &mut action_call_count,
+            &mut diagnostics,
+            &mut active_assistant_output,
+            &mut assistant_outputs,
+            &mut usage_emitted,
+        )
+        .expect("usage event should succeed");
+        handle_stream_event(
+            usage_event,
+            &action_catalog,
+            &mut |event| events.push(event),
+            &mut partial_calls,
+            &mut dispatched_keys,
+            &mut action_call_count,
+            &mut diagnostics,
+            &mut active_assistant_output,
+            &mut assistant_outputs,
+            &mut usage_emitted,
+        )
+        .expect("duplicate usage event should succeed");
+
+        let usage_notes = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelDeltaEvent::StreamNote(note) if note.phase == "openai.response.usage" => {
+                    Some(note.detail.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            usage_notes,
+            vec!["input_tokens=1200 cached_input_tokens=900 output_tokens=50 total_tokens=1250"]
+        );
+        assert_eq!(
+            diagnostics,
+            vec![
+                "openai_usage input_tokens=1200 cached_input_tokens=900 output_tokens=50 total_tokens=1250"
+                    .to_string()
+            ]
+        );
+    }
 }
