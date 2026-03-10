@@ -117,7 +117,7 @@ pub(crate) struct AssistantOutputHistoryPayload {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ExecutionRequestedHistoryPayload {
     pub(crate) canonical_action_id: String,
-    pub(crate) environment_id: String,
+    pub(crate) capability_domain_id: String,
     pub(crate) action_name: String,
     pub(crate) execution_mode: String,
     pub(crate) status: String,

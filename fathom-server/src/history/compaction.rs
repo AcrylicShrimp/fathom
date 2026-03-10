@@ -174,7 +174,7 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::{COMPACTION_BATCH_EVENTS, MIN_LIVE_HISTORY_EVENTS, maybe_compact_history};
-    use crate::environment::EnvironmentRegistry;
+    use crate::capability_domain::CapabilityDomainRegistry;
     use crate::history::schema::{
         ExecutionSucceededHistoryPayload, HistoryActorKind, HistoryEventKind,
         UserMessageHistoryPayload,
@@ -191,10 +191,10 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            EnvironmentRegistry::default_engaged_environment_ids()
+            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            EnvironmentRegistry::initial_environment_snapshots()
+            CapabilityDomainRegistry::initial_capability_domain_snapshots()
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
         )

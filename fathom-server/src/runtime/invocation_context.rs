@@ -1,13 +1,13 @@
 use super::Runtime;
 use crate::agent::{
-    ActionModeSupportContract, AgentInvocationContext, CapabilityAction, CapabilityEnvironment,
+    ActionModeSupportContract, AgentInvocationContext, CapabilityAction, CapabilityDomain,
     CapabilityRecipe, CapabilitySurface, HarnessContract, IdentityEnvelope, ParticipantEnvelope,
     ResolvedPayloadLookupHint, SessionAnchor, SessionBaseline,
 };
-use crate::environment::EnvironmentRegistry;
+use crate::capability_domain::CapabilityDomainRegistry;
 use crate::profile_material::{agent_identity_material, participant_profile_material};
 use crate::session::SessionState;
-use fathom_env::ActionModeSupport;
+use fathom_capability_domain::ActionModeSupport;
 use fathom_protocol::pb;
 use serde_json::json;
 
@@ -84,21 +84,23 @@ impl Runtime {
     }
 
     fn build_capability_surface(&self, state: &SessionState) -> CapabilitySurface {
-        let mut environments = state
-            .engaged_environment_ids
+        let mut capability_domains = state
+            .engaged_capability_domain_ids
             .iter()
-            .filter_map(|environment_id| {
-                let environment = EnvironmentRegistry::environment_summary(environment_id)?;
-                let mut actions =
-                    EnvironmentRegistry::environment_action_summaries(environment_id)?
-                        .into_iter()
-                        .map(|action| CapabilityAction {
-                            action_id: action.id,
-                            description: action.description,
-                            mode_support: map_mode_support(action.mode_support),
-                            discovery: action.discovery,
-                        })
-                        .collect::<Vec<_>>();
+            .filter_map(|capability_domain_id| {
+                let environment =
+                    CapabilityDomainRegistry::capability_domain_summary(capability_domain_id)?;
+                let mut actions = CapabilityDomainRegistry::capability_domain_action_summaries(
+                    capability_domain_id,
+                )?
+                .into_iter()
+                .map(|action| CapabilityAction {
+                    action_id: action.id,
+                    description: action.description,
+                    mode_support: map_mode_support(action.mode_support),
+                    discovery: action.discovery,
+                })
+                .collect::<Vec<_>>();
                 actions.sort_by(|a, b| a.action_id.cmp(&b.action_id));
                 let mut recipes = environment
                     .recipes
@@ -109,7 +111,7 @@ impl Runtime {
                     })
                     .collect::<Vec<_>>();
                 recipes.sort_by(|a, b| a.title.cmp(&b.title));
-                Some(CapabilityEnvironment {
+                Some(CapabilityDomain {
                     id: environment.id,
                     name: environment.name,
                     description: environment.description,
@@ -118,8 +120,8 @@ impl Runtime {
                 })
             })
             .collect::<Vec<_>>();
-        environments.sort_by(|a, b| a.id.cmp(&b.id));
-        CapabilitySurface { environments }
+        capability_domains.sort_by(|a, b| a.id.cmp(&b.id));
+        CapabilitySurface { capability_domains }
     }
 
     fn build_participant_envelope(&self, state: &SessionState) -> ParticipantEnvelope {
@@ -168,7 +170,7 @@ mod tests {
 
     use super::Runtime;
     use crate::agent::{ActionModeSupportContract, SessionCompaction, SummaryBlockRef};
-    use crate::environment::EnvironmentRegistry;
+    use crate::capability_domain::CapabilityDomainRegistry;
     use crate::session::SessionState;
     use crate::util::{default_agent_profile, default_user_profile};
     use serde_json::json;
@@ -183,10 +185,10 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            EnvironmentRegistry::default_engaged_environment_ids()
+            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            EnvironmentRegistry::initial_environment_snapshots()
+            CapabilityDomainRegistry::initial_capability_domain_snapshots()
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
         );
@@ -230,10 +232,10 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            EnvironmentRegistry::default_engaged_environment_ids()
+            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            EnvironmentRegistry::initial_environment_snapshots()
+            CapabilityDomainRegistry::initial_capability_domain_snapshots()
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
         );
@@ -243,14 +245,14 @@ mod tests {
             !context
                 .session_baseline
                 .capability_surface
-                .environments
+                .capability_domains
                 .is_empty()
         );
         assert!(
             context
                 .session_baseline
                 .capability_surface
-                .environments
+                .capability_domains
                 .iter()
                 .all(|environment| !environment.actions.is_empty())
         );
@@ -258,7 +260,7 @@ mod tests {
             context
                 .session_baseline
                 .capability_surface
-                .environments
+                .capability_domains
                 .iter()
                 .flat_map(|environment| environment.actions.iter())
                 .any(|action| action.mode_support == ActionModeSupportContract::AwaitOrDetach)
@@ -267,7 +269,7 @@ mod tests {
             context
                 .session_baseline
                 .capability_surface
-                .environments
+                .capability_domains
                 .iter()
                 .flat_map(|environment| environment.actions.iter())
                 .all(|action| matches!(
@@ -288,10 +290,10 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            EnvironmentRegistry::default_engaged_environment_ids()
+            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            EnvironmentRegistry::initial_environment_snapshots()
+            CapabilityDomainRegistry::initial_capability_domain_snapshots()
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
         );
@@ -302,7 +304,7 @@ mod tests {
             .get_mut("user-a")
             .expect("participant profile")
             .name = "Updated User".to_string();
-        state.engaged_environment_ids =
+        state.engaged_capability_domain_ids =
             BTreeSet::from(["filesystem".to_string(), "shell".to_string()]);
         state.compaction = SessionCompaction {
             last_compacted_history_index: 24,
@@ -325,13 +327,13 @@ mod tests {
             context.session_baseline.participant_envelope.material["participants"][0]["name"],
             json!("Updated User")
         );
-        let environment_ids = context
+        let capability_domain_ids = context
             .session_baseline
             .capability_surface
-            .environments
+            .capability_domains
             .iter()
             .map(|environment| environment.id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(environment_ids, vec!["filesystem", "shell"]);
+        assert_eq!(capability_domain_ids, vec!["filesystem", "shell"]);
     }
 }

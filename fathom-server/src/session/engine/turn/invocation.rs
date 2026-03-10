@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 use crate::agent::ModelDeltaEvent;
-use crate::environment::EnvironmentActorHandle;
+use crate::capability_domain::CapabilityDomainActorHandle;
 use crate::runtime::Runtime;
 use crate::session::state::SessionState;
 use crate::util::now_unix_ms;
@@ -20,7 +20,7 @@ pub(super) async fn run_agent_invocation(
     runtime: &Runtime,
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
-    environment_handles: &HashMap<String, EnvironmentActorHandle>,
+    capability_domain_handles: &HashMap<String, CapabilityDomainActorHandle>,
     turn_id: u64,
     invocation_seq: u64,
     prepared: &mut PreparedTurn,
@@ -41,8 +41,13 @@ pub(super) async fn run_agent_invocation(
     append_invocation_started_record(runtime, state, turn_id, invocation_seq);
 
     let (outcome, stream_notes, action_dispatches, streamed_outputs) = {
-        let mut delta_transport =
-            TurnDeltaTransport::new(runtime, state, events_tx, environment_handles, turn_id);
+        let mut delta_transport = TurnDeltaTransport::new(
+            runtime,
+            state,
+            events_tx,
+            capability_domain_handles,
+            turn_id,
+        );
         let outcome = orchestrator
             .run_turn(&context, prompt_bundle.clone(), |event: ModelDeltaEvent| {
                 delta_transport.handle_model_event(event);

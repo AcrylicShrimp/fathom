@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::environment::EnvironmentActorHandle;
+use crate::capability_domain::CapabilityDomainActorHandle;
 use crate::runtime::Runtime;
 use crate::session::state::{SessionCommand, SessionState};
 use fathom_protocol::pb;
@@ -19,9 +19,9 @@ pub(super) async fn process_turns(
     state: &mut SessionState,
     _command_tx: &mpsc::Sender<SessionCommand>,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
-    environment_handles: &HashMap<String, EnvironmentActorHandle>,
+    capability_domain_handles: &HashMap<String, CapabilityDomainActorHandle>,
 ) {
-    TurnCoordinator::new(runtime, state, events_tx, environment_handles)
+    TurnCoordinator::new(runtime, state, events_tx, capability_domain_handles)
         .process()
         .await;
 }

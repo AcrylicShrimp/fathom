@@ -5,7 +5,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
 use super::{EVENT_BUFFER_SIZE, Runtime, SESSION_CMD_BUFFER_SIZE};
-use crate::environment::EnvironmentRegistry;
+use crate::capability_domain::CapabilityDomainRegistry;
 use crate::session::{SessionCommand, SessionRuntime, SessionState, run_session_actor};
 use crate::util::dedup_ids;
 use fathom_protocol::pb;
@@ -30,18 +30,20 @@ impl Runtime {
         }
 
         let session_id = self.next_session_id();
-        let engaged_environment_ids = EnvironmentRegistry::default_engaged_environment_ids()
-            .into_iter()
-            .collect();
-        let mut environment_snapshots = EnvironmentRegistry::initial_environment_snapshots()
-            .into_iter()
-            .collect::<HashMap<_, _>>();
+        let engaged_capability_domain_ids =
+            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
+                .into_iter()
+                .collect();
+        let mut capability_domain_snapshots =
+            CapabilityDomainRegistry::initial_capability_domain_snapshots()
+                .into_iter()
+                .collect::<HashMap<_, _>>();
         let base_path = self.workspace_root().display().to_string();
-        for environment_id in [
-            fathom_env_fs::FILESYSTEM_ENVIRONMENT_ID,
-            fathom_env_shell::SHELL_ENVIRONMENT_ID,
+        for capability_domain_id in [
+            fathom_capability_domain_fs::FILESYSTEM_CAPABILITY_DOMAIN_ID,
+            fathom_capability_domain_shell::SHELL_CAPABILITY_DOMAIN_ID,
         ] {
-            if let Some(snapshot) = environment_snapshots.get_mut(environment_id) {
+            if let Some(snapshot) = capability_domain_snapshots.get_mut(capability_domain_id) {
                 if let Some(state) = snapshot.state_json.as_object_mut() {
                     state.insert("base_path".to_string(), json!(base_path));
                 } else {
@@ -57,8 +59,8 @@ impl Runtime {
             participant_user_ids,
             agent_profile_copy,
             participant_user_profiles_copy,
-            engaged_environment_ids,
-            environment_snapshots,
+            engaged_capability_domain_ids,
+            capability_domain_snapshots,
         );
         let session_summary = state.to_summary();
 

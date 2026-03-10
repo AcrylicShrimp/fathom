@@ -4,7 +4,7 @@ use crate::agent::types::{
     PromptUserMessage,
 };
 use crate::agent::{
-    ActionModeSupportContract, CapabilityAction, CapabilityEnvironment, CapabilityRecipe,
+    ActionModeSupportContract, CapabilityAction, CapabilityDomain, CapabilityRecipe,
     CapabilitySurface, CompiledPrompt, HarnessContract, IdentityEnvelope, ParticipantEnvelope,
     SessionAnchor, SessionBaseline, SummaryBlockRef,
 };
@@ -52,8 +52,8 @@ fn base_input() -> PromptInput {
                     started_at_unix_ms: 1_765_000_000_000,
                 },
                 capability_surface: CapabilitySurface {
-                    environments: vec![
-                        CapabilityEnvironment {
+                    capability_domains: vec![
+                        CapabilityDomain {
                             id: "filesystem".to_string(),
                             name: "Filesystem".to_string(),
                             description: "Stateful filesystem environment rooted at a base path."
@@ -74,7 +74,7 @@ fn base_input() -> PromptInput {
                                 ],
                             }],
                         },
-                        CapabilityEnvironment {
+                        CapabilityDomain {
                             id: "system".to_string(),
                             name: "System".to_string(),
                             description: "Inspect runtime context and metadata.".to_string(),

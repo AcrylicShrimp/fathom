@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 use crate::agent::{ModelDeltaEvent, StreamNote};
-use crate::environment::EnvironmentActorHandle;
+use crate::capability_domain::CapabilityDomainActorHandle;
 use crate::runtime::Runtime;
 use crate::session::state::SessionState;
 use crate::util::now_unix_ms;
@@ -27,7 +27,7 @@ impl<'a> TurnDeltaTransport<'a> {
         runtime: &'a Runtime,
         state: &'a mut SessionState,
         events_tx: &'a broadcast::Sender<pb::SessionEvent>,
-        environment_handles: &'a HashMap<String, EnvironmentActorHandle>,
+        capability_domain_handles: &'a HashMap<String, CapabilityDomainActorHandle>,
         turn_id: u64,
     ) -> Self {
         let session_id = state.session_id.clone();
@@ -41,7 +41,7 @@ impl<'a> TurnDeltaTransport<'a> {
                 runtime,
                 state,
                 events_tx,
-                environment_handles,
+                capability_domain_handles,
             ),
         }
     }
@@ -137,8 +137,8 @@ mod tests {
 
     use super::TurnDeltaTransport;
     use crate::agent::{ActionArgDeltaNote, ActionArgDoneNote, ModelDeltaEvent, StreamNote};
-    use crate::environment::EnvironmentActorHandle;
-    use crate::environment::EnvironmentRegistry;
+    use crate::capability_domain::CapabilityDomainActorHandle;
+    use crate::capability_domain::CapabilityDomainRegistry;
     use crate::runtime::Runtime;
     use crate::session::SessionState;
     use crate::util::{default_agent_profile, default_user_profile};
@@ -152,10 +152,10 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            EnvironmentRegistry::default_engaged_environment_ids()
+            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            EnvironmentRegistry::initial_environment_snapshots()
+            CapabilityDomainRegistry::initial_capability_domain_snapshots()
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
         )
@@ -166,9 +166,14 @@ mod tests {
         let runtime = Runtime::new(2, 10);
         let (events_tx, mut events_rx) = broadcast::channel(32);
         let mut state = test_state();
-        let environment_handles = HashMap::<String, EnvironmentActorHandle>::new();
-        let mut transport =
-            TurnDeltaTransport::new(&runtime, &mut state, &events_tx, &environment_handles, 7);
+        let capability_domain_handles = HashMap::<String, CapabilityDomainActorHandle>::new();
+        let mut transport = TurnDeltaTransport::new(
+            &runtime,
+            &mut state,
+            &events_tx,
+            &capability_domain_handles,
+            7,
+        );
 
         transport.handle_model_event(ModelDeltaEvent::StreamNote(StreamNote {
             phase: "agent.test".to_string(),

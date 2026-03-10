@@ -76,11 +76,11 @@ pub(crate) struct SessionAnchor {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CapabilitySurface {
-    pub(crate) environments: Vec<CapabilityEnvironment>,
+    pub(crate) capability_domains: Vec<CapabilityDomain>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct CapabilityEnvironment {
+pub(crate) struct CapabilityDomain {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) description: String,

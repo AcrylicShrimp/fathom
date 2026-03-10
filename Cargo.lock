@@ -638,6 +638,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "fathom-capability-domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "fathom-capability-domain-brave-search"
+version = "0.1.0"
+dependencies = [
+ "fathom-capability-domain",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "fathom-capability-domain-fs"
+version = "0.1.0"
+dependencies = [
+ "fathom-capability-domain",
+ "glob",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "fathom-capability-domain-jina"
+version = "0.1.0"
+dependencies = [
+ "fathom-capability-domain",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "fathom-capability-domain-shell"
+version = "0.1.0"
+dependencies = [
+ "fathom-capability-domain",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "fathom-client"
 version = "0.1.0"
 dependencies = [
@@ -650,56 +700,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tracing",
-]
-
-[[package]]
-name = "fathom-env"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "fathom-env-brave-search"
-version = "0.1.0"
-dependencies = [
- "fathom-env",
- "reqwest",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "fathom-env-fs"
-version = "0.1.0"
-dependencies = [
- "fathom-env",
- "glob",
- "regex",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "fathom-env-jina"
-version = "0.1.0"
-dependencies = [
- "fathom-env",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "fathom-env-shell"
-version = "0.1.0"
-dependencies = [
- "fathom-env",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -718,11 +718,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "fathom-env",
- "fathom-env-brave-search",
- "fathom-env-fs",
- "fathom-env-jina",
- "fathom-env-shell",
+ "fathom-capability-domain",
+ "fathom-capability-domain-brave-search",
+ "fathom-capability-domain-fs",
+ "fathom-capability-domain-jina",
+ "fathom-capability-domain-shell",
  "fathom-protocol",
  "futures-util",
  "reqwest",

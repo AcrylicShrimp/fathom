@@ -2,27 +2,27 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use crate::environment::EnvironmentRegistry;
+use crate::capability_domain::CapabilityDomainRegistry;
 
 use super::types::AgentInvocationContext;
 
 #[derive(Clone)]
 pub(crate) struct SessionActionCatalog {
-    registry: EnvironmentRegistry,
-    engaged_environment_ids: BTreeSet<String>,
+    registry: CapabilityDomainRegistry,
+    engaged_capability_domain_ids: BTreeSet<String>,
 }
 
 impl SessionActionCatalog {
     pub(crate) fn from_context(
-        registry: EnvironmentRegistry,
+        registry: CapabilityDomainRegistry,
         context: &AgentInvocationContext,
     ) -> Self {
         Self {
             registry,
-            engaged_environment_ids: context
+            engaged_capability_domain_ids: context
                 .session_baseline
                 .capability_surface
-                .environments
+                .capability_domains
                 .iter()
                 .map(|environment| environment.id.clone())
                 .collect(),
@@ -31,12 +31,15 @@ impl SessionActionCatalog {
 
     pub(crate) fn openai_action_definitions(&self) -> Vec<Value> {
         self.registry
-            .openai_action_definitions_for_environments(&self.engaged_environment_ids)
+            .openai_action_definitions_for_capability_domains(&self.engaged_capability_domain_ids)
     }
 
     pub(crate) fn validate_action(&self, action_id: &str, args: &Value) -> Result<String, String> {
-        self.registry
-            .validate_in_environments(action_id, args, &self.engaged_environment_ids)
+        self.registry.validate_in_capability_domains(
+            action_id,
+            args,
+            &self.engaged_capability_domain_ids,
+        )
     }
 }
 
@@ -44,15 +47,15 @@ impl SessionActionCatalog {
 mod tests {
     use crate::agent::SessionActionCatalog;
     use crate::agent::types::{
-        AgentInvocationContext, CapabilityAction, CapabilityEnvironment, CapabilitySurface,
+        AgentInvocationContext, CapabilityAction, CapabilityDomain, CapabilitySurface,
         HarnessContract, IdentityEnvelope, ParticipantEnvelope, SessionAnchor, SessionBaseline,
         SessionCompaction,
     };
-    use crate::environment::EnvironmentRegistry;
+    use crate::capability_domain::CapabilityDomainRegistry;
     use serde_json::json;
 
-    fn context_with_environments(
-        environments: Vec<CapabilityEnvironment>,
+    fn context_with_capability_domains(
+        capability_domains: Vec<CapabilityDomain>,
     ) -> AgentInvocationContext {
         AgentInvocationContext {
             harness_contract: HarnessContract {
@@ -69,7 +72,7 @@ mod tests {
                     session_id: "session-1".to_string(),
                     started_at_unix_ms: 1,
                 },
-                capability_surface: CapabilitySurface { environments },
+                capability_surface: CapabilitySurface { capability_domains },
                 participant_envelope: ParticipantEnvelope {
                     schema_version: 1,
                     source_revision: "user-default@1".to_string(),
@@ -85,7 +88,7 @@ mod tests {
 
     #[test]
     fn action_catalog_limits_openai_definitions_to_context_environments() {
-        let context = context_with_environments(vec![CapabilityEnvironment {
+        let context = context_with_capability_domains(vec![CapabilityDomain {
             id: "filesystem".to_string(),
             name: "Filesystem".to_string(),
             description: "Filesystem".to_string(),
@@ -98,7 +101,7 @@ mod tests {
             recipes: vec![],
         }]);
 
-        let catalog = SessionActionCatalog::from_context(EnvironmentRegistry::new(), &context);
+        let catalog = SessionActionCatalog::from_context(CapabilityDomainRegistry::new(), &context);
         let definitions = catalog.openai_action_definitions();
         let names = definitions
             .iter()
@@ -112,7 +115,7 @@ mod tests {
 
     #[test]
     fn action_catalog_rejects_actions_outside_context_environments() {
-        let context = context_with_environments(vec![CapabilityEnvironment {
+        let context = context_with_capability_domains(vec![CapabilityDomain {
             id: "filesystem".to_string(),
             name: "Filesystem".to_string(),
             description: "Filesystem".to_string(),
@@ -125,7 +128,7 @@ mod tests {
             recipes: vec![],
         }]);
 
-        let catalog = SessionActionCatalog::from_context(EnvironmentRegistry::new(), &context);
+        let catalog = SessionActionCatalog::from_context(CapabilityDomainRegistry::new(), &context);
         let error = catalog
             .validate_action("shell__run", &json!({"command": "pwd"}))
             .expect_err("shell action should be rejected");

@@ -4,9 +4,9 @@ use tokio::sync::broadcast;
 use tonic::Status;
 
 use crate::agent::ActionInvocation;
-use crate::environment::{
-    EnvironmentActionSubmission, EnvironmentActorHandle, EnvironmentCommittedAction,
-    EnvironmentRegistry, RequestedExecutionMode, requested_execution_mode_from_args_json,
+use crate::capability_domain::{
+    CapabilityDomainActionSubmission, CapabilityDomainActorHandle, CapabilityDomainCommittedAction,
+    CapabilityDomainRegistry, RequestedExecutionMode, requested_execution_mode_from_args_json,
 };
 use crate::history;
 use crate::runtime::Runtime;
@@ -15,7 +15,7 @@ use crate::session::execution_context::ExecutionContext;
 use crate::session::payload_lookup::resolve_from_execution;
 use crate::session::state::{ActiveExecutionState, SessionState};
 use crate::util::now_unix_ms;
-use fathom_env::ActionModeSupport;
+use fathom_capability_domain::ActionModeSupport;
 use fathom_protocol::pb;
 use fathom_protocol::{execution_status_label, execution_update_phase_label};
 
@@ -41,7 +41,7 @@ pub(super) fn queue_execution(
     runtime: &Runtime,
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
-    environment_handles: &HashMap<String, EnvironmentActorHandle>,
+    capability_domain_handles: &HashMap<String, CapabilityDomainActorHandle>,
     action_invocation: ActionInvocation,
 ) -> QueuedExecution {
     let ActionInvocation {
@@ -68,16 +68,16 @@ pub(super) fn queue_execution(
 
     match requested_mode {
         Ok(requested_mode) => {
-            let resolved = EnvironmentRegistry::resolve(&action_id);
+            let resolved = CapabilityDomainRegistry::resolve(&action_id);
             if let Some(resolved_action) = resolved {
                 if !state
-                    .engaged_environment_ids
-                    .contains(&resolved_action.environment_id)
+                    .engaged_capability_domain_ids
+                    .contains(&resolved_action.capability_domain_id)
                 {
                     execution.status = pb::ExecutionStatus::Failed as i32;
                     execution.result_message = format!(
                         "environment `{}` is not engaged for this session",
-                        resolved_action.environment_id
+                        resolved_action.capability_domain_id
                     );
                 } else if requested_mode == RequestedExecutionMode::Detach
                     && resolved_action.mode_support != ActionModeSupport::AwaitOrDetach
@@ -88,9 +88,10 @@ pub(super) fn queue_execution(
                         resolved_action.canonical_action_id
                     );
                 } else if let Some(handle) =
-                    environment_handles.get(&resolved_action.environment_id)
+                    capability_domain_handles.get(&resolved_action.capability_domain_id)
                 {
-                    let env_seq = state.allocate_environment_seq(&resolved_action.environment_id);
+                    let env_seq =
+                        state.allocate_capability_domain_seq(&resolved_action.capability_domain_id);
                     let execution_context = ExecutionContext::from_state(state);
 
                     state.active_executions.insert(
@@ -109,7 +110,7 @@ pub(super) fn queue_execution(
                         outcome = QueuedExecutionOutcome::DetachedAccepted;
                     }
 
-                    let submission = EnvironmentActionSubmission {
+                    let submission = CapabilityDomainActionSubmission {
                         execution_id: execution_id.clone(),
                         env_seq,
                         resolved_action,
@@ -125,7 +126,7 @@ pub(super) fn queue_execution(
                     execution.status = pb::ExecutionStatus::Failed as i32;
                     execution.result_message = format!(
                         "environment runtime `{}` is unavailable",
-                        resolved_action.environment_id
+                        resolved_action.capability_domain_id
                     );
                 }
             } else {
@@ -255,22 +256,23 @@ pub(super) fn cancel_execution(
     })
 }
 
-pub(super) fn handle_environment_action_committed(
+pub(super) fn handle_capability_domain_action_committed(
     runtime: &Runtime,
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
-    committed: EnvironmentCommittedAction,
+    committed: CapabilityDomainCommittedAction,
 ) -> CommitTurnPolicy {
     if !state
-        .engaged_environment_ids
-        .contains(&committed.environment_id)
+        .engaged_capability_domain_ids
+        .contains(&committed.capability_domain_id)
     {
         return CommitTurnPolicy::DeferUntilFutureTrigger;
     }
 
-    state
-        .environment_snapshots
-        .insert(committed.environment_id.clone(), committed.state_snapshot);
+    state.capability_domain_snapshots.insert(
+        committed.capability_domain_id.clone(),
+        committed.state_snapshot,
+    );
 
     state.in_flight_actions.remove(&committed.execution_id);
     let execution_state = state.active_executions.remove(&committed.execution_id);
@@ -514,13 +516,13 @@ mod tests {
     use tokio::sync::{broadcast, mpsc};
 
     use super::{
-        CommitTurnPolicy, QueuedExecutionOutcome, handle_environment_action_committed,
+        CommitTurnPolicy, QueuedExecutionOutcome, handle_capability_domain_action_committed,
         queue_execution,
     };
     use crate::agent::ActionInvocation;
-    use crate::environment::{
-        EnvironmentCommittedAction, EnvironmentRegistry, RequestedExecutionMode,
-        spawn_environment_actor,
+    use crate::capability_domain::{
+        CapabilityDomainCommittedAction, CapabilityDomainRegistry, RequestedExecutionMode,
+        spawn_capability_domain_actor,
     };
     use crate::runtime::Runtime;
     use crate::session::state::ActiveExecutionState;
@@ -536,10 +538,10 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            EnvironmentRegistry::default_engaged_environment_ids()
+            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            EnvironmentRegistry::initial_environment_snapshots()
+            CapabilityDomainRegistry::initial_capability_domain_snapshots()
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
         )
@@ -550,13 +552,13 @@ mod tests {
         let runtime = Runtime::new(2, 10);
         let (events_tx, _) = broadcast::channel(16);
         let mut state = test_state();
-        let environment_handles = HashMap::new();
+        let capability_domain_handles = HashMap::new();
 
         let queued = queue_execution(
             &runtime,
             &mut state,
             &events_tx,
-            &environment_handles,
+            &capability_domain_handles,
             ActionInvocation {
                 action_id: "filesystem__list".to_string(),
                 args_json: r#"{"path":".","execution_mode":"detach"}"#.to_string(),
@@ -592,23 +594,23 @@ mod tests {
         let mut state = test_state();
         let (session_command_tx, _session_command_rx) = mpsc::channel::<SessionCommand>(16);
         let shell_snapshot = state
-            .environment_snapshots
+            .capability_domain_snapshots
             .get("shell")
             .cloned()
             .expect("shell snapshot");
-        let shell_handle = spawn_environment_actor(
+        let shell_handle = spawn_capability_domain_actor(
             runtime.clone(),
             "shell".to_string(),
             shell_snapshot,
             session_command_tx,
         );
-        let environment_handles = HashMap::from([("shell".to_string(), shell_handle)]);
+        let capability_domain_handles = HashMap::from([("shell".to_string(), shell_handle)]);
 
         let queued = queue_execution(
             &runtime,
             &mut state,
             &events_tx,
-            &environment_handles,
+            &capability_domain_handles,
             ActionInvocation {
                 action_id: "shell__run".to_string(),
                 args_json: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
@@ -672,20 +674,20 @@ mod tests {
             },
         );
 
-        let committed = EnvironmentCommittedAction {
+        let committed = CapabilityDomainCommittedAction {
             execution_id: execution_id.clone(),
-            environment_id: "filesystem".to_string(),
+            capability_domain_id: "filesystem".to_string(),
             succeeded: true,
             message: r#"{"entries":["Cargo.toml"]}"#.to_string(),
             state_snapshot: state
-                .environment_snapshots
+                .capability_domain_snapshots
                 .get("filesystem")
                 .cloned()
                 .expect("filesystem snapshot"),
         };
 
         let policy =
-            handle_environment_action_committed(&runtime, &mut state, &events_tx, committed);
+            handle_capability_domain_action_committed(&runtime, &mut state, &events_tx, committed);
 
         assert!(matches!(policy, CommitTurnPolicy::ResumeNow));
         let trigger = state
@@ -737,20 +739,20 @@ mod tests {
             },
         );
 
-        let committed = EnvironmentCommittedAction {
+        let committed = CapabilityDomainCommittedAction {
             execution_id: execution_id.clone(),
-            environment_id: "shell".to_string(),
+            capability_domain_id: "shell".to_string(),
             succeeded: true,
             message: r#"{"stdout":"/tmp"}"#.to_string(),
             state_snapshot: state
-                .environment_snapshots
+                .capability_domain_snapshots
                 .get("shell")
                 .cloned()
                 .expect("shell snapshot"),
         };
 
         let policy =
-            handle_environment_action_committed(&runtime, &mut state, &events_tx, committed);
+            handle_capability_domain_action_committed(&runtime, &mut state, &events_tx, committed);
 
         assert!(matches!(policy, CommitTurnPolicy::DeferUntilFutureTrigger));
         let trigger = state

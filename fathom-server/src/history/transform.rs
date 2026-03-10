@@ -1,6 +1,6 @@
-use fathom_env::parse_action_id;
+use fathom_capability_domain::parse_action_id;
 
-use crate::environment::{RequestedExecutionMode, requested_execution_mode_from_args_json};
+use crate::capability_domain::{RequestedExecutionMode, requested_execution_mode_from_args_json};
 use crate::history::EXECUTION_PAYLOAD_LOOKUP_ACTION;
 use crate::history::preview::build_payload_preview;
 use crate::history::schema::{
@@ -100,7 +100,7 @@ pub(crate) fn execution_requested_line(
     let status = pb::ExecutionStatus::try_from(execution.status)
         .map(execution_status_label)
         .unwrap_or("unknown");
-    let (environment_id, action_name) = parse_action_identity(&execution.action_id);
+    let (capability_domain_id, action_name) = parse_action_identity(&execution.action_id);
     let execution_mode = requested_execution_mode_from_args_json(&execution.args_json)
         .unwrap_or(RequestedExecutionMode::Await)
         .as_str()
@@ -113,7 +113,7 @@ pub(crate) fn execution_requested_line(
         profile_ref: active_agent_profile_ref(state),
         kind: HistoryEventKind::ExecutionRequested(ExecutionRequestedHistoryPayload {
             canonical_action_id: execution.action_id.clone(),
-            environment_id,
+            capability_domain_id,
             action_name,
             execution_mode,
             status: status.to_string(),

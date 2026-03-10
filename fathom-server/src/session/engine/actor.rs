@@ -2,13 +2,13 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::environment::{EnvironmentActorHandle, spawn_environment_actor};
+use crate::capability_domain::{CapabilityDomainActorHandle, spawn_capability_domain_actor};
 use crate::runtime::Runtime;
 use crate::session::state::{SessionCommand, SessionState};
 use fathom_protocol::pb;
 
 use super::events::{enqueue_automatic_heartbeat, enqueue_trigger};
-use super::tasks::{CommitTurnPolicy, cancel_execution, handle_environment_action_committed};
+use super::tasks::{CommitTurnPolicy, cancel_execution, handle_capability_domain_action_committed};
 use super::turn::process_turns;
 
 const AUTO_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30 * 60);
@@ -20,27 +20,27 @@ pub(crate) async fn run_session_actor(
     mut command_rx: mpsc::Receiver<SessionCommand>,
     events_tx: broadcast::Sender<pb::SessionEvent>,
 ) {
-    let environment_handles = state
-        .engaged_environment_ids
+    let capability_domain_handles = state
+        .engaged_capability_domain_ids
         .iter()
-        .filter_map(|environment_id| {
+        .filter_map(|capability_domain_id| {
             state
-                .environment_snapshots
-                .get(environment_id)
+                .capability_domain_snapshots
+                .get(capability_domain_id)
                 .cloned()
                 .map(|snapshot| {
                     (
-                        environment_id.clone(),
-                        spawn_environment_actor(
+                        capability_domain_id.clone(),
+                        spawn_capability_domain_actor(
                             runtime.clone(),
-                            environment_id.clone(),
+                            capability_domain_id.clone(),
                             snapshot,
                             command_tx.clone(),
                         ),
                     )
                 })
         })
-        .collect::<std::collections::HashMap<String, EnvironmentActorHandle>>();
+        .collect::<std::collections::HashMap<String, CapabilityDomainActorHandle>>();
 
     let mut heartbeat_interval = tokio::time::interval(AUTO_HEARTBEAT_INTERVAL);
     heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -72,7 +72,7 @@ pub(crate) async fn run_session_actor(
                             &mut state,
                             &command_tx,
                             &events_tx,
-                            &environment_handles,
+                            &capability_domain_handles,
                         )
                         .await;
                     }
@@ -93,8 +93,8 @@ pub(crate) async fn run_session_actor(
                             cancel_execution(&runtime, &mut state, &events_tx, &execution_id);
                         let _ = respond_to.send(response);
                     }
-                    SessionCommand::EnvironmentActionCommitted { committed } => {
-                        let policy = handle_environment_action_committed(
+                    SessionCommand::CapabilityDomainActionCommitted { committed } => {
+                        let policy = handle_capability_domain_action_committed(
                             &runtime,
                             &mut state,
                             &events_tx,
@@ -106,7 +106,7 @@ pub(crate) async fn run_session_actor(
                                 &mut state,
                                 &command_tx,
                                 &events_tx,
-                                &environment_handles,
+                                &capability_domain_handles,
                             )
                             .await;
                         }
@@ -120,7 +120,7 @@ pub(crate) async fn run_session_actor(
                     &mut state,
                     &command_tx,
                     &events_tx,
-                    &environment_handles,
+                    &capability_domain_handles,
                 )
                 .await;
             }
@@ -133,11 +133,18 @@ async fn maybe_process_turns(
     state: &mut SessionState,
     command_tx: &mpsc::Sender<SessionCommand>,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
-    environment_handles: &std::collections::HashMap<String, EnvironmentActorHandle>,
+    capability_domain_handles: &std::collections::HashMap<String, CapabilityDomainActorHandle>,
 ) {
     if !state.in_flight_actions.is_empty() {
         return;
     }
 
-    process_turns(runtime, state, command_tx, events_tx, environment_handles).await;
+    process_turns(
+        runtime,
+        state,
+        command_tx,
+        events_tx,
+        capability_domain_handles,
+    )
+    .await;
 }

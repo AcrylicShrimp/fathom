@@ -229,7 +229,7 @@ fn prompt_event_from_execution_update(update: &pb::ExecutionUpdateTrigger) -> Op
 mod tests {
     use crate::agent::prompt_input_builder::build_prompt_input;
     use crate::agent::types::{
-        ActionModeSupportContract, AgentInvocationContext, CapabilityAction, CapabilityEnvironment,
+        ActionModeSupportContract, AgentInvocationContext, CapabilityAction, CapabilityDomain,
         CapabilityRecipe, CapabilitySurface, HarnessContract, IdentityEnvelope,
         ParticipantEnvelope, PromptEvent, ResolvedPayloadLookupHint, SessionAnchor,
         SessionBaseline, SessionCompaction,
@@ -264,7 +264,7 @@ mod tests {
                     started_at_unix_ms: 1_765_000_000_000,
                 },
                 capability_surface: CapabilitySurface {
-                    environments: vec![CapabilityEnvironment {
+                    capability_domains: vec![CapabilityDomain {
                         id: "filesystem".to_string(),
                         name: "Filesystem".to_string(),
                         description: "Stateful filesystem environment rooted at a base path."

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tokio::sync::broadcast;
 
-use crate::environment::EnvironmentActorHandle;
+use crate::capability_domain::CapabilityDomainActorHandle;
 use crate::runtime::Runtime;
 use crate::session::state::SessionState;
 use fathom_protocol::pb;
@@ -18,7 +18,7 @@ pub(super) struct TurnCoordinator<'a> {
     runtime: &'a Runtime,
     state: &'a mut SessionState,
     events_tx: &'a broadcast::Sender<pb::SessionEvent>,
-    environment_handles: &'a HashMap<String, EnvironmentActorHandle>,
+    capability_domain_handles: &'a HashMap<String, CapabilityDomainActorHandle>,
 }
 
 impl<'a> TurnCoordinator<'a> {
@@ -26,13 +26,13 @@ impl<'a> TurnCoordinator<'a> {
         runtime: &'a Runtime,
         state: &'a mut SessionState,
         events_tx: &'a broadcast::Sender<pb::SessionEvent>,
-        environment_handles: &'a HashMap<String, EnvironmentActorHandle>,
+        capability_domain_handles: &'a HashMap<String, CapabilityDomainActorHandle>,
     ) -> Self {
         Self {
             runtime,
             state,
             events_tx,
-            environment_handles,
+            capability_domain_handles,
         }
     }
 
@@ -61,7 +61,7 @@ impl<'a> TurnCoordinator<'a> {
                         self.runtime,
                         self.state,
                         self.events_tx,
-                        self.environment_handles,
+                        self.capability_domain_handles,
                         turn_id,
                         invocation_seq,
                         &mut prepared,

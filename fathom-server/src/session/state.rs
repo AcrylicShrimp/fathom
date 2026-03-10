@@ -4,11 +4,11 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
 use crate::agent::SessionCompaction;
-use crate::environment::{EnvironmentCommittedAction, RequestedExecutionMode};
+use crate::capability_domain::{CapabilityDomainCommittedAction, RequestedExecutionMode};
 use crate::history::HistoryEvent;
 use crate::session::payload_lookup::ResolvedPayloadLookup;
 use crate::util::now_unix_ms;
-use fathom_env::EnvironmentSnapshot;
+use fathom_capability_domain::CapabilityDomainSnapshot;
 use fathom_protocol::pb;
 
 #[derive(Clone)]
@@ -32,8 +32,8 @@ pub(crate) enum SessionCommand {
         execution_id: String,
         respond_to: oneshot::Sender<Result<pb::CancelExecutionResponse, Status>>,
     },
-    EnvironmentActionCommitted {
-        committed: EnvironmentCommittedAction,
+    CapabilityDomainActionCommitted {
+        committed: CapabilityDomainCommittedAction,
     },
 }
 
@@ -54,9 +54,9 @@ pub(crate) struct SessionState {
     pub(crate) trigger_queue: VecDeque<pb::Trigger>,
     pub(crate) history: Vec<HistoryEvent>,
     pub(crate) executions: HashMap<String, pb::Execution>,
-    pub(crate) engaged_environment_ids: BTreeSet<String>,
-    pub(crate) environment_snapshots: HashMap<String, EnvironmentSnapshot>,
-    pub(crate) next_environment_seq: HashMap<String, u64>,
+    pub(crate) engaged_capability_domain_ids: BTreeSet<String>,
+    pub(crate) capability_domain_snapshots: HashMap<String, CapabilityDomainSnapshot>,
+    pub(crate) next_capability_domain_seq: HashMap<String, u64>,
     pub(crate) in_flight_actions: HashSet<String>,
     pub(crate) active_executions: HashMap<String, ActiveExecutionState>,
     pub(crate) pending_payload_lookups: Vec<ResolvedPayloadLookup>,
@@ -73,12 +73,12 @@ impl SessionState {
         participant_user_ids: Vec<String>,
         agent_profile_copy: pb::AgentProfile,
         participant_user_profiles_copy: HashMap<String, pb::UserProfile>,
-        engaged_environment_ids: BTreeSet<String>,
-        environment_snapshots: HashMap<String, EnvironmentSnapshot>,
+        engaged_capability_domain_ids: BTreeSet<String>,
+        capability_domain_snapshots: HashMap<String, CapabilityDomainSnapshot>,
     ) -> Self {
-        let next_environment_seq = engaged_environment_ids
+        let next_capability_domain_seq = engaged_capability_domain_ids
             .iter()
-            .map(|env_id| (env_id.clone(), 0u64))
+            .map(|capability_domain_id| (capability_domain_id.clone(), 0u64))
             .collect::<HashMap<_, _>>();
 
         Self {
@@ -91,9 +91,9 @@ impl SessionState {
             trigger_queue: VecDeque::new(),
             history: Vec::new(),
             executions: HashMap::new(),
-            engaged_environment_ids,
-            environment_snapshots,
-            next_environment_seq,
+            engaged_capability_domain_ids,
+            capability_domain_snapshots,
+            next_capability_domain_seq,
             in_flight_actions: HashSet::new(),
             active_executions: HashMap::new(),
             pending_payload_lookups: Vec::new(),
@@ -137,10 +137,10 @@ impl SessionState {
         }
     }
 
-    pub(crate) fn allocate_environment_seq(&mut self, environment_id: &str) -> u64 {
+    pub(crate) fn allocate_capability_domain_seq(&mut self, capability_domain_id: &str) -> u64 {
         let seq = self
-            .next_environment_seq
-            .entry(environment_id.to_string())
+            .next_capability_domain_seq
+            .entry(capability_domain_id.to_string())
             .or_insert(0);
         *seq += 1;
         *seq

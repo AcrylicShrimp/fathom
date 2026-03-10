@@ -4,11 +4,11 @@ members = [
     "fathom-server",
     "fathom-client",
     "fathom",
-    "fathom-env",
-    "envs/fathom-env-fs",
-    "envs/fathom-env-shell",
-    "envs/fathom-env-brave-search",
-    "envs/fathom-env-jina",
+    "fathom-capability-domain",
+    "envs/fathom-capability-domain-fs",
+    "envs/fathom-capability-domain-shell",
+    "envs/fathom-capability-domain-brave-search",
+    "envs/fathom-capability-domain-jina",
 ]
 resolver = "3"
 
@@ -22,11 +22,11 @@ anyhow = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
-fathom-env = { path = "fathom-env" }
-fathom-env-brave-search = { path = "envs/fathom-env-brave-search" }
-fathom-env-fs = { path = "envs/fathom-env-fs" }
-fathom-env-jina = { path = "envs/fathom-env-jina" }
-fathom-env-shell = { path = "envs/fathom-env-shell" }
+fathom-capability-domain = { path = "fathom-capability-domain" }
+fathom-capability-domain-brave-search = { path = "envs/fathom-capability-domain-brave-search" }
+fathom-capability-domain-fs = { path = "envs/fathom-capability-domain-fs" }
+fathom-capability-domain-jina = { path = "envs/fathom-capability-domain-jina" }
+fathom-capability-domain-shell = { path = "envs/fathom-capability-domain-shell" }
 fathom-protocol = { path = "fathom-protocol" }
 futures-util = "0.3"
 glob = "0.3"

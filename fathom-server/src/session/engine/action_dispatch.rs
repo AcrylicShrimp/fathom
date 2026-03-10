@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 use crate::agent::ActionInvocation;
-use crate::environment::EnvironmentActorHandle;
+use crate::capability_domain::CapabilityDomainActorHandle;
 use crate::runtime::Runtime;
 use crate::session::diagnostics::execution_to_json;
 use crate::session::state::SessionState;
@@ -18,7 +18,7 @@ pub(super) struct TurnActionDispatcher<'a> {
     runtime: &'a Runtime,
     state: &'a mut SessionState,
     events_tx: &'a broadcast::Sender<pb::SessionEvent>,
-    environment_handles: &'a HashMap<String, EnvironmentActorHandle>,
+    capability_domain_handles: &'a HashMap<String, CapabilityDomainActorHandle>,
     dispatched_actions: Vec<serde_json::Value>,
 }
 
@@ -27,13 +27,13 @@ impl<'a> TurnActionDispatcher<'a> {
         runtime: &'a Runtime,
         state: &'a mut SessionState,
         events_tx: &'a broadcast::Sender<pb::SessionEvent>,
-        environment_handles: &'a HashMap<String, EnvironmentActorHandle>,
+        capability_domain_handles: &'a HashMap<String, CapabilityDomainActorHandle>,
     ) -> Self {
         Self {
             runtime,
             state,
             events_tx,
-            environment_handles,
+            capability_domain_handles,
             dispatched_actions: Vec::new(),
         }
     }
@@ -47,7 +47,7 @@ impl<'a> TurnActionDispatcher<'a> {
             self.runtime,
             self.state,
             self.events_tx,
-            self.environment_handles,
+            self.capability_domain_handles,
             action_invocation,
         );
         let phase = match queued.outcome {
@@ -61,7 +61,7 @@ impl<'a> TurnActionDispatcher<'a> {
             Some(pb::ExecutionUpdatePhase::ExecutionDetached) => queued_action_output(
                 &queued.execution,
                 call_id.as_deref(),
-                crate::environment::RequestedExecutionMode::Detach,
+                crate::capability_domain::RequestedExecutionMode::Detach,
             ),
             Some(pb::ExecutionUpdatePhase::ExecutionRejected) => settled_execution_output(
                 &queued.execution,
@@ -111,7 +111,7 @@ mod tests {
 
     use super::TurnActionDispatcher;
     use crate::agent::ActionInvocation;
-    use crate::environment::{EnvironmentRegistry, spawn_environment_actor};
+    use crate::capability_domain::{CapabilityDomainRegistry, spawn_capability_domain_actor};
     use crate::runtime::Runtime;
     use crate::session::{SessionCommand, SessionState};
     use crate::util::{default_agent_profile, default_user_profile};
@@ -125,10 +125,10 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            EnvironmentRegistry::default_engaged_environment_ids()
+            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            EnvironmentRegistry::initial_environment_snapshots()
+            CapabilityDomainRegistry::initial_capability_domain_snapshots()
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
         )
@@ -140,10 +140,10 @@ mod tests {
         let runtime = Runtime::new(2, 10);
         let (events_tx, mut events_rx) = broadcast::channel(16);
         let mut state = test_state();
-        let environment_handles = HashMap::new();
+        let capability_domain_handles = HashMap::new();
 
         let mut dispatcher =
-            TurnActionDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
+            TurnActionDispatcher::new(&runtime, &mut state, &events_tx, &capability_domain_handles);
         dispatcher.dispatch_action_invocation(ActionInvocation {
             action_id: "shell__run".to_string(),
             args_json: "{\"command\":\"pwd\",\"execution_mode\":\"detach\"}".to_string(),
@@ -180,20 +180,20 @@ mod tests {
         let mut state = test_state();
         let (session_command_tx, _session_command_rx) = mpsc::channel::<SessionCommand>(16);
         let shell_snapshot = state
-            .environment_snapshots
+            .capability_domain_snapshots
             .get("shell")
             .cloned()
             .expect("shell snapshot");
-        let shell_handle = spawn_environment_actor(
+        let shell_handle = spawn_capability_domain_actor(
             runtime.clone(),
             "shell".to_string(),
             shell_snapshot,
             session_command_tx,
         );
-        let environment_handles = HashMap::from([("shell".to_string(), shell_handle)]);
+        let capability_domain_handles = HashMap::from([("shell".to_string(), shell_handle)]);
 
         let mut dispatcher =
-            TurnActionDispatcher::new(&runtime, &mut state, &events_tx, &environment_handles);
+            TurnActionDispatcher::new(&runtime, &mut state, &events_tx, &capability_domain_handles);
         dispatcher.dispatch_action_invocation(ActionInvocation {
             action_id: "shell__run".to_string(),
             args_json: "{\"command\":\"pwd\",\"execution_mode\":\"detach\"}".to_string(),

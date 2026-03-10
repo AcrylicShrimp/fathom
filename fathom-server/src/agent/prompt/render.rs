@@ -115,17 +115,17 @@ pub(super) fn build_session_baseline_block(input: &PromptInput) -> String {
         String::new(),
         "## Capability Surface".to_string(),
     ];
-    let mut environments = input
+    let mut capability_domains = input
         .stable_prefix
         .session_baseline
         .capability_surface
-        .environments
+        .capability_domains
         .clone();
-    environments.sort_by(|a, b| a.id.cmp(&b.id));
-    if environments.is_empty() {
+    capability_domains.sort_by(|a, b| a.id.cmp(&b.id));
+    if capability_domains.is_empty() {
         lines.push("(none)".to_string());
     } else {
-        for environment in environments {
+        for environment in capability_domains {
             lines.push(String::new());
             lines.push(format!("### {} (`{}`)", environment.name, environment.id));
             if !environment.description.trim().is_empty() {

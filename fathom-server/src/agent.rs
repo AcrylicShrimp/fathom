@@ -10,7 +10,7 @@ mod types;
 pub(crate) use types::{ActionArgDeltaNote, ActionArgDoneNote};
 pub(crate) use types::{
     ActionInvocation, ActionModeSupportContract, AgentInvocationContext, AgentTurnOutcome,
-    CapabilityAction, CapabilityEnvironment, CapabilityRecipe, CapabilitySurface, CompiledPrompt,
+    CapabilityAction, CapabilityDomain, CapabilityRecipe, CapabilitySurface, CompiledPrompt,
     HarnessContract, IdentityEnvelope, ModelDeltaEvent, ModelInvocationOutcome,
     ParticipantEnvelope, PromptMessage, ResolvedPayloadLookupHint, SessionAnchor, SessionBaseline,
     SessionCompaction, StreamNote, SummaryBlockRef,
@@ -18,7 +18,7 @@ pub(crate) use types::{
 
 use std::sync::Arc;
 
-use crate::environment::EnvironmentRegistry;
+use crate::capability_domain::CapabilityDomainRegistry;
 pub(crate) use action_catalog::SessionActionCatalog;
 use model_adapter::{ModelAdapter, UnavailableModelAdapter};
 use openai::OpenAiModelAdapter;
@@ -28,7 +28,7 @@ use prompt_input_builder::build_prompt_input;
 #[derive(Clone)]
 pub(crate) struct AgentOrchestrator {
     model_adapter: Arc<dyn ModelAdapter>,
-    environment_registry: EnvironmentRegistry,
+    capability_domain_registry: CapabilityDomainRegistry,
     prompt_compiler: PromptCompiler,
 }
 
@@ -40,7 +40,7 @@ impl AgentOrchestrator {
         };
         Self::from_parts(
             model_adapter,
-            EnvironmentRegistry::new(),
+            CapabilityDomainRegistry::new(),
             PromptCompiler::new(),
         )
     }
@@ -55,17 +55,17 @@ impl AgentOrchestrator {
     }
 
     fn session_action_catalog(&self, context: &AgentInvocationContext) -> SessionActionCatalog {
-        SessionActionCatalog::from_context(self.environment_registry.clone(), context)
+        SessionActionCatalog::from_context(self.capability_domain_registry.clone(), context)
     }
 
     fn from_parts(
         model_adapter: Arc<dyn ModelAdapter>,
-        environment_registry: EnvironmentRegistry,
+        capability_domain_registry: CapabilityDomainRegistry,
         prompt_compiler: PromptCompiler,
     ) -> Self {
         Self {
             model_adapter,
-            environment_registry,
+            capability_domain_registry,
             prompt_compiler,
         }
     }
@@ -74,7 +74,7 @@ impl AgentOrchestrator {
     fn with_model_adapter(model_adapter: Arc<dyn ModelAdapter>) -> Self {
         Self::from_parts(
             model_adapter,
-            EnvironmentRegistry::new(),
+            CapabilityDomainRegistry::new(),
             PromptCompiler::new(),
         )
     }
@@ -247,7 +247,7 @@ mod tests {
     };
     use super::types::PromptDiagnostics;
     use super::{
-        AgentInvocationContext, AgentOrchestrator, CapabilityEnvironment, CapabilitySurface,
+        AgentInvocationContext, AgentOrchestrator, CapabilityDomain, CapabilitySurface,
         CompiledPrompt, HarnessContract, IdentityEnvelope, ModelDeltaEvent, ModelInvocationOutcome,
         ParticipantEnvelope, PromptMessage, SessionAnchor, SessionBaseline, SessionCompaction,
     };
@@ -331,7 +331,7 @@ mod tests {
                     started_at_unix_ms: 1_765_000_000_000,
                 },
                 capability_surface: CapabilitySurface {
-                    environments: vec![CapabilityEnvironment {
+                    capability_domains: vec![CapabilityDomain {
                         id: "filesystem".to_string(),
                         name: "Filesystem".to_string(),
                         description: "Stateful filesystem environment rooted at a base path."

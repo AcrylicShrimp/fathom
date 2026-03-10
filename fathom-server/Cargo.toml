@@ -7,11 +7,11 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-fathom-env.workspace = true
-fathom-env-brave-search.workspace = true
-fathom-env-fs.workspace = true
-fathom-env-jina.workspace = true
-fathom-env-shell.workspace = true
+fathom-capability-domain.workspace = true
+fathom-capability-domain-brave-search.workspace = true
+fathom-capability-domain-fs.workspace = true
+fathom-capability-domain-jina.workspace = true
+fathom-capability-domain-shell.workspace = true
 fathom-protocol.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true

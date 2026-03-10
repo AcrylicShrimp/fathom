@@ -11,7 +11,7 @@ Fathom is a session-oriented agent runtime with a gRPC server and TUI client.
 - Assistant user-facing output supports streaming from server to client.
 - Server synthesizes authoritative time context (UTC + server-local timezone) for agent turns.
 - Model-facing behavior is defined by turn snapshot synthesis + prompt assembly over typed history and compaction summaries.
-- Environment model currently includes `filesystem`, `brave_search`, `jina`, `shell`, and built-in `system`.
+- Capability domain model currently includes `filesystem`, `brave_search`, `jina`, `shell`, and built-in `system`.
 - Server writes structured diagnostics JSON logs under `.fathom/diagnostics/` for turn/invocation/task tracing.
 
 ## Core Concepts
@@ -30,8 +30,8 @@ A session is the unit of conversation and orchestration.
   - queued triggers
   - conversation history
   - task registry
-  - engaged environment set (`engaged_environment_ids`)
-  - environment state snapshots (`environment_snapshots`)
+  - engaged capability-domain set (`engaged_capability_domain_ids`)
+  - capability-domain state snapshots (`capability_domain_snapshots`)
   - in-flight action hints for prompt context
   - ephemeral resolved payload lookups (`pending_payload_lookups`)
 
@@ -83,9 +83,9 @@ Tasks are background jobs created by agent actions.
 - One model action call maps to one background task.
 - Canonical action ID format: `env__action` (examples: `filesystem__read`, `system__get_time`).
 - Action dispatch model:
-  - Session actor routes each task to the target environment actor.
-  - Environment actor may execute independent actions in parallel.
-  - Commit order is deterministic per environment sequence.
+  - Session actor routes each task to the target capability-domain actor.
+  - Capability-domain actor may execute independent actions in parallel.
+  - Commit order is deterministic per capability-domain sequence.
   - `TaskDone` is emitted after commit finalization (success or failure).
   - `TaskDone` triggers do not force immediate turn execution while in-flight actions remain.
 - Timeout contract:
@@ -114,7 +114,7 @@ Tasks are background jobs created by agent actions.
 - History transformation contract:
   - history uses typed event variants, not raw JSON lines or stringly payload parsing
   - `task_started` and `task_finished` are recorded as distinct history events.
-  - each task history entry includes `canonical_action_id`, `environment_id`, and `action_name`.
+  - each task history entry includes `canonical_action_id`, `capability_domain_id`, and `action_name`.
   - Task args/results are stored in history as head/tail previews with truncation metadata and lookup references.
   - Agent can query payload chunks with `system__get_task_payload` and use offset paging (`offset`, `limit`, `next_offset`).
   - Resolved payload chunks are injected into prompt context through an ephemeral lookup buffer.
@@ -126,22 +126,22 @@ Tasks are background jobs created by agent actions.
     - no queued triggers
 - Time context contract:
   - Each turn snapshot includes `time_context` (`utc_rfc3339`, `local_rfc3339`, `local_timezone_name`, `local_utc_offset`, `generated_at_unix_ms`).
-  - Each turn snapshot includes `activated_environments` (`id`, `name`, `description`).
+  - Each turn snapshot includes `activated_capability_domains` (`id`, `name`, `description`).
   - `system__get_context` includes the same `time_context` shape.
   - `system__get_time` returns refreshed server-clock time when the model needs newer values mid-session.
-  - `system__describe_environment(env_id)` returns detailed environment docs for activated environments.
+  - `system__describe_capability_domain(capability_domain_id)` returns detailed capability-domain docs for activated capability domains.
 
 ### Filesystem Path Model
-Filesystem actions use plain relative paths resolved from the filesystem environment base path.
+Filesystem actions use plain relative paths resolved from the filesystem capability-domain base path.
 
 - Examples: `notes/today.md`, `src/main.rs`, `.`
 - Rejected: absolute paths, URI schemes (`://`), and paths that escape base path (`../../...`)
 
 Profile content is not exposed as pseudo-files via filesystem actions. Profile and memory data are accessed through system actions such as `system__list_profiles` and `system__get_profile`.
-Environment state is opaque to the agent by default. Agents inspect environment internals through explicit inspection actions (for example `filesystem__get_base_path` and `system__describe_environment`), not by raw state injection.
+Capability-domain state is opaque to the agent by default. Agents inspect capability-domain internals through explicit inspection actions (for example `filesystem__get_base_path` and `system__describe_capability_domain`), not by raw state injection.
 
 ### Shell Path Model
-Shell actions use plain relative directory paths resolved from the shell environment base path.
+Shell actions use plain relative directory paths resolved from the shell capability-domain base path.
 
 - `shell__run.path` defaults to `.`
 - Absolute paths, URI schemes, and escapes outside base path are rejected
@@ -215,14 +215,14 @@ Client-side dedup behavior:
     - `agent/prompt_assembler.rs`: builds the canonical prompt bundle for one attempt
     - `agent/model_adapter.rs`: provider-neutral streaming model interface
     - `agent/openai.rs`: OpenAI Responses API adapter implementation
-    - `agent/tool_catalog.rs`: session-scoped provider-visible tool catalog derived from engaged environments
-    - prompt/system context includes activated environment summaries (`id`, `name`, short description)
-    - mutable environment snapshots are not injected directly
-  - `runtime/context_snapshot.rs`: turn-time context synthesis (runtime/session/participants/engaged envs/in-flight actions)
-  - `environment/*`: environment registry, environment actors, and built-in environment definitions
-    - `environment/registry.rs`: composes environments and canonical action registry
-    - `environment/actor.rs`: per-environment child actor runtime with in-order commit
-    - `environment/system/*`: built-in privileged system environment actions (`system__*`)
+    - `agent/tool_catalog.rs`: session-scoped provider-visible tool catalog derived from engaged capability domains
+    - prompt/system context includes activated capability-domain summaries (`id`, `name`, short description)
+    - mutable capability-domain snapshots are not injected directly
+  - `runtime/context_snapshot.rs`: turn-time context synthesis (runtime/session/participants/engaged capability domains/in-flight actions)
+  - `capability_domain/*`: capability-domain registry, capability-domain actors, and built-in capability-domain definitions
+    - `capability_domain/registry.rs`: composes capability domains and canonical action registry
+    - `capability_domain/actor.rs`: per-capability-domain child actor runtime with in-order commit
+    - `capability_domain/system/*`: built-in privileged system capability-domain actions (`system__*`)
 - `session/*`: deterministic session actor + turn orchestration
   - barrier scheduling: triggers are drained only when no in-flight actions exist
   - `session/engine/turn/coordinator.rs`: turn gating, trigger drain, preprocessing, and finalization
@@ -236,34 +236,34 @@ Client-side dedup behavior:
     - `sessions/<session_id>/invocations/invocation-<n>.json` for full per-invocation synthesized context + prompt
     - excludes high-frequency provider stream delta events from diagnostic note capture
   - `history/*`: typed history transformation, payload preview synthesis, and deterministic session compaction
-  - `system_env/*`: runtime/profile/session/task discovery action execution
-    - includes environment discovery (`system__describe_environment`) for deeper docs/capabilities/recipes
+  - `system_capability_domain/*`: runtime/profile/session/task discovery action execution
+    - includes capability-domain discovery (`system__describe_capability_domain`) for deeper docs/capabilities/recipes
     - `system__get_context` returns authoritative runtime/session context snapshots
 - `AgentOrchestrator` with:
-  - session-scoped tool visibility sourced from engaged environments only
+  - session-scoped tool visibility sourced from engaged capability domains only
   - provider-neutral model adapter boundary
   - semantic retry strategy for recoverable invalid tool calls
   - compaction-aware prompt stats and invocation diagnostics
 
-### Environment Contracts
-- `fathom-env`:
-  - shared environment/action contracts (`Environment`, `Action`, `ActionSpec`, `ActionOutcome`)
-  - environment metadata includes `id`, `name`, and `description`
+### CapabilityDomain Contracts
+- `fathom-capability-domain`:
+  - shared capability-domain/action contracts (`CapabilityDomain`, `Action`, `ActionSpec`, `ActionOutcome`)
+  - capability-domain metadata includes `id`, `name`, and `description`
   - canonical naming helpers (`env__action`)
-- `envs/fathom-env-fs`:
-  - filesystem environment action instances (`get_base_path`, `list`, `read`, `write`, `replace`, `glob`, `search`)
+- `envs/fathom-capability-domain-fs`:
+  - filesystem capability-domain action instances (`get_base_path`, `list`, `read`, `write`, `replace`, `glob`, `search`)
   - action schemas and validation
   - filesystem execution backend (path parsing, sandboxing, real I/O)
-- `envs/fathom-env-brave-search`:
-  - Brave Search environment action instance (`web_search`)
+- `envs/fathom-capability-domain-brave-search`:
+  - Brave Search capability-domain action instance (`web_search`)
   - action schema and validation
   - API execution backend (server-side credential auth, compact result mapping, structured provider/network failures)
-- `envs/fathom-env-jina`:
-  - Jina Reader environment action instance (`read_url`)
+- `envs/fathom-capability-domain-jina`:
+  - Jina Reader capability-domain action instance (`read_url`)
   - action schema and validation
   - API execution backend (server-side credential auth, URL validation, markdown extraction, truncation metadata)
-- `envs/fathom-env-shell`:
-  - shell environment action instance (`run`)
+- `envs/fathom-capability-domain-shell`:
+  - shell capability-domain action instance (`run`)
   - action schema and validation
   - async command execution backend (cwd/env overrides, runtime-managed timeout, bounded output capture)
 - System actions remain built-in in `fathom-server` because they require privileged server/runtime access.
@@ -305,7 +305,7 @@ Client-side dedup behavior:
 This implementation is intentionally in-memory and bootstrap-focused.
 Persistence, authorization/approval controls, and real environment backends can be layered on top of this runtime contract.
 
-## Environment
+## CapabilityDomain
 - Required: `OPENAI_API_KEY`
 - Optional per feature: `BRAVE_API_KEY` (required when agent uses `brave_search__web_search`)
 - Optional per feature: `JINA_API_KEY` (required when agent uses `jina__read_url`)

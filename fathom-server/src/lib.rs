@@ -7,13 +7,13 @@ use tonic::transport::Server;
 use tracing::info;
 
 mod agent;
-mod environment;
+mod capability_domain;
 mod history;
 mod profile_material;
 mod runtime;
 mod service;
 mod session;
-mod system_env;
+mod system_capability_domain;
 mod util;
 pub use service::FathomRuntimeService;
 
