@@ -246,7 +246,8 @@ impl CapabilityDomainRegistry {
             ));
         }
         validate_execution_mode_arg(&canonical_action_id, args, entry.action.spec().mode_support)?;
-        entry.action.validate(args)?;
+        let normalized_args = strip_execution_control_fields_from_args(args);
+        entry.action.validate(&normalized_args)?;
         Ok(canonical_action_id)
     }
 
@@ -526,14 +527,20 @@ pub(crate) fn requested_execution_mode_from_args_json(
 }
 
 fn strip_execution_control_fields_from_args_json(args_json: &str) -> String {
-    let Ok(mut value) = serde_json::from_str::<Value>(args_json) else {
+    let Ok(value) = serde_json::from_str::<Value>(args_json) else {
         return args_json.to_string();
     };
-    let Some(args) = value.as_object_mut() else {
-        return args_json.to_string();
-    };
-    args.remove(ACTION_EXECUTION_MODE_KEY);
+    let value = strip_execution_control_fields_from_args(&value);
     serde_json::to_string(&value).unwrap_or_else(|_| args_json.to_string())
+}
+
+fn strip_execution_control_fields_from_args(args: &Value) -> Value {
+    let mut value = args.clone();
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+    object.remove(ACTION_EXECUTION_MODE_KEY);
+    value
 }
 
 fn default_registry() -> &'static CapabilityDomainRegistry {
@@ -840,6 +847,15 @@ mod tests {
             definition["parameters"]["properties"]["execution_mode"]["enum"],
             json!(["await", "detach"])
         );
+    }
+
+    #[test]
+    fn validation_strips_execution_mode_before_action_validation() {
+        let valid = CapabilityDomainRegistry::validate(
+            "system__get_time",
+            &json!({"execution_mode":"await"}),
+        );
+        assert!(valid.is_ok());
     }
 
     #[test]
