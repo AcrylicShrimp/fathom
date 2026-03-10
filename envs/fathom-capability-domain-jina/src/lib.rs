@@ -26,7 +26,7 @@ impl CapabilityDomain for JinaCapabilityDomain {
         CapabilityDomainSpec {
             id: JINA_CAPABILITY_DOMAIN_ID,
             name: "Jina Reader",
-            description: "Reader environment backed by Jina Reader API. Extracts webpage content as markdown from absolute http(s) URLs.",
+            description: "Web page reading capability domain backed by Jina Reader API. Fetches one absolute HTTP(S) URL and returns extracted markdown content plus source metadata.",
         }
     }
 
@@ -41,20 +41,28 @@ impl CapabilityDomain for JinaCapabilityDomain {
     fn recipes(&self) -> Vec<CapabilityDomainRecipe> {
         vec![
             CapabilityDomainRecipe {
-                title: "Read a specific URL".to_string(),
+                title: "Read a known page".to_string(),
                 steps: vec![
-                    "Call jina__read_url with one absolute http(s) URL when you need readable page content.".to_string(),
-                    "The environment tries hard selector filtering first, then soft no-selector fallback on provider/transport failures.".to_string(),
-                    "Use extracted title and source_url fields when citing facts back to the user.".to_string(),
+                    "Call `jina__read_url` with one absolute HTTP(S) URL when you already know the page to inspect.".to_string(),
+                    "Review the returned title, source URL, and extracted content before deciding whether a narrower read is needed.".to_string(),
+                    "If the content is truncated or incomplete, rerun with tighter options rather than repeating the same broad request.".to_string(),
                 ],
             },
             CapabilityDomainRecipe {
-                title: "Handle noisy pages".to_string(),
+                title: "Target noisy page content".to_string(),
                 steps: vec![
-                    "Inspect advisory and attempts metadata in each result; content may still be low quality even when request succeeds.".to_string(),
-                    "Optional string fields must be omitted when unused; do not pass empty strings for selector fields.".to_string(),
-                    "When needed, provide advanced options (target_selector/remove_selector/wait_for_selector/token_budget/timeout_ms).".to_string(),
-                    "Prefer custom targeted retry before chaining many payload lookups.".to_string(),
+                    "Set `target_selector` when only one section of the page is relevant.".to_string(),
+                    "Set `remove_selector` to exclude repeated banners or unrelated sections from the extraction.".to_string(),
+                    "Set `wait_for_selector` when the relevant content appears after page load.".to_string(),
+                    "Omit selector fields entirely when you do not need them.".to_string(),
+                ],
+            },
+            CapabilityDomainRecipe {
+                title: "Control extraction size and latency".to_string(),
+                steps: vec![
+                    "Use `token_budget` to cap how much content is returned from large pages.".to_string(),
+                    "Use `timeout_ms` to constrain reads when the page is slow.".to_string(),
+                    "Adjust one option at a time when tuning a request so the effect of each change is visible.".to_string(),
                 ],
             },
         ]

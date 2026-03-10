@@ -16,7 +16,7 @@ impl Action for FsReadAction {
         ActionSpec {
             capability_domain_id: FILESYSTEM_CAPABILITY_DOMAIN_ID,
             action_name: "read",
-            description: "Read UTF-8 text content from a base-path-relative file path with optional line windowing (`offset_line`, `limit_lines`).",
+            description: "Read UTF-8 text from a relative file path under the current base path. Supports line-windowed reads for large files.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

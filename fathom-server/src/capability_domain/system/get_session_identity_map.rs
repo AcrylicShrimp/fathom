@@ -9,7 +9,7 @@ impl Action for GetSessionIdentityMapAction {
     fn spec(&self) -> ActionSpec {
         system_spec(
             "get_session_identity_map",
-            "Get active session identity references (agent and participants).",
+            "Return the active session identity references for the current agent and participants.",
             json!({
                 "type": "object",
                 "properties": {},

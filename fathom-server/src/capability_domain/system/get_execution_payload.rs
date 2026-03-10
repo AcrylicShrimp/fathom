@@ -9,7 +9,7 @@ impl Action for GetExecutionPayloadAction {
     fn spec(&self) -> ActionSpec {
         system_spec(
             "get_execution_payload",
-            "Lookup the full args/result payload for an execution using execution_id and part.",
+            "Return full execution args or result payload data for a specific execution id, with optional paging.",
             json!({
                 "type": "object",
                 "properties": {

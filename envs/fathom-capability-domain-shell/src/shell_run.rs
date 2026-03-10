@@ -18,7 +18,7 @@ impl Action for ShellRunAction {
         ActionSpec {
             capability_domain_id: SHELL_CAPABILITY_DOMAIN_ID,
             action_name: "run",
-            description: "Execute one non-interactive shell command at a base-path-relative working directory. Non-zero exit code marks the task as failed; timeout is runtime-managed.",
+            description: "Run one non-interactive shell command in a relative working directory under the current base path. Supports optional environment overrides; non-zero exit code marks the execution as failed.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

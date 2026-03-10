@@ -9,7 +9,7 @@ impl Action for ListProfilesAction {
     fn spec(&self) -> ActionSpec {
         system_spec(
             "list_profiles",
-            "List agent and/or user profiles in the runtime.",
+            "List available agent profiles, user profiles, or both.",
             json!({
                 "type": "object",
                 "properties": {

@@ -9,7 +9,7 @@ impl Action for GetTimeAction {
     fn spec(&self) -> ActionSpec {
         system_spec(
             "get_time",
-            "Get the latest server clock time context (UTC and local timezone).",
+            "Return the latest server clock time context in UTC and local timezone.",
             json!({
                 "type": "object",
                 "properties": {},

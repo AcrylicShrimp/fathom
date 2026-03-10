@@ -19,7 +19,7 @@ impl Action for FsSearchAction {
         ActionSpec {
             capability_domain_id: FILESYSTEM_CAPABILITY_DOMAIN_ID,
             action_name: "search",
-            description: "Regex search (Rust regex syntax) across UTF-8 files under a relative path. Requires non-empty `pattern`; optional `path`, `include`, `max_results`, `case_sensitive`.",
+            description: "Find regex matches inside UTF-8 files under the current base path. Optionally scope the search path, include patterns, case sensitivity, and result count.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

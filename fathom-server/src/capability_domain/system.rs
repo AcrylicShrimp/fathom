@@ -30,7 +30,7 @@ impl CapabilityDomain for SystemCapabilityDomain {
         CapabilityDomainSpec {
             id: SYSTEM_CAPABILITY_DOMAIN_ID,
             name: "System",
-            description: "Privileged runtime and identity inspection capability domain.",
+            description: "Privileged runtime inspection capability domain for authoritative session, time, profile, and execution-payload data.",
         }
     }
 
@@ -53,20 +53,27 @@ impl CapabilityDomain for SystemCapabilityDomain {
     fn recipes(&self) -> Vec<CapabilityDomainRecipe> {
         vec![
             CapabilityDomainRecipe {
-                title: "Refresh authoritative session context".to_string(),
+                title: "Refresh authoritative runtime context".to_string(),
                 steps: vec![
-                    "Call system__get_context to fetch runtime version, current server time, activated capability domains, and session identity map.".to_string(),
-                    "Use this before planning multi-step action sequences when context may have changed.".to_string(),
-                    "Call system__get_time when you need fresher wall-clock data mid-turn.".to_string(),
+                    "Call `system__get_context` when you need a fresh snapshot of session and runtime state.".to_string(),
+                    "Use the returned server time and activation data as the authoritative baseline for the current decision.".to_string(),
+                    "Call `system__get_time` later in the session when only clock freshness is needed.".to_string(),
                 ],
             },
             CapabilityDomainRecipe {
-                title: "Expand execution preview into full payload".to_string(),
+                title: "Inspect execution payloads".to_string(),
                 steps: vec![
-                    "Start from execution_requested and execution outcome previews in history to identify the relevant execution_id.".to_string(),
-                    "Call system__get_execution_payload with {execution_id, part} to load full args/result content.".to_string(),
-                    "Use offset/limit to page large payloads instead of requesting everything at once.".to_string(),
-                    "After inspecting payloads, continue planning with concrete failure/success evidence.".to_string(),
+                    "Start with the `execution_id` and choose whether you need the `args` or `result` payload.".to_string(),
+                    "Call `system__get_execution_payload` to load the payload body for that execution.".to_string(),
+                    "Use `offset` and `limit` to page large payloads instead of requesting everything at once.".to_string(),
+                ],
+            },
+            CapabilityDomainRecipe {
+                title: "Inspect runtime profiles".to_string(),
+                steps: vec![
+                    "Call `system__list_profiles` with the desired `kind` to discover available ids.".to_string(),
+                    "Call `system__get_profile` with one id when you need summary or full profile data.".to_string(),
+                    "Call `system__get_session_identity_map` when you need the active identities for the current session.".to_string(),
                 ],
             },
         ]

@@ -26,7 +26,7 @@ impl CapabilityDomain for BraveSearchCapabilityDomain {
         CapabilityDomainSpec {
             id: BRAVE_SEARCH_CAPABILITY_DOMAIN_ID,
             name: "Brave Search",
-            description: "Web search environment backed by Brave Search API. Returns compact ranked metadata (title/url/description) for external sources.",
+            description: "Web search capability domain backed by Brave Search API. Runs focused public-web queries and returns compact ranked result metadata such as title, URL, and description.",
         }
     }
 
@@ -41,19 +41,19 @@ impl CapabilityDomain for BraveSearchCapabilityDomain {
     fn recipes(&self) -> Vec<CapabilityDomainRecipe> {
         vec![
             CapabilityDomainRecipe {
-                title: "Discover relevant web sources".to_string(),
+                title: "Run a focused web query".to_string(),
                 steps: vec![
-                    "Call brave_search__web_search with a focused factual query and an intentional count.".to_string(),
-                    "Inspect ranked title/url/description results and pick trustworthy sources to cite.".to_string(),
-                    "If results are weak, refine the query with clearer entities, timeframe, or constraints.".to_string(),
+                    "Start with a specific query that includes the key entities or terms you need.".to_string(),
+                    "Use a small `count` first to keep the result set focused.".to_string(),
+                    "Inspect the ranked titles, URLs, and descriptions before deciding whether to refine the query.".to_string(),
                 ],
             },
             CapabilityDomainRecipe {
-                title: "Keep search outputs concise".to_string(),
+                title: "Refine weak search results".to_string(),
                 steps: vec![
-                    "Start with small count values to reduce noisy context and token usage.".to_string(),
-                    "Increase count only when first-pass coverage is insufficient.".to_string(),
-                    "Reuse concrete source URLs from results when responding to the user.".to_string(),
+                    "Rewrite the query with clearer names, exact phrases, dates, or constraints when the first result set is noisy.".to_string(),
+                    "Increase `count` only when the initial result set does not provide enough candidate sources.".to_string(),
+                    "Repeat with a narrower query when the result set is broad or off-topic.".to_string(),
                 ],
             },
         ]

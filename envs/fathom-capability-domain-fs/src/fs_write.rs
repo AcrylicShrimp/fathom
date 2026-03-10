@@ -16,7 +16,7 @@ impl Action for FsWriteAction {
         ActionSpec {
             capability_domain_id: FILESYSTEM_CAPABILITY_DOMAIN_ID,
             action_name: "write",
-            description: "Write text content to a base-path-relative file path. Requires `path`, `content`, `allow_override`; optional `create_parents` (default true).",
+            description: "Create or overwrite a UTF-8 text file at a relative path under the current base path. `allow_override` controls whether an existing file may be replaced.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

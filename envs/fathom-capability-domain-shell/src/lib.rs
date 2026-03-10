@@ -22,7 +22,7 @@ impl CapabilityDomain for ShellCapabilityDomain {
         CapabilityDomainSpec {
             id: SHELL_CAPABILITY_DOMAIN_ID,
             name: "Shell",
-            description: "Stateful shell command capability domain rooted at a base path. Execute non-interactive commands with bounded stdout/stderr and runtime-managed timeouts.",
+            description: "Workspace-scoped shell capability domain rooted at a base path. Runs non-interactive commands in base-path-relative directories with bounded output and runtime-managed timeouts.",
         }
     }
 
@@ -39,28 +39,35 @@ impl CapabilityDomain for ShellCapabilityDomain {
     fn recipes(&self) -> Vec<CapabilityDomainRecipe> {
         vec![
             CapabilityDomainRecipe {
-                title: "Run quick diagnostics".to_string(),
+                title: "Run a bounded diagnostic command".to_string(),
                 steps: vec![
-                    "Use shell__run with a non-interactive command and path '.' for capability-domain root.".to_string(),
-                    "Execution timeout is managed by the runtime using action policy; do not expect timeout args.".to_string(),
-                    "Interpret output via exit_code, stdout, and stderr; non-zero exit means task failure.".to_string(),
+                    "Call `shell__run` with one focused non-interactive command and `path: \".\"` when the domain root is the intended working directory.".to_string(),
+                    "Inspect `exit_code`, `stdout`, and `stderr` in the result before deciding the next step.".to_string(),
+                    "If output is truncated, rerun with a narrower command so the missing detail fits in one result.".to_string(),
                 ],
             },
             CapabilityDomainRecipe {
-                title: "Run command in a subdirectory".to_string(),
+                title: "Run work in a specific directory".to_string(),
                 steps: vec![
-                    "Pass path as a non-empty relative directory under shell base_path.".to_string(),
-                    "Confirm directory existence first (for example via filesystem__list) before running commands.".to_string(),
-                    "If command fails, inspect stderr and rerun with corrected args instead of chaining risky commands.".to_string(),
+                    "Set `path` to the non-empty relative directory where the command should run.".to_string(),
+                    "Keep the command scoped to one task so failures are easy to interpret.".to_string(),
+                    "If the command fails, adjust the command or working directory and rerun with a narrower goal.".to_string(),
                 ],
             },
             CapabilityDomainRecipe {
-                title: "Control runtime environment".to_string(),
+                title: "Run with environment overrides".to_string(),
                 steps: vec![
-                    "Call shell__run with {command, env} when command behavior depends on env vars.".to_string(),
-                    "Use env keys matching [A-Za-z_][A-Za-z0-9_]* and pass only required variables.".to_string(),
-                    "On timeout, split work into smaller commands or use narrower command scope.".to_string(),
-                    "If stdout/stderr is truncated, rerun with narrower command scope to recover missing detail.".to_string(),
+                    "Provide `env` only for variables the command actually depends on.".to_string(),
+                    "Use valid environment keys and string values only.".to_string(),
+                    "If the command times out, narrow the command, reduce output, or break the work into smaller commands.".to_string(),
+                ],
+            },
+            CapabilityDomainRecipe {
+                title: "Start longer-running shell work".to_string(),
+                steps: vec![
+                    "Use `shell__run` when the command may continue beyond the current turn.".to_string(),
+                    "Request detached execution only when the result is not required before responding.".to_string(),
+                    "Keep the command and working directory focused so later status and result updates remain interpretable.".to_string(),
                 ],
             },
         ]

@@ -20,7 +20,7 @@ impl Action for JinaReadUrlAction {
         ActionSpec {
             capability_domain_id: JINA_CAPABILITY_DOMAIN_ID,
             action_name: "read_url",
-            description: "Read one absolute http(s) URL via Jina Reader API. The environment applies two-stage defaults: hard selector profile first, then soft no-selector fallback on provider/transport failures. Advanced filter fields are optional and must be omitted when unused (do not send empty strings).",
+            description: "Read one absolute HTTP(S) URL and return extracted page content as markdown plus source metadata. Optional selector and budget fields can tighten extraction when a page is noisy or large.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

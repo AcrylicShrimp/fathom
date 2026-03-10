@@ -19,7 +19,7 @@ impl Action for FsGlobAction {
         ActionSpec {
             capability_domain_id: FILESYSTEM_CAPABILITY_DOMAIN_ID,
             action_name: "glob",
-            description: "Find files matching a glob pattern under a relative path. Requires non-empty `pattern`; optional `path`, `max_results`, `include_hidden`.",
+            description: "Find paths under the current base path that match a glob pattern. Optionally scope the search path, include hidden entries, and bound the result count.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

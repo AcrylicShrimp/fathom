@@ -9,7 +9,7 @@ impl Action for DescribeCapabilityDomainAction {
     fn spec(&self) -> ActionSpec {
         system_spec(
             "describe_capability_domain",
-            "Describe one activated capability domain, including intent, capabilities, actions, and recipes.",
+            "Describe one activated capability domain, including its intent, capabilities, actions, and recipes.",
             json!({
                 "type": "object",
                 "properties": {

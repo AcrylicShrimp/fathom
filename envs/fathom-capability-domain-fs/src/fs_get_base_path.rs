@@ -14,7 +14,7 @@ impl Action for FsGetBasePathAction {
         ActionSpec {
             capability_domain_id: FILESYSTEM_CAPABILITY_DOMAIN_ID,
             action_name: "get_base_path",
-            description: "Return the current filesystem capability-domain base path.",
+            description: "Return the current base path for this filesystem domain.",
             input_schema: json!({
                 "type": "object",
                 "properties": {},

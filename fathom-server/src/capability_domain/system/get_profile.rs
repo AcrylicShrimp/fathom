@@ -9,7 +9,7 @@ impl Action for GetProfileAction {
     fn spec(&self) -> ActionSpec {
         system_spec(
             "get_profile",
-            "Get a single agent/user profile by id.",
+            "Return one agent or user profile by id in summary or full view.",
             json!({
                 "type": "object",
                 "properties": {

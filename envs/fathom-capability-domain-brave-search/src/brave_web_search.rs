@@ -16,7 +16,7 @@ impl Action for BraveWebSearchAction {
         ActionSpec {
             capability_domain_id: BRAVE_SEARCH_CAPABILITY_DOMAIN_ID,
             action_name: "web_search",
-            description: "Search the web via Brave Search API with compact ranked results. Input requires non-empty `query`; optional `count` controls number of results.",
+            description: "Run a web search query and return compact ranked result metadata. Use `count` to bound how many results are returned.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

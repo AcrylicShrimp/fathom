@@ -16,7 +16,7 @@ impl Action for FsReplaceAction {
         ActionSpec {
             capability_domain_id: FILESYSTEM_CAPABILITY_DOMAIN_ID,
             action_name: "replace",
-            description: "Replace UTF-8 text in a base-path-relative file path. Requires `path`, non-empty `old`, string `new`, `mode` in {`first`,`all`}; optional `expected_replacements` guard.",
+            description: "Apply literal string replacement to a UTF-8 text file at a relative path under the current base path. Supports `first` and `all` modes plus an optional `expected_replacements` guard.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

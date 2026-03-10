@@ -9,7 +9,7 @@ impl Action for GetContextAction {
     fn spec(&self) -> ActionSpec {
         system_spec(
             "get_context",
-            "Get authoritative runtime/session context and activated capability domain summaries.",
+            "Return authoritative runtime and session context, including current server time and activated capability domain summaries.",
             json!({
                 "type": "object",
                 "properties": {},
