@@ -1,6 +1,6 @@
 pub(crate) mod diagnostics;
 pub(crate) mod engine;
-pub(crate) mod execution_context;
+pub(crate) mod inspection;
 pub(crate) mod payload_lookup;
 pub(crate) mod state;
 

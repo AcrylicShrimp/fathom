@@ -1,51 +1,24 @@
-use fathom_capability_domain::{Action, ActionModeSupport, ActionSpec};
-use serde_json::{Value, json};
+use fathom_capability_domain::{CapabilityActionDefinition, CapabilityActionKey};
+use serde_json::json;
 
-use crate::validate::{
-    args_object, optional_u64, require_non_empty_string, require_relative_path, require_string,
-};
-use crate::{
-    FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS, FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
-    FILESYSTEM_CAPABILITY_DOMAIN_ID,
-};
+pub(crate) const FS_REPLACE_ACTION_KEY: CapabilityActionKey = CapabilityActionKey(4);
 
-pub struct FsReplaceAction;
-
-impl Action for FsReplaceAction {
-    fn spec(&self) -> ActionSpec {
-        ActionSpec {
-            capability_domain_id: FILESYSTEM_CAPABILITY_DOMAIN_ID,
-            action_name: "replace",
-            description: "Apply literal string replacement to a UTF-8 text file at a relative path under the current base path. Supports `first` and `all` modes plus an optional `expected_replacements` guard.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "old": { "type": "string" },
-                    "new": { "type": "string" },
-                    "mode": { "type": "string", "enum": ["first", "all"] },
-                    "expected_replacements": { "type": "integer", "minimum": 0 }
-                },
-                "required": ["path", "old", "new", "mode"],
-                "additionalProperties": false
-            }),
-            discovery: false,
-            mode_support: ActionModeSupport::AwaitOnly,
-            max_timeout_ms: FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
-            desired_timeout_ms: Some(FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS),
-        }
-    }
-
-    fn validate(&self, args: &Value) -> Result<(), String> {
-        let args = args_object(args)?;
-        require_relative_path(args, "path")?;
-        require_non_empty_string(args, "old")?;
-        require_string(args, "new")?;
-        let mode = require_non_empty_string(args, "mode")?;
-        if mode != "first" && mode != "all" {
-            return Err("filesystem__replace.mode must be `first` or `all`".to_string());
-        }
-        optional_u64(args, "expected_replacements")?;
-        Ok(())
+pub(crate) fn definition() -> CapabilityActionDefinition {
+    CapabilityActionDefinition {
+        key: FS_REPLACE_ACTION_KEY,
+        action_name: "replace",
+        description: "Apply literal string replacement to a UTF-8 text file at a relative path under the current base path. Supports `first` and `all` modes plus an optional `expected_replacements` guard.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "old": { "type": "string" },
+                "new": { "type": "string" },
+                "mode": { "type": "string", "enum": ["first", "all"] },
+                "expected_replacements": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["path", "old", "new", "mode"],
+            "additionalProperties": false
+        }),
     }
 }

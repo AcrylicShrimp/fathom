@@ -53,6 +53,7 @@ pub(super) async fn run_agent_invocation(
                 delta_transport.handle_model_event(event);
             })
             .await;
+        delta_transport.flush_action_invocations();
         let stream_notes = delta_transport.invocation_stream_notes().to_vec();
         let action_dispatches = delta_transport.action_dispatches().to_vec();
         let streamed_outputs = delta_transport.drain_streamed_assistant_outputs();

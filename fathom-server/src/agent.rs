@@ -9,11 +9,11 @@ mod types;
 #[cfg(test)]
 pub(crate) use types::{ActionArgDeltaNote, ActionArgDoneNote};
 pub(crate) use types::{
-    ActionInvocation, ActionModeSupportContract, AgentInvocationContext, AgentTurnOutcome,
-    CapabilityAction, CapabilityDomain, CapabilityRecipe, CapabilitySurface, CompiledPrompt,
-    HarnessContract, IdentityEnvelope, ModelDeltaEvent, ModelInvocationOutcome,
-    ParticipantEnvelope, PromptMessage, ResolvedPayloadLookupHint, SessionAnchor, SessionBaseline,
-    SessionCompaction, StreamNote, SummaryBlockRef,
+    ActionInvocation, AgentInvocationContext, AgentTurnOutcome, CapabilityAction, CapabilityDomain,
+    CapabilityRecipe, CapabilitySurface, CompiledPrompt, HarnessContract, IdentityEnvelope,
+    ModelDeltaEvent, ModelInvocationOutcome, ParticipantEnvelope, PromptMessage,
+    ResolvedPayloadLookupHint, SessionAnchor, SessionBaseline, SessionCompaction, StreamNote,
+    SummaryBlockRef,
 };
 
 use std::sync::Arc;
@@ -33,14 +33,14 @@ pub(crate) struct AgentOrchestrator {
 }
 
 impl AgentOrchestrator {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(capability_domain_registry: CapabilityDomainRegistry) -> Self {
         let model_adapter: Arc<dyn ModelAdapter> = match OpenAiModelAdapter::new() {
             Ok(adapter) => Arc::new(adapter),
             Err(error) => Arc::new(UnavailableModelAdapter::new("openai", error)),
         };
         Self::from_parts(
             model_adapter,
-            CapabilityDomainRegistry::new(),
+            capability_domain_registry,
             PromptCompiler::new(),
         )
     }
@@ -71,10 +71,13 @@ impl AgentOrchestrator {
     }
 
     #[cfg(test)]
-    fn with_model_adapter(model_adapter: Arc<dyn ModelAdapter>) -> Self {
+    fn with_model_adapter(
+        model_adapter: Arc<dyn ModelAdapter>,
+        capability_domain_registry: CapabilityDomainRegistry,
+    ) -> Self {
         Self::from_parts(
             model_adapter,
-            CapabilityDomainRegistry::new(),
+            capability_domain_registry,
             PromptCompiler::new(),
         )
     }
@@ -251,8 +254,15 @@ mod tests {
         CompiledPrompt, HarnessContract, IdentityEnvelope, ModelDeltaEvent, ModelInvocationOutcome,
         ParticipantEnvelope, PromptMessage, SessionAnchor, SessionBaseline, SessionCompaction,
     };
+    use crate::capability_domain::build_default_capability_domain_registry;
     use crate::util::default_agent_profile;
     use serde_json::json;
+
+    fn test_registry() -> crate::capability_domain::CapabilityDomainRegistry {
+        build_default_capability_domain_registry(
+            &std::env::current_dir().expect("current directory for registry"),
+        )
+    }
 
     struct FakeModelAdapter {
         availability_error: Option<String>,
@@ -383,7 +393,8 @@ mod tests {
                 diagnostics: vec!["adapter success".to_string()],
             }),
         ]));
-        let orchestrator = AgentOrchestrator::with_model_adapter(fake_adapter.clone());
+        let orchestrator =
+            AgentOrchestrator::with_model_adapter(fake_adapter.clone(), test_registry());
         let context = test_context();
         let initial_prompt_bundle = CompiledPrompt {
             messages: vec![PromptMessage::new(
@@ -427,9 +438,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_turn_short_circuits_when_model_adapter_is_unavailable() {
-        let orchestrator = AgentOrchestrator::with_model_adapter(Arc::new(
-            FakeModelAdapter::unavailable("missing API key"),
-        ));
+        let orchestrator = AgentOrchestrator::with_model_adapter(
+            Arc::new(FakeModelAdapter::unavailable("missing API key")),
+            test_registry(),
+        );
         let context = test_context();
 
         let outcome = orchestrator

@@ -13,7 +13,6 @@ mod profile_material;
 mod runtime;
 mod service;
 mod session;
-mod system_capability_domain;
 mod util;
 pub use service::FathomRuntimeService;
 

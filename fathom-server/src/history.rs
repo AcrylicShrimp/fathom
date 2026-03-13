@@ -10,7 +10,7 @@ use fathom_protocol::pb;
 
 use self::compaction::maybe_compact_history;
 
-pub(crate) use constants::EXECUTION_PAYLOAD_LOOKUP_ACTION;
+pub(crate) use constants::{EXECUTION_INPUT_LOOKUP_ACTION, EXECUTION_RESULT_LOOKUP_ACTION};
 pub(crate) use preview::{PayloadPreview, build_payload_preview};
 pub(crate) use schema::{HistoryEvent, HistoryEventKind};
 

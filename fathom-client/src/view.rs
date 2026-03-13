@@ -328,11 +328,10 @@ pub(crate) fn render_event_record(record: &EventRecord) -> String {
                         line.push_str(&format!(" call={call_key}"));
                     }
                     if !args_preview.is_empty()
-                        && phase != "awaited_execution_succeeded"
-                        && phase != "awaited_execution_failed"
-                        && phase != "execution_detached"
-                        && phase != "detached_execution_succeeded"
-                        && phase != "detached_execution_failed"
+                        && phase != "execution_succeeded"
+                        && phase != "execution_failed"
+                        && phase != "execution_backgrounded"
+                        && phase != "execution_canceled"
                         && phase != "execution_rejected"
                     {
                         line.push_str(&format!(" args={args_preview}"));
@@ -461,22 +460,23 @@ mod tests {
             created_at_unix_ms: 0,
             kind: Some(pb::session_event::Kind::ExecutionUpdate(
                 pb::ExecutionUpdateEvent {
-                    phase: pb::ExecutionUpdatePhase::ExecutionDetached as i32,
+                    phase: pb::ExecutionUpdatePhase::ExecutionBackgrounded as i32,
                     call_key: "call-1".to_string(),
                     call_id: "fc_1".to_string(),
                     action_id: "shell__run".to_string(),
                     execution_id: "execution-1".to_string(),
                     args_delta: String::new(),
-                    args_json: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
-                    detail: "submitted action `shell__run` as execution-1 (running) mode=detach"
-                        .to_string(),
+                    args_json: r#"{"command":"pwd","background":true}"#.to_string(),
+                    detail:
+                        "submitted action `shell__run` as execution-1 (running) background=true"
+                            .to_string(),
                 },
             )),
         };
         let record = session_event_to_record(&event);
         let line = render_event_record(&record);
 
-        assert!(line.contains("execution_update execution_detached"));
+        assert!(line.contains("execution_update execution_backgrounded"));
         assert!(line.contains("execution=execution-1"));
         assert!(line.contains("call_id=fc_1"));
     }

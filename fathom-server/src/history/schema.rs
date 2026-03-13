@@ -30,16 +30,14 @@ pub(crate) enum HistoryEventKind {
     TriggerUserMessage(UserMessageHistoryPayload),
     #[serde(rename = "execution_requested")]
     ExecutionRequested(ExecutionRequestedHistoryPayload),
-    #[serde(rename = "awaited_execution_succeeded")]
-    AwaitedExecutionSucceeded(ExecutionSucceededHistoryPayload),
-    #[serde(rename = "awaited_execution_failed")]
-    AwaitedExecutionFailed(ExecutionFailedHistoryPayload),
-    #[serde(rename = "execution_detached")]
-    ExecutionDetached(ExecutionDetachedHistoryPayload),
-    #[serde(rename = "detached_execution_succeeded")]
-    DetachedExecutionSucceeded(ExecutionSucceededHistoryPayload),
-    #[serde(rename = "detached_execution_failed")]
-    DetachedExecutionFailed(ExecutionFailedHistoryPayload),
+    #[serde(rename = "execution_succeeded")]
+    ExecutionSucceeded(ExecutionSucceededHistoryPayload),
+    #[serde(rename = "execution_failed")]
+    ExecutionFailed(ExecutionFailedHistoryPayload),
+    #[serde(rename = "execution_backgrounded")]
+    ExecutionBackgrounded(ExecutionBackgroundedHistoryPayload),
+    #[serde(rename = "execution_canceled")]
+    ExecutionCanceled(ExecutionCanceledHistoryPayload),
     #[serde(rename = "execution_rejected")]
     ExecutionRejected(ExecutionRejectedHistoryPayload),
     #[serde(rename = "trigger_heartbeat")]
@@ -58,11 +56,10 @@ impl HistoryEventKind {
             Self::TriggerUnknown => "other",
             Self::TriggerUserMessage(_) => "user_message",
             Self::ExecutionRequested(_) => "execution_requested",
-            Self::AwaitedExecutionSucceeded(_) => "awaited_execution_succeeded",
-            Self::AwaitedExecutionFailed(_) => "awaited_execution_failed",
-            Self::ExecutionDetached(_) => "execution_detached",
-            Self::DetachedExecutionSucceeded(_) => "detached_execution_succeeded",
-            Self::DetachedExecutionFailed(_) => "detached_execution_failed",
+            Self::ExecutionSucceeded(_) => "execution_succeeded",
+            Self::ExecutionFailed(_) => "execution_failed",
+            Self::ExecutionBackgrounded(_) => "execution_backgrounded",
+            Self::ExecutionCanceled(_) => "execution_canceled",
             Self::ExecutionRejected(_) => "execution_rejected",
             Self::TriggerHeartbeat => "heartbeat",
             Self::TriggerCron(_) => "cron",
@@ -81,12 +78,10 @@ impl HistoryEventKind {
     pub(crate) fn canonical_action_id(&self) -> Option<&str> {
         match self {
             Self::ExecutionRequested(payload) => Some(&payload.canonical_action_id),
-            Self::AwaitedExecutionSucceeded(payload)
-            | Self::DetachedExecutionSucceeded(payload) => Some(&payload.canonical_action_id),
-            Self::AwaitedExecutionFailed(payload) | Self::DetachedExecutionFailed(payload) => {
-                Some(&payload.canonical_action_id)
-            }
-            Self::ExecutionDetached(payload) => Some(&payload.canonical_action_id),
+            Self::ExecutionSucceeded(payload) => Some(&payload.canonical_action_id),
+            Self::ExecutionFailed(payload) => Some(&payload.canonical_action_id),
+            Self::ExecutionBackgrounded(payload) => Some(&payload.canonical_action_id),
+            Self::ExecutionCanceled(payload) => Some(&payload.canonical_action_id),
             Self::ExecutionRejected(payload) => Some(&payload.canonical_action_id),
             _ => None,
         }
@@ -119,7 +114,7 @@ pub(crate) struct ExecutionRequestedHistoryPayload {
     pub(crate) canonical_action_id: String,
     pub(crate) capability_domain_id: String,
     pub(crate) action_name: String,
-    pub(crate) execution_mode: String,
+    pub(crate) background: bool,
     pub(crate) status: String,
     pub(crate) args_preview: PayloadPreview,
     pub(crate) lookup_action: String,
@@ -140,7 +135,12 @@ pub(crate) struct ExecutionFailedHistoryPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct ExecutionDetachedHistoryPayload {
+pub(crate) struct ExecutionBackgroundedHistoryPayload {
+    pub(crate) canonical_action_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ExecutionCanceledHistoryPayload {
     pub(crate) canonical_action_id: String,
 }
 

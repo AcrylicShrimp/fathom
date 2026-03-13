@@ -42,7 +42,7 @@ impl<'a> TurnCoordinator<'a> {
         }
 
         self.state.turn_in_progress = true;
-        while !self.state.trigger_queue.is_empty() && self.state.in_flight_actions.is_empty() {
+        while !self.state.trigger_queue.is_empty() && !self.state.has_blocking_submissions() {
             let turn_id = self.allocate_turn_id();
             let turn_triggers = self.drain_turn_triggers();
 
@@ -78,7 +78,7 @@ impl<'a> TurnCoordinator<'a> {
     fn is_blocked(&self) -> bool {
         self.state.turn_in_progress
             || self.state.trigger_queue.is_empty()
-            || !self.state.in_flight_actions.is_empty()
+            || self.state.has_blocking_submissions()
     }
 
     fn allocate_turn_id(&mut self) -> u64 {
@@ -165,7 +165,7 @@ impl<'a> TurnCoordinator<'a> {
         let is_quiescent = agent_summary.is_some_and(|summary| {
             summary.assistant_output_count > 0
                 && summary.action_call_count == 0
-                && self.state.in_flight_actions.is_empty()
+                && !self.state.has_blocking_submissions()
                 && self.state.trigger_queue.is_empty()
         });
         if is_quiescent {

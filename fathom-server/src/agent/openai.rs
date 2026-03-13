@@ -797,11 +797,13 @@ mod tests {
         AgentInvocationContext, CapabilitySurface, HarnessContract, IdentityEnvelope,
         ModelDeltaEvent, ParticipantEnvelope, SessionAnchor, SessionBaseline, SessionCompaction,
     };
-    use crate::capability_domain::CapabilityDomainRegistry;
+    use crate::capability_domain::build_default_capability_domain_registry;
 
     fn empty_action_catalog() -> SessionActionCatalog {
         SessionActionCatalog::from_context(
-            CapabilityDomainRegistry::new(),
+            build_default_capability_domain_registry(
+                &std::env::current_dir().expect("current directory for registry"),
+            ),
             &AgentInvocationContext {
                 harness_contract: HarnessContract {
                     runtime_version: "0.1.0".to_string(),

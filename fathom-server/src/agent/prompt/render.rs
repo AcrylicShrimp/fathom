@@ -39,10 +39,9 @@ pub(super) fn build_harness_contract_block(input: &PromptInput) -> String {
         "- Use additional actions only when they are still necessary to improve the next response or complete the requested work.".to_string(),
         String::new(),
         "## Execution Rules".to_string(),
-        "- Execution requests default to `await`.".to_string(),
-        "- Request `detach` only when an action's `mode_support` is `await_or_detach`.".to_string(),
-        "- If an action is `await_only`, requesting `detach` will be rejected.".to_string(),
-        "- Use `detach` only when the current turn does not need that result to decide the next move.".to_string(),
+        "- Execution requests run in foreground by default.".to_string(),
+        "- Use the optional `background` field only when the current turn does not need the result before continuing.".to_string(),
+        "- `background=true` is a Core scheduling hint, not part of the capability-domain contract.".to_string(),
         "- Multiple executions may be emitted in the same turn.".to_string(),
         String::new(),
         "## Evidence and Payloads".to_string(),
@@ -59,7 +58,7 @@ pub(super) fn build_harness_contract_block(input: &PromptInput) -> String {
         String::new(),
         "## Failure Handling".to_string(),
         "- `execution_rejected` means the runtime did not accept the requested execution; revise the request instead of assuming it ran.".to_string(),
-        "- `awaited_execution_failed` and `detached_execution_failed` mean execution was accepted but ended unsuccessfully.".to_string(),
+        "- Failed execution events mean execution was accepted but ended unsuccessfully.".to_string(),
         "- Use the failure message and any payload preview to decide whether to retry, inspect further, change approach, or report failure.".to_string(),
         String::new(),
         "## Response Style".to_string(),
@@ -141,17 +140,7 @@ pub(super) fn build_session_baseline_block(input: &PromptInput) -> String {
                 lines.push("- _No actions available._".to_string());
             } else {
                 for action in actions {
-                    let discovery = if action.discovery {
-                        " · `discovery`"
-                    } else {
-                        ""
-                    };
-                    lines.push(format!(
-                        "- `{}` · `{}`{}",
-                        action.action_id,
-                        action.mode_support.as_str(),
-                        discovery
-                    ));
+                    lines.push(format!("- `{}`", action.action_id));
                     lines.push(format!("  {}", action.description));
                 }
             }
@@ -474,11 +463,10 @@ fn render_pending_prompt_event_lines(event: &PromptEvent) -> Vec<String> {
         PromptEvent::UserMessage(_)
         | PromptEvent::AssistantOutput(_)
         | PromptEvent::ExecutionRequested(_)
-        | PromptEvent::AwaitedExecutionSucceeded(_)
-        | PromptEvent::AwaitedExecutionFailed(_)
-        | PromptEvent::ExecutionDetached(_)
-        | PromptEvent::DetachedExecutionSucceeded(_)
-        | PromptEvent::DetachedExecutionFailed(_)
+        | PromptEvent::ExecutionSucceeded(_)
+        | PromptEvent::ExecutionFailed(_)
+        | PromptEvent::ExecutionBackgrounded(_)
+        | PromptEvent::ExecutionCanceled(_)
         | PromptEvent::ExecutionRejected(_) => Vec::new(),
     }
 }

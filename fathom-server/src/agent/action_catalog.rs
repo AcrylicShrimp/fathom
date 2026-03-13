@@ -51,8 +51,14 @@ mod tests {
         HarnessContract, IdentityEnvelope, ParticipantEnvelope, SessionAnchor, SessionBaseline,
         SessionCompaction,
     };
-    use crate::capability_domain::CapabilityDomainRegistry;
+    use crate::capability_domain::build_default_capability_domain_registry;
     use serde_json::json;
+
+    fn test_registry() -> crate::capability_domain::CapabilityDomainRegistry {
+        build_default_capability_domain_registry(
+            &std::env::current_dir().expect("current directory for registry"),
+        )
+    }
 
     fn context_with_capability_domains(
         capability_domains: Vec<CapabilityDomain>,
@@ -95,13 +101,11 @@ mod tests {
             actions: vec![CapabilityAction {
                 action_id: "filesystem__list".to_string(),
                 description: "List files".to_string(),
-                mode_support: crate::agent::ActionModeSupportContract::AwaitOnly,
-                discovery: false,
             }],
             recipes: vec![],
         }]);
 
-        let catalog = SessionActionCatalog::from_context(CapabilityDomainRegistry::new(), &context);
+        let catalog = SessionActionCatalog::from_context(test_registry(), &context);
         let definitions = catalog.openai_action_definitions();
         let names = definitions
             .iter()
@@ -110,7 +114,7 @@ mod tests {
 
         assert!(names.contains(&"filesystem__list"));
         assert!(!names.contains(&"shell__run"));
-        assert!(!names.contains(&"system__get_time"));
+        assert!(!names.contains(&"system__list_executions"));
     }
 
     #[test]
@@ -122,13 +126,11 @@ mod tests {
             actions: vec![CapabilityAction {
                 action_id: "filesystem__list".to_string(),
                 description: "List files".to_string(),
-                mode_support: crate::agent::ActionModeSupportContract::AwaitOnly,
-                discovery: false,
             }],
             recipes: vec![],
         }]);
 
-        let catalog = SessionActionCatalog::from_context(CapabilityDomainRegistry::new(), &context);
+        let catalog = SessionActionCatalog::from_context(test_registry(), &context);
         let error = catalog
             .validate_action("shell__run", &json!({"command": "pwd"}))
             .expect_err("shell action should be rejected");

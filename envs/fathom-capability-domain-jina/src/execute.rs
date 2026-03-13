@@ -5,7 +5,7 @@ mod result;
 #[cfg(test)]
 mod tests;
 
-use fathom_capability_domain::ActionOutcome;
+use fathom_capability_domain::CapabilityActionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -39,14 +39,14 @@ pub async fn execute_action(
     args_json: &str,
     _environment_state: &Value,
     execution_timeout_ms: u64,
-) -> Option<ActionOutcome> {
+) -> Option<CapabilityActionResult> {
     match action_name {
         "read_url" => Some(execute_read_url(args_json, execution_timeout_ms).await),
         _ => None,
     }
 }
 
-async fn execute_read_url(args_json: &str, execution_timeout_ms: u64) -> ActionOutcome {
+async fn execute_read_url(args_json: &str, execution_timeout_ms: u64) -> CapabilityActionResult {
     let args = match parse_args::<ReadUrlArgs>(args_json, "jina__read_url") {
         Ok(args) => args,
         Err(error) => return result::failure("read_url", &error, None, vec![], ADVISORY),

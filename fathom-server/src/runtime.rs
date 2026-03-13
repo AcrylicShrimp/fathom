@@ -2,21 +2,24 @@ mod diagnostics;
 mod ids;
 mod invocation_context;
 mod profiles;
+mod session_setup;
 mod sessions;
-mod time_context;
+mod system_inspection;
 mod workspace;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use tokio::sync::RwLock;
 
 use crate::agent::AgentOrchestrator;
+use crate::capability_domain::{CapabilityDomainRegistry, build_capability_domain_registry};
 use crate::session::SessionRuntime;
 use diagnostics::DiagnosticsSink;
 use fathom_protocol::pb;
+use system_inspection::RuntimeSystemInspectionService;
 
 pub(crate) const EVENT_BUFFER_SIZE: usize = 256;
 pub(crate) const SESSION_CMD_BUFFER_SIZE: usize = 128;
@@ -31,11 +34,11 @@ struct RuntimeInner {
     sessions: RwLock<HashMap<String, SessionRuntime>>,
     user_profiles: RwLock<HashMap<String, pb::UserProfile>>,
     agent_profiles: RwLock<HashMap<String, pb::AgentProfile>>,
-    workspace_root: PathBuf,
     session_seq: AtomicU64,
     trigger_seq: AtomicU64,
     execution_seq: AtomicU64,
-    execution_capacity: usize,
+    execution_submission_seq: AtomicU64,
+    capability_domain_registry: CapabilityDomainRegistry,
     orchestrator: AgentOrchestrator,
     diagnostics: DiagnosticsSink,
 }
@@ -67,33 +70,35 @@ impl Runtime {
     }
 
     fn new_unchecked(
-        execution_capacity: usize,
+        _execution_capacity: usize,
         _execution_runtime_ms: u64,
         workspace_root: PathBuf,
     ) -> Self {
         let diagnostics = DiagnosticsSink::new(workspace_root.join(".fathom").join("diagnostics"));
         Self {
-            inner: Arc::new(RuntimeInner {
-                sessions: RwLock::new(HashMap::new()),
-                user_profiles: RwLock::new(HashMap::new()),
-                agent_profiles: RwLock::new(HashMap::new()),
-                workspace_root,
-                session_seq: AtomicU64::new(0),
-                trigger_seq: AtomicU64::new(0),
-                execution_seq: AtomicU64::new(0),
-                execution_capacity,
-                orchestrator: AgentOrchestrator::new(),
-                diagnostics,
+            inner: Arc::new_cyclic(|weak_inner| {
+                let capability_domain_registry = build_capability_domain_registry(
+                    &workspace_root,
+                    Arc::new(RuntimeSystemInspectionService::new(weak_inner.clone())),
+                );
+                RuntimeInner {
+                    sessions: RwLock::new(HashMap::new()),
+                    user_profiles: RwLock::new(HashMap::new()),
+                    agent_profiles: RwLock::new(HashMap::new()),
+                    session_seq: AtomicU64::new(0),
+                    trigger_seq: AtomicU64::new(0),
+                    execution_seq: AtomicU64::new(0),
+                    execution_submission_seq: AtomicU64::new(0),
+                    capability_domain_registry: capability_domain_registry.clone(),
+                    orchestrator: AgentOrchestrator::new(capability_domain_registry),
+                    diagnostics: diagnostics.clone(),
+                }
             }),
         }
     }
 
-    pub(crate) fn execution_capacity(&self) -> usize {
-        self.inner.execution_capacity
-    }
-
-    pub(crate) fn workspace_root(&self) -> &Path {
-        self.inner.workspace_root.as_path()
+    pub(crate) fn capability_domain_registry(&self) -> CapabilityDomainRegistry {
+        self.inner.capability_domain_registry.clone()
     }
 
     pub(crate) fn agent_orchestrator(&self) -> AgentOrchestrator {

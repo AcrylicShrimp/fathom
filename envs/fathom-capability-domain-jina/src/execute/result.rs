@@ -1,4 +1,4 @@
-use fathom_capability_domain::ActionOutcome;
+use fathom_capability_domain::CapabilityActionResult;
 use serde_json::{Value, json};
 
 use super::error::JinaError;
@@ -10,10 +10,9 @@ pub(crate) fn success(
     selected_attempt_index: usize,
     used_fallback: bool,
     advisory: &str,
-) -> ActionOutcome {
-    ActionOutcome {
-        succeeded: true,
-        message: json!({
+) -> CapabilityActionResult {
+    CapabilityActionResult::success(
+        json!({
             "ok": true,
             "op": op,
             "target": "jina",
@@ -22,10 +21,9 @@ pub(crate) fn success(
             "selected_attempt_index": selected_attempt_index,
             "used_fallback": used_fallback,
             "advisory": advisory,
-        })
-        .to_string(),
-        state_patch: None,
-    }
+        }),
+        0,
+    )
 }
 
 pub(crate) fn failure(
@@ -34,7 +32,7 @@ pub(crate) fn failure(
     data: Option<Value>,
     attempts: Vec<Value>,
     advisory: &str,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let mut payload = json!({
         "ok": false,
         "op": op,
@@ -54,9 +52,9 @@ pub(crate) fn failure(
         payload["error"]["details"] = details.clone();
     }
 
-    ActionOutcome {
-        succeeded: false,
-        message: payload.to_string(),
-        state_patch: None,
+    if error.code() == "invalid_args" {
+        CapabilityActionResult::input_error(error.code(), error.message(), Some(payload), 0)
+    } else {
+        CapabilityActionResult::runtime_error(error.code(), error.message(), Some(payload), 0)
     }
 }

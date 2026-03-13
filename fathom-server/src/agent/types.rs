@@ -88,28 +88,10 @@ pub(crate) struct CapabilityDomain {
     pub(crate) recipes: Vec<CapabilityRecipe>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ActionModeSupportContract {
-    AwaitOnly,
-    AwaitOrDetach,
-}
-
-impl ActionModeSupportContract {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::AwaitOnly => "await_only",
-            Self::AwaitOrDetach => "await_or_detach",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CapabilityAction {
     pub(crate) action_id: String,
     pub(crate) description: String,
-    pub(crate) mode_support: ActionModeSupportContract,
-    pub(crate) discovery: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,7 +122,7 @@ pub(crate) struct PromptAssistantOutput {
 pub(crate) struct PromptExecutionRequested {
     pub(crate) execution_id: String,
     pub(crate) action_id: String,
-    pub(crate) execution_mode: String,
+    pub(crate) background: bool,
     pub(crate) args_preview: PayloadPreview,
 }
 
@@ -161,7 +143,13 @@ pub(crate) struct PromptExecutionFailed {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct PromptExecutionDetached {
+pub(crate) struct PromptExecutionBackgrounded {
+    pub(crate) execution_id: String,
+    pub(crate) action_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct PromptExecutionCanceled {
     pub(crate) execution_id: String,
     pub(crate) action_id: String,
 }
@@ -204,11 +192,10 @@ pub(crate) enum PromptEvent {
     UserMessage(PromptUserMessage),
     AssistantOutput(PromptAssistantOutput),
     ExecutionRequested(PromptExecutionRequested),
-    AwaitedExecutionSucceeded(PromptExecutionSucceeded),
-    AwaitedExecutionFailed(PromptExecutionFailed),
-    ExecutionDetached(PromptExecutionDetached),
-    DetachedExecutionSucceeded(PromptExecutionSucceeded),
-    DetachedExecutionFailed(PromptExecutionFailed),
+    ExecutionSucceeded(PromptExecutionSucceeded),
+    ExecutionFailed(PromptExecutionFailed),
+    ExecutionBackgrounded(PromptExecutionBackgrounded),
+    ExecutionCanceled(PromptExecutionCanceled),
     ExecutionRejected(PromptExecutionRejected),
     PayloadLookupAvailable(PromptPayloadLookupAvailable),
     RetryFeedback(PromptAssistantOutput),

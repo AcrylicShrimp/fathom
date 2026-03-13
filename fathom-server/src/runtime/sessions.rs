@@ -1,13 +1,12 @@
-use std::collections::HashMap;
-
-use serde_json::json;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
+use super::session_setup::{
+    DefaultSessionSetupPolicy, RuntimeSessionSetupContext, SessionSetupPolicy, SessionSetupRequest,
+    build_session_state,
+};
 use super::{EVENT_BUFFER_SIZE, Runtime, SESSION_CMD_BUFFER_SIZE};
-use crate::capability_domain::CapabilityDomainRegistry;
-use crate::session::{SessionCommand, SessionRuntime, SessionState, run_session_actor};
-use crate::util::dedup_ids;
+use crate::session::{SessionCommand, SessionRuntime, run_session_actor};
 use fathom_protocol::pb;
 
 impl Runtime {
@@ -16,52 +15,19 @@ impl Runtime {
         agent_id: String,
         participant_user_ids: Vec<String>,
     ) -> Result<pb::SessionSummary, Status> {
-        if agent_id.trim().is_empty() {
-            return Err(Status::invalid_argument("agent_id is required"));
-        }
-
-        let participant_user_ids = dedup_ids(participant_user_ids);
-        let agent_profile_copy = self.get_or_create_agent_profile(&agent_id).await;
-        let mut participant_user_profiles_copy = HashMap::new();
-
-        for user_id in &participant_user_ids {
-            let profile = self.get_or_create_user_profile(user_id).await;
-            participant_user_profiles_copy.insert(user_id.clone(), profile);
-        }
-
-        let session_id = self.next_session_id();
-        let engaged_capability_domain_ids =
-            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
-                .into_iter()
-                .collect();
-        let mut capability_domain_snapshots =
-            CapabilityDomainRegistry::initial_capability_domain_snapshots()
-                .into_iter()
-                .collect::<HashMap<_, _>>();
-        let base_path = self.workspace_root().display().to_string();
-        for capability_domain_id in [
-            fathom_capability_domain_fs::FILESYSTEM_CAPABILITY_DOMAIN_ID,
-            fathom_capability_domain_shell::SHELL_CAPABILITY_DOMAIN_ID,
-        ] {
-            if let Some(snapshot) = capability_domain_snapshots.get_mut(capability_domain_id) {
-                if let Some(state) = snapshot.state_json.as_object_mut() {
-                    state.insert("base_path".to_string(), json!(base_path));
-                } else {
-                    snapshot.state_json = json!({
-                        "base_path": base_path
-                    });
-                }
-            }
-        }
-        let state = SessionState::new(
-            session_id.clone(),
-            agent_id,
-            participant_user_ids,
-            agent_profile_copy,
-            participant_user_profiles_copy,
-            engaged_capability_domain_ids,
-            capability_domain_snapshots,
-        );
+        let setup_policy = DefaultSessionSetupPolicy::new(self.capability_domain_registry());
+        let setup_context = RuntimeSessionSetupContext::new(self);
+        let setup = setup_policy
+            .resolve(
+                &setup_context,
+                SessionSetupRequest {
+                    agent_id,
+                    participant_user_ids,
+                },
+            )
+            .await?;
+        let session_id = setup.session_id.clone();
+        let state = build_session_state(setup);
         let session_summary = state.to_summary();
 
         let (events_tx, _) = broadcast::channel(EVENT_BUFFER_SIZE);

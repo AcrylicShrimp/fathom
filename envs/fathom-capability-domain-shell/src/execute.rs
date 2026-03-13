@@ -8,7 +8,7 @@ mod tests;
 
 use std::collections::BTreeMap;
 
-use fathom_capability_domain::ActionOutcome;
+use fathom_capability_domain::CapabilityActionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -33,7 +33,7 @@ pub async fn execute_action(
     args_json: &str,
     capability_domain_state: &Value,
     execution_timeout_ms: u64,
-) -> Option<ActionOutcome> {
+) -> Option<CapabilityActionResult> {
     match action_name {
         "run" => Some(execute_run(args_json, capability_domain_state, execution_timeout_ms).await),
         _ => None,
@@ -44,7 +44,7 @@ async fn execute_run(
     args_json: &str,
     capability_domain_state: &Value,
     execution_timeout_ms: u64,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let args = match parse_args::<RunArgs>(args_json, "shell__run") {
         Ok(args) => args,
         Err(error) => return result::failure("run", None, &error, None),
@@ -96,7 +96,7 @@ async fn execute_run_on_path(
     timeout_ms: u64,
     env_overrides: BTreeMap<String, String>,
     capability_domain_state: &Value,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let (_base, target_dir) = match resolve_target_dir(capability_domain_state, &parsed.rel_path) {
         Ok(paths) => paths,
         Err(error) => {

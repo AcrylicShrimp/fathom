@@ -3,7 +3,7 @@ mod path;
 mod real;
 mod result;
 
-use fathom_capability_domain::ActionOutcome;
+use fathom_capability_domain::CapabilityActionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -91,7 +91,7 @@ pub fn execute_action(
     action_name: &str,
     args_json: &str,
     capability_domain_state: &Value,
-) -> Option<ActionOutcome> {
+) -> Option<CapabilityActionResult> {
     match action_name {
         "get_base_path" => Some(execute_get_base_path(args_json, capability_domain_state)),
         "list" => Some(execute_list(args_json, capability_domain_state)),
@@ -104,7 +104,10 @@ pub fn execute_action(
     }
 }
 
-fn execute_get_base_path(args_json: &str, capability_domain_state: &Value) -> ActionOutcome {
+fn execute_get_base_path(
+    args_json: &str,
+    capability_domain_state: &Value,
+) -> CapabilityActionResult {
     if let Err(error) = parse_args::<GetBasePathArgs>(args_json, "filesystem__get_base_path") {
         return result::failure("get_base_path", Some("."), &error, Some("filesystem"));
     }
@@ -123,7 +126,7 @@ fn execute_get_base_path(args_json: &str, capability_domain_state: &Value) -> Ac
     }
 }
 
-fn execute_list(args_json: &str, capability_domain_state: &Value) -> ActionOutcome {
+fn execute_list(args_json: &str, capability_domain_state: &Value) -> CapabilityActionResult {
     let args = match parse_args::<ListArgs>(args_json, "filesystem__list") {
         Ok(args) => args,
         Err(error) => return result::failure("list", None, &error, None),
@@ -147,7 +150,7 @@ fn execute_list(args_json: &str, capability_domain_state: &Value) -> ActionOutco
     execute_list_on_path(parsed, options, capability_domain_state)
 }
 
-fn execute_read(args_json: &str, capability_domain_state: &Value) -> ActionOutcome {
+fn execute_read(args_json: &str, capability_domain_state: &Value) -> CapabilityActionResult {
     let args = match parse_args::<ReadArgs>(args_json, "filesystem__read") {
         Ok(args) => args,
         Err(error) => return result::failure("read", None, &error, None),
@@ -171,7 +174,7 @@ fn execute_read(args_json: &str, capability_domain_state: &Value) -> ActionOutco
     execute_read_on_path(parsed, options, capability_domain_state)
 }
 
-fn execute_write(args_json: &str, capability_domain_state: &Value) -> ActionOutcome {
+fn execute_write(args_json: &str, capability_domain_state: &Value) -> CapabilityActionResult {
     let args = match parse_args::<WriteArgs>(args_json, "filesystem__write") {
         Ok(args) => args,
         Err(error) => return result::failure("write", None, &error, None),
@@ -190,7 +193,7 @@ fn execute_write(args_json: &str, capability_domain_state: &Value) -> ActionOutc
     )
 }
 
-fn execute_replace(args_json: &str, capability_domain_state: &Value) -> ActionOutcome {
+fn execute_replace(args_json: &str, capability_domain_state: &Value) -> CapabilityActionResult {
     let args = match parse_args::<ReplaceArgs>(args_json, "filesystem__replace") {
         Ok(args) => args,
         Err(error) => return result::failure("replace", None, &error, None),
@@ -227,7 +230,7 @@ fn execute_replace(args_json: &str, capability_domain_state: &Value) -> ActionOu
     )
 }
 
-fn execute_glob(args_json: &str, capability_domain_state: &Value) -> ActionOutcome {
+fn execute_glob(args_json: &str, capability_domain_state: &Value) -> CapabilityActionResult {
     let args = match parse_args::<GlobArgs>(args_json, "filesystem__glob") {
         Ok(args) => args,
         Err(error) => return result::failure("glob", None, &error, None),
@@ -252,7 +255,7 @@ fn execute_glob(args_json: &str, capability_domain_state: &Value) -> ActionOutco
     execute_glob_on_path(parsed, &args.pattern, options, capability_domain_state)
 }
 
-fn execute_search(args_json: &str, capability_domain_state: &Value) -> ActionOutcome {
+fn execute_search(args_json: &str, capability_domain_state: &Value) -> CapabilityActionResult {
     let args = match parse_args::<SearchArgs>(args_json, "filesystem__search") {
         Ok(args) => args,
         Err(error) => return result::failure("search", None, &error, None),
@@ -281,7 +284,7 @@ fn execute_list_on_path(
     path: ParsedPath,
     options: ListOptions,
     capability_domain_state: &Value,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 
@@ -295,7 +298,7 @@ fn execute_read_on_path(
     path: ParsedPath,
     options: ReadOptions,
     capability_domain_state: &Value,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 
@@ -311,7 +314,7 @@ fn execute_write_on_path(
     allow_override: bool,
     create_parents: bool,
     capability_domain_state: &Value,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 
@@ -334,7 +337,7 @@ fn execute_replace_on_path(
     mode: ReplaceMode,
     expected_replacements: Option<usize>,
     capability_domain_state: &Value,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 
@@ -356,7 +359,7 @@ fn execute_glob_on_path(
     pattern: &str,
     options: GlobOptions,
     capability_domain_state: &Value,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 
@@ -371,7 +374,7 @@ fn execute_search_on_path(
     pattern: &str,
     options: SearchOptions,
     capability_domain_state: &Value,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let target = path.target_label();
     let normalized_path = path.normalized_path().to_string();
 

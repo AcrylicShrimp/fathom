@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::history::EXECUTION_PAYLOAD_LOOKUP_ACTION;
+use crate::history::{EXECUTION_INPUT_LOOKUP_ACTION, EXECUTION_RESULT_LOOKUP_ACTION};
 use fathom_protocol::pb;
 
 pub(crate) const LOOKUP_INJECT_MAX_BYTES: usize = 16 * 1024;
@@ -20,57 +20,37 @@ pub(crate) struct ResolvedPayloadLookup {
 }
 
 pub(crate) fn resolve_from_execution(execution: &pb::Execution) -> Option<ResolvedPayloadLookup> {
-    if execution.action_id != EXECUTION_PAYLOAD_LOOKUP_ACTION {
-        return None;
-    }
+    let part = match execution.action_id.as_str() {
+        EXECUTION_INPUT_LOOKUP_ACTION => "input",
+        EXECUTION_RESULT_LOOKUP_ACTION => "result",
+        _ => return None,
+    };
     if execution.status != pb::ExecutionStatus::Succeeded as i32 {
         return None;
     }
 
     let envelope: Value = serde_json::from_str(&execution.result_message).ok()?;
-    if !envelope.get("ok")?.as_bool()? {
-        return None;
-    }
-    if envelope.get("op")?.as_str()? != EXECUTION_PAYLOAD_LOOKUP_ACTION {
-        return None;
-    }
-
-    let data = envelope.get("data")?;
-    let execution_id = data.get("execution_id")?.as_str()?.to_string();
-    let part = data.get("part")?.as_str()?.to_string();
-    let offset = value_to_usize(data.get("offset"))?;
-    let full_bytes = value_to_usize(data.get("full_bytes"))?;
-    let source_truncated = data
-        .get("truncated")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let next_offset = parse_next_offset(data.get("next_offset"))?;
-    let payload = data.get("payload")?.as_str()?.to_string();
+    let execution_id = envelope.get("execution_id")?.as_str()?.to_string();
+    let offset = value_to_usize(envelope.get("offset"))?;
+    let full_bytes = value_to_usize(envelope.get("total_size"))?;
+    let limit = value_to_usize(envelope.get("limit"))?;
+    let payload = envelope.get("content")?.as_str()?.to_string();
+    let consumed_bytes = offset.saturating_add(limit).min(full_bytes);
+    let next_offset = (consumed_bytes < full_bytes).then_some(consumed_bytes);
     let (payload_chunk, injected_omitted_bytes) = truncate_utf8_by_bytes(&payload);
 
     Some(ResolvedPayloadLookup {
         lookup_execution_id: execution.execution_id.clone(),
         execution_id,
-        part,
+        part: part.to_string(),
         offset,
         next_offset,
         full_bytes,
-        source_truncated,
+        source_truncated: next_offset.is_some(),
+        payload_chunk,
         injected_truncated: injected_omitted_bytes > 0,
         injected_omitted_bytes,
-        payload_chunk,
     })
-}
-
-fn parse_next_offset(value: Option<&Value>) -> Option<Option<usize>> {
-    let Some(value) = value else {
-        return Some(None);
-    };
-    let next = value.as_i64()?;
-    if next < 0 {
-        return Some(None);
-    }
-    usize::try_from(next).ok().map(Some)
 }
 
 fn value_to_usize(value: Option<&Value>) -> Option<usize> {
@@ -94,7 +74,7 @@ fn truncate_utf8_by_bytes(value: &str) -> (String, usize) {
 #[cfg(test)]
 mod tests {
     use super::{LOOKUP_INJECT_MAX_BYTES, resolve_from_execution};
-    use crate::history::EXECUTION_PAYLOAD_LOOKUP_ACTION;
+    use crate::history::{EXECUTION_INPUT_LOOKUP_ACTION, EXECUTION_RESULT_LOOKUP_ACTION};
     use fathom_protocol::pb;
 
     #[test]
@@ -102,21 +82,15 @@ mod tests {
         let execution = pb::Execution {
             execution_id: "execution-lookup-1".to_string(),
             session_id: "session-1".to_string(),
-            action_id: EXECUTION_PAYLOAD_LOOKUP_ACTION.to_string(),
+            action_id: EXECUTION_RESULT_LOOKUP_ACTION.to_string(),
             args_json: "{}".to_string(),
             status: pb::ExecutionStatus::Succeeded as i32,
             result_message: serde_json::json!({
-                "ok": true,
-                "op": EXECUTION_PAYLOAD_LOOKUP_ACTION,
-                "data": {
-                    "execution_id": "execution-42",
-                    "part": "result",
-                    "offset": 128,
-                    "next_offset": -1,
-                    "full_bytes": 1024,
-                    "truncated": false,
-                    "payload": "hello"
-                }
+                "execution_id": "execution-42",
+                "total_size": 1024,
+                "offset": 128,
+                "limit": 5,
+                "content": "hello"
             })
             .to_string(),
             created_at_unix_ms: 0,
@@ -128,10 +102,10 @@ mod tests {
         assert_eq!(resolved.execution_id, "execution-42");
         assert_eq!(resolved.part, "result");
         assert_eq!(resolved.offset, 128);
-        assert_eq!(resolved.next_offset, None);
+        assert_eq!(resolved.next_offset, Some(133));
         assert_eq!(resolved.full_bytes, 1024);
         assert_eq!(resolved.payload_chunk, "hello");
-        assert!(!resolved.injected_truncated);
+        assert!(resolved.source_truncated);
     }
 
     #[test]
@@ -140,21 +114,15 @@ mod tests {
         let execution = pb::Execution {
             execution_id: "execution-lookup-2".to_string(),
             session_id: "session-1".to_string(),
-            action_id: EXECUTION_PAYLOAD_LOOKUP_ACTION.to_string(),
+            action_id: EXECUTION_INPUT_LOOKUP_ACTION.to_string(),
             args_json: "{}".to_string(),
             status: pb::ExecutionStatus::Succeeded as i32,
             result_message: serde_json::json!({
-                "ok": true,
-                "op": EXECUTION_PAYLOAD_LOOKUP_ACTION,
-                "data": {
-                    "execution_id": "execution-43",
-                    "part": "args",
-                    "offset": 0,
-                    "next_offset": 123,
-                    "full_bytes": 4242,
-                    "truncated": true,
-                    "payload": oversized
-                }
+                "execution_id": "execution-43",
+                "total_size": 4242,
+                "offset": 0,
+                "limit": 123,
+                "content": oversized
             })
             .to_string(),
             created_at_unix_ms: 0,

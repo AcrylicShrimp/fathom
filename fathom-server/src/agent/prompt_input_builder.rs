@@ -2,9 +2,9 @@ use std::collections::HashSet;
 
 use crate::agent::types::{
     AgentInvocationContext, PromptAssistantOutput, PromptCron, PromptEvent,
-    PromptExecutionDetached, PromptExecutionFailed, PromptExecutionRejected,
-    PromptExecutionRequested, PromptExecutionSucceeded, PromptInput, PromptPayloadLookupAvailable,
-    PromptRefreshProfile, PromptStablePrefix, PromptUserMessage,
+    PromptExecutionBackgrounded, PromptExecutionCanceled, PromptExecutionFailed,
+    PromptExecutionRejected, PromptExecutionRequested, PromptExecutionSucceeded, PromptInput,
+    PromptPayloadLookupAvailable, PromptRefreshProfile, PromptStablePrefix, PromptUserMessage,
 };
 use crate::history::build_payload_preview;
 use crate::history::{HistoryEvent, HistoryEventKind};
@@ -85,11 +85,10 @@ fn is_append_only_prompt_event(event: &PromptEvent) -> bool {
         PromptEvent::UserMessage(_)
             | PromptEvent::AssistantOutput(_)
             | PromptEvent::ExecutionRequested(_)
-            | PromptEvent::AwaitedExecutionSucceeded(_)
-            | PromptEvent::AwaitedExecutionFailed(_)
-            | PromptEvent::ExecutionDetached(_)
-            | PromptEvent::DetachedExecutionSucceeded(_)
-            | PromptEvent::DetachedExecutionFailed(_)
+            | PromptEvent::ExecutionSucceeded(_)
+            | PromptEvent::ExecutionFailed(_)
+            | PromptEvent::ExecutionBackgrounded(_)
+            | PromptEvent::ExecutionCanceled(_)
             | PromptEvent::ExecutionRejected(_)
     )
 }
@@ -111,46 +110,37 @@ fn prompt_event_from_history_event(event: &HistoryEvent) -> Option<PromptEvent> 
             Some(PromptEvent::ExecutionRequested(PromptExecutionRequested {
                 execution_id: event.actor_id.clone(),
                 action_id: payload.canonical_action_id.clone(),
-                execution_mode: payload.execution_mode.clone(),
+                background: payload.background,
                 args_preview: payload.args_preview.clone(),
             }))
         }
-        HistoryEventKind::AwaitedExecutionSucceeded(payload) => Some(
-            PromptEvent::AwaitedExecutionSucceeded(PromptExecutionSucceeded {
+        HistoryEventKind::ExecutionSucceeded(payload) => {
+            Some(PromptEvent::ExecutionSucceeded(PromptExecutionSucceeded {
                 execution_id: event.actor_id.clone(),
                 action_id: payload.canonical_action_id.clone(),
                 payload_preview: payload.payload_preview.clone(),
-            }),
-        ),
-        HistoryEventKind::AwaitedExecutionFailed(payload) => {
-            Some(PromptEvent::AwaitedExecutionFailed(PromptExecutionFailed {
+            }))
+        }
+        HistoryEventKind::ExecutionFailed(payload) => {
+            Some(PromptEvent::ExecutionFailed(PromptExecutionFailed {
                 execution_id: event.actor_id.clone(),
                 action_id: payload.canonical_action_id.clone(),
                 message: payload.message.clone(),
                 payload_preview: payload.payload_preview.clone(),
             }))
         }
-        HistoryEventKind::ExecutionDetached(payload) => {
-            Some(PromptEvent::ExecutionDetached(PromptExecutionDetached {
+        HistoryEventKind::ExecutionBackgrounded(payload) => Some(
+            PromptEvent::ExecutionBackgrounded(PromptExecutionBackgrounded {
+                execution_id: event.actor_id.clone(),
+                action_id: payload.canonical_action_id.clone(),
+            }),
+        ),
+        HistoryEventKind::ExecutionCanceled(payload) => {
+            Some(PromptEvent::ExecutionCanceled(PromptExecutionCanceled {
                 execution_id: event.actor_id.clone(),
                 action_id: payload.canonical_action_id.clone(),
             }))
         }
-        HistoryEventKind::DetachedExecutionSucceeded(payload) => Some(
-            PromptEvent::DetachedExecutionSucceeded(PromptExecutionSucceeded {
-                execution_id: event.actor_id.clone(),
-                action_id: payload.canonical_action_id.clone(),
-                payload_preview: payload.payload_preview.clone(),
-            }),
-        ),
-        HistoryEventKind::DetachedExecutionFailed(payload) => Some(
-            PromptEvent::DetachedExecutionFailed(PromptExecutionFailed {
-                execution_id: event.actor_id.clone(),
-                action_id: payload.canonical_action_id.clone(),
-                message: payload.message.clone(),
-                payload_preview: payload.payload_preview.clone(),
-            }),
-        ),
         HistoryEventKind::ExecutionRejected(payload) => {
             Some(PromptEvent::ExecutionRejected(PromptExecutionRejected {
                 execution_id: event.actor_id.clone(),
@@ -200,42 +190,33 @@ fn prompt_event_from_execution_update(update: &pb::ExecutionUpdateTrigger) -> Op
     let kind = pb::ExecutionUpdateKind::try_from(update.kind)
         .unwrap_or(pb::ExecutionUpdateKind::Unspecified);
     match kind {
-        pb::ExecutionUpdateKind::AwaitedExecutionSucceeded => payload_preview.map(|preview| {
-            PromptEvent::AwaitedExecutionSucceeded(PromptExecutionSucceeded {
+        pb::ExecutionUpdateKind::ExecutionSucceeded => payload_preview.map(|preview| {
+            PromptEvent::ExecutionSucceeded(PromptExecutionSucceeded {
                 execution_id: update.execution_id.clone(),
                 action_id: update.action_id.clone(),
                 payload_preview: preview,
             })
         }),
-        pb::ExecutionUpdateKind::AwaitedExecutionFailed => {
-            Some(PromptEvent::AwaitedExecutionFailed(PromptExecutionFailed {
+        pb::ExecutionUpdateKind::ExecutionFailed => {
+            Some(PromptEvent::ExecutionFailed(PromptExecutionFailed {
                 execution_id: update.execution_id.clone(),
                 action_id: update.action_id.clone(),
                 message: update.message.clone(),
                 payload_preview,
             }))
         }
-        pb::ExecutionUpdateKind::ExecutionDetached => {
-            Some(PromptEvent::ExecutionDetached(PromptExecutionDetached {
+        pb::ExecutionUpdateKind::ExecutionBackgrounded => Some(PromptEvent::ExecutionBackgrounded(
+            PromptExecutionBackgrounded {
+                execution_id: update.execution_id.clone(),
+                action_id: update.action_id.clone(),
+            },
+        )),
+        pb::ExecutionUpdateKind::ExecutionCanceled => {
+            Some(PromptEvent::ExecutionCanceled(PromptExecutionCanceled {
                 execution_id: update.execution_id.clone(),
                 action_id: update.action_id.clone(),
             }))
         }
-        pb::ExecutionUpdateKind::DetachedExecutionSucceeded => payload_preview.map(|preview| {
-            PromptEvent::DetachedExecutionSucceeded(PromptExecutionSucceeded {
-                execution_id: update.execution_id.clone(),
-                action_id: update.action_id.clone(),
-                payload_preview: preview,
-            })
-        }),
-        pb::ExecutionUpdateKind::DetachedExecutionFailed => Some(
-            PromptEvent::DetachedExecutionFailed(PromptExecutionFailed {
-                execution_id: update.execution_id.clone(),
-                action_id: update.action_id.clone(),
-                message: update.message.clone(),
-                payload_preview,
-            }),
-        ),
         pb::ExecutionUpdateKind::ExecutionRejected => {
             Some(PromptEvent::ExecutionRejected(PromptExecutionRejected {
                 execution_id: update.execution_id.clone(),
@@ -251,10 +232,9 @@ fn prompt_event_from_execution_update(update: &pb::ExecutionUpdateTrigger) -> Op
 mod tests {
     use crate::agent::prompt_input_builder::build_prompt_input;
     use crate::agent::types::{
-        ActionModeSupportContract, AgentInvocationContext, CapabilityAction, CapabilityDomain,
-        CapabilityRecipe, CapabilitySurface, HarnessContract, IdentityEnvelope,
-        ParticipantEnvelope, PromptEvent, ResolvedPayloadLookupHint, SessionAnchor,
-        SessionBaseline, SessionCompaction,
+        AgentInvocationContext, CapabilityAction, CapabilityDomain, CapabilityRecipe,
+        CapabilitySurface, HarnessContract, IdentityEnvelope, ParticipantEnvelope, PromptEvent,
+        ResolvedPayloadLookupHint, SessionAnchor, SessionBaseline, SessionCompaction,
     };
     use crate::history::HistoryEvent;
     use crate::history::schema::{HistoryActorKind, HistoryEventKind, UserMessageHistoryPayload};
@@ -295,8 +275,6 @@ mod tests {
                             action_id: "filesystem__list".to_string(),
                             description: "List directory entries for a non-empty relative path."
                                 .to_string(),
-                            mode_support: ActionModeSupportContract::AwaitOnly,
-                            discovery: false,
                         }],
                         recipes: vec![CapabilityRecipe {
                             title: "Find files".to_string(),
@@ -398,7 +376,7 @@ mod tests {
                     pb::ExecutionUpdateTrigger {
                         execution_id: "execution-1".to_string(),
                         action_id: "filesystem__list".to_string(),
-                        kind: pb::ExecutionUpdateKind::AwaitedExecutionSucceeded as i32,
+                        kind: pb::ExecutionUpdateKind::ExecutionSucceeded as i32,
                         message: String::new(),
                         payload_message: "{\"entries\":[\"src\"]}".to_string(),
                     },
@@ -411,7 +389,7 @@ mod tests {
                     pb::ExecutionUpdateTrigger {
                         execution_id: "execution-2".to_string(),
                         action_id: "shell__run".to_string(),
-                        kind: pb::ExecutionUpdateKind::DetachedExecutionFailed as i32,
+                        kind: pb::ExecutionUpdateKind::ExecutionFailed as i32,
                         message: "process exited with status 1".to_string(),
                         payload_message: "stderr: boom".to_string(),
                     },
@@ -425,7 +403,7 @@ mod tests {
                         execution_id: "execution-3".to_string(),
                         action_id: "shell__run".to_string(),
                         kind: pb::ExecutionUpdateKind::ExecutionRejected as i32,
-                        message: "detach is not allowed for shell__run".to_string(),
+                        message: "background is not allowed for shell__run".to_string(),
                         payload_message: String::new(),
                     },
                 )),
@@ -438,7 +416,7 @@ mod tests {
         assert!(input.pending_events.is_empty());
         assert!(matches!(
             input.transcript_events.first(),
-            Some(PromptEvent::AwaitedExecutionSucceeded(item))
+            Some(PromptEvent::ExecutionSucceeded(item))
                 if item.execution_id == "execution-1"
                     && item.action_id == "filesystem__list"
                     && item.payload_preview.lookup_ref == "execution://execution-1/result"
@@ -446,7 +424,7 @@ mod tests {
         ));
         assert!(matches!(
             input.transcript_events.get(1),
-            Some(PromptEvent::DetachedExecutionFailed(item))
+            Some(PromptEvent::ExecutionFailed(item))
                 if item.execution_id == "execution-2"
                     && item.action_id == "shell__run"
                     && item.message == "process exited with status 1"
@@ -459,7 +437,7 @@ mod tests {
             Some(PromptEvent::ExecutionRejected(item))
                 if item.execution_id == "execution-3"
                     && item.action_id == "shell__run"
-                    && item.message == "detach is not allowed for shell__run"
+                    && item.message == "background is not allowed for shell__run"
         ));
     }
 

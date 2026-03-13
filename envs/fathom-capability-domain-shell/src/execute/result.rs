@@ -1,21 +1,19 @@
-use fathom_capability_domain::ActionOutcome;
+use fathom_capability_domain::CapabilityActionResult;
 use serde_json::{Value, json};
 
 use super::error::ShellError;
 
-pub(crate) fn success(op: &'static str, path: &str, data: Value) -> ActionOutcome {
-    ActionOutcome {
-        succeeded: true,
-        message: json!({
+pub(crate) fn success(op: &'static str, path: &str, data: Value) -> CapabilityActionResult {
+    CapabilityActionResult::success(
+        json!({
             "ok": true,
             "op": op,
             "path": path,
             "target": "shell",
             "data": data,
-        })
-        .to_string(),
-        state_patch: None,
-    }
+        }),
+        0,
+    )
 }
 
 pub(crate) fn failure(
@@ -23,7 +21,7 @@ pub(crate) fn failure(
     path: Option<&str>,
     error: &ShellError,
     data: Option<Value>,
-) -> ActionOutcome {
+) -> CapabilityActionResult {
     let mut payload = json!({
         "ok": false,
         "op": op,
@@ -44,9 +42,9 @@ pub(crate) fn failure(
         payload["error"]["details"] = details.clone();
     }
 
-    ActionOutcome {
-        succeeded: false,
-        message: payload.to_string(),
-        state_patch: None,
+    if error.code() == "invalid_args" {
+        CapabilityActionResult::input_error(error.code(), error.message(), Some(payload), 0)
+    } else {
+        CapabilityActionResult::runtime_error(error.code(), error.message(), Some(payload), 0)
     }
 }

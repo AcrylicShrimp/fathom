@@ -1,14 +1,18 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use tokio::time::Instant;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tonic::Status;
 
 use crate::agent::SessionCompaction;
-use crate::capability_domain::{CapabilityDomainCommittedAction, RequestedExecutionMode};
+use crate::capability_domain::CapabilityDomainCommittedAction;
 use crate::history::HistoryEvent;
+use crate::session::inspection::{
+    ExecutionInspection, ExecutionListPage, ExecutionListQuery, PayloadSlice,
+};
 use crate::session::payload_lookup::ResolvedPayloadLookup;
 use crate::util::now_unix_ms;
-use fathom_capability_domain::CapabilityDomainSnapshot;
+use fathom_capability_domain::CapabilityActionKey;
 use fathom_protocol::pb;
 
 #[derive(Clone)]
@@ -28,6 +32,26 @@ pub(crate) enum SessionCommand {
     ListExecutions {
         respond_to: oneshot::Sender<Vec<pb::Execution>>,
     },
+    InspectListExecutions {
+        query: ExecutionListQuery,
+        respond_to: oneshot::Sender<Result<ExecutionListPage, String>>,
+    },
+    InspectGetExecution {
+        execution_id: String,
+        respond_to: oneshot::Sender<Result<Option<ExecutionInspection>, String>>,
+    },
+    InspectReadExecutionInput {
+        execution_id: String,
+        offset: usize,
+        limit: usize,
+        respond_to: oneshot::Sender<Result<PayloadSlice, String>>,
+    },
+    InspectReadExecutionResult {
+        execution_id: String,
+        offset: usize,
+        limit: usize,
+        respond_to: oneshot::Sender<Result<PayloadSlice, String>>,
+    },
     CancelExecution {
         execution_id: String,
         respond_to: oneshot::Sender<Result<pb::CancelExecutionResponse, Status>>,
@@ -38,10 +62,32 @@ pub(crate) enum SessionCommand {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ActiveExecutionState {
-    pub(crate) requested_mode: RequestedExecutionMode,
+pub(crate) struct ExecutionRuntimeState {
+    pub(crate) submission_id: String,
+    pub(crate) background_requested: bool,
     pub(crate) call_key: String,
     pub(crate) call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExecutionSubmissionStatus {
+    Queued,
+    RunningForeground,
+    RunningBackground,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExecutionSubmissionExecution {
+    pub(crate) execution_id: String,
+    pub(crate) action_key: CapabilityActionKey,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExecutionSubmissionState {
+    pub(crate) capability_domain_id: String,
+    pub(crate) executions: Vec<ExecutionSubmissionExecution>,
+    pub(crate) status: ExecutionSubmissionStatus,
+    pub(crate) foreground_wait_deadline: Option<Instant>,
 }
 
 pub(crate) struct SessionState {
@@ -55,10 +101,11 @@ pub(crate) struct SessionState {
     pub(crate) history: Vec<HistoryEvent>,
     pub(crate) executions: HashMap<String, pb::Execution>,
     pub(crate) engaged_capability_domain_ids: BTreeSet<String>,
-    pub(crate) capability_domain_snapshots: HashMap<String, CapabilityDomainSnapshot>,
-    pub(crate) next_capability_domain_seq: HashMap<String, u64>,
-    pub(crate) in_flight_actions: HashSet<String>,
-    pub(crate) active_executions: HashMap<String, ActiveExecutionState>,
+    pub(crate) foreground_submission_ids: HashSet<String>,
+    pub(crate) execution_runtimes: HashMap<String, ExecutionRuntimeState>,
+    pub(crate) execution_submissions: HashMap<String, ExecutionSubmissionState>,
+    pub(crate) active_submission_ids_by_domain: HashMap<String, String>,
+    pub(crate) queued_submission_ids_by_domain: HashMap<String, VecDeque<String>>,
     pub(crate) pending_payload_lookups: Vec<ResolvedPayloadLookup>,
     pub(crate) next_agent_invocation_seq: u64,
     pub(crate) turn_seq: u64,
@@ -74,13 +121,7 @@ impl SessionState {
         agent_profile_copy: pb::AgentProfile,
         participant_user_profiles_copy: HashMap<String, pb::UserProfile>,
         engaged_capability_domain_ids: BTreeSet<String>,
-        capability_domain_snapshots: HashMap<String, CapabilityDomainSnapshot>,
     ) -> Self {
-        let next_capability_domain_seq = engaged_capability_domain_ids
-            .iter()
-            .map(|capability_domain_id| (capability_domain_id.clone(), 0u64))
-            .collect::<HashMap<_, _>>();
-
         Self {
             session_id,
             created_at_unix_ms: now_unix_ms(),
@@ -92,10 +133,11 @@ impl SessionState {
             history: Vec::new(),
             executions: HashMap::new(),
             engaged_capability_domain_ids,
-            capability_domain_snapshots,
-            next_capability_domain_seq,
-            in_flight_actions: HashSet::new(),
-            active_executions: HashMap::new(),
+            foreground_submission_ids: HashSet::new(),
+            execution_runtimes: HashMap::new(),
+            execution_submissions: HashMap::new(),
+            active_submission_ids_by_domain: HashMap::new(),
+            queued_submission_ids_by_domain: HashMap::new(),
             pending_payload_lookups: Vec::new(),
             next_agent_invocation_seq: 0,
             turn_seq: 0,
@@ -137,15 +179,6 @@ impl SessionState {
         }
     }
 
-    pub(crate) fn allocate_capability_domain_seq(&mut self, capability_domain_id: &str) -> u64 {
-        let seq = self
-            .next_capability_domain_seq
-            .entry(capability_domain_id.to_string())
-            .or_insert(0);
-        *seq += 1;
-        *seq
-    }
-
     pub(crate) fn push_pending_payload_lookup(&mut self, lookup: ResolvedPayloadLookup) {
         if self.pending_payload_lookups.iter().any(|item| {
             item.execution_id == lookup.execution_id
@@ -160,5 +193,20 @@ impl SessionState {
     pub(crate) fn allocate_agent_invocation_seq(&mut self) -> u64 {
         self.next_agent_invocation_seq += 1;
         self.next_agent_invocation_seq
+    }
+
+    pub(crate) fn has_blocking_submissions(&self) -> bool {
+        !self.foreground_submission_ids.is_empty()
+    }
+
+    pub(crate) fn next_foreground_wait_deadline(&self) -> Option<Instant> {
+        self.foreground_submission_ids
+            .iter()
+            .filter_map(|submission_id| {
+                self.execution_submissions
+                    .get(submission_id)
+                    .and_then(|submission| submission.foreground_wait_deadline)
+            })
+            .min()
     }
 }

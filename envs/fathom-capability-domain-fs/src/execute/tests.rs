@@ -1,6 +1,21 @@
+use fathom_capability_domain::{ActionError, CapabilityActionResult};
 use serde_json::{Value, json};
 
 use super::execute_action;
+
+fn outcome_payload(outcome: &CapabilityActionResult) -> Value {
+    match &outcome.outcome {
+        Ok(success) => success.payload.clone(),
+        Err(ActionError::InputError(error)) => error
+            .details
+            .clone()
+            .unwrap_or_else(|| json!({ "error_code": error.code, "message": error.message })),
+        Err(ActionError::RuntimeError(error)) => error
+            .details
+            .clone()
+            .unwrap_or_else(|| json!({ "error_code": error.code, "message": error.message })),
+    }
+}
 
 #[test]
 fn fs_env_replace_supports_mode_switch() {
@@ -13,7 +28,7 @@ fn fs_env_replace_supports_mode_switch() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("fs_write should dispatch");
-    assert!(write_outcome.succeeded);
+    assert!(write_outcome.outcome.is_ok());
 
     let replace_first = execute_action(
         "replace",
@@ -21,7 +36,7 @@ fn fs_env_replace_supports_mode_switch() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("fs_replace first should dispatch");
-    assert!(replace_first.succeeded);
+    assert!(replace_first.outcome.is_ok());
 
     let read_after_first = execute_action(
         "read",
@@ -29,8 +44,7 @@ fn fs_env_replace_supports_mode_switch() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("fs_read should dispatch");
-    let payload_first: Value =
-        serde_json::from_str(&read_after_first.message).expect("valid json payload");
+    let payload_first = outcome_payload(&read_after_first);
     assert_eq!(
         payload_first["data"]["content"]
             .as_str()
@@ -44,7 +58,7 @@ fn fs_env_replace_supports_mode_switch() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("fs_replace all should dispatch");
-    assert!(replace_all.succeeded);
+    assert!(replace_all.outcome.is_ok());
 
     let read_after_all = execute_action(
         "read",
@@ -52,8 +66,7 @@ fn fs_env_replace_supports_mode_switch() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("fs_read should dispatch");
-    let payload_all: Value =
-        serde_json::from_str(&read_after_all.message).expect("valid json payload");
+    let payload_all = outcome_payload(&read_after_all);
     assert_eq!(
         payload_all["data"]["content"].as_str().unwrap_or_default(),
         "z x x"
@@ -73,9 +86,8 @@ fn fs_env_reject_workspace_escape() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("fs_read should dispatch");
-    assert!(!outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_err());
+    let payload = outcome_payload(&outcome);
     let code = payload
         .get("error_code")
         .and_then(Value::as_str)
@@ -96,7 +108,7 @@ fn fs_env_reject_absolute_path() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("fs_read should dispatch");
-    assert!(!outcome.succeeded);
+    assert!(outcome.outcome.is_err());
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -112,9 +124,8 @@ fn fs_env_get_base_path_returns_canonical_scope() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("filesystem__get_base_path should dispatch");
-    assert!(outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_ok());
+    let payload = outcome_payload(&outcome);
     let canonical_root =
         std::fs::canonicalize(&root).expect("base path should canonicalize for comparison");
     assert_eq!(payload["data"]["source"], json!("filesystem_env_state"));
@@ -138,9 +149,8 @@ fn fs_env_read_supports_line_windowing() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("filesystem__read should dispatch");
-    assert!(outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_ok());
+    let payload = outcome_payload(&outcome);
     assert_eq!(payload["data"]["content"], json!("b\nc"));
     assert_eq!(payload["data"]["start_line"], json!(2));
     assert_eq!(payload["data"]["returned_lines"], json!(2));
@@ -162,8 +172,8 @@ fn fs_env_read_rejects_non_utf8_file() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("filesystem__read should dispatch");
-    assert!(!outcome.succeeded);
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_err());
+    let payload = outcome_payload(&outcome);
     assert_eq!(payload["error_code"], json!("invalid_encoding"));
 
     let _ = std::fs::remove_dir_all(&root);
@@ -183,9 +193,8 @@ fn fs_env_glob_returns_matching_files() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("filesystem__glob should dispatch");
-    assert!(outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_ok());
+    let payload = outcome_payload(&outcome);
     let matches = payload["data"]["matches"]
         .as_array()
         .expect("matches must be array");
@@ -209,9 +218,8 @@ fn fs_env_search_uses_regex_and_case_insensitive_default() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("filesystem__search should dispatch");
-    assert!(outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_ok());
+    let payload = outcome_payload(&outcome);
     let matches = payload["data"]["matches"]
         .as_array()
         .expect("matches must be array");
@@ -236,9 +244,8 @@ fn fs_env_replace_enforces_expected_replacements() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("filesystem__replace should dispatch");
-    assert!(!outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_err());
+    let payload = outcome_payload(&outcome);
     assert_eq!(payload["error_code"], json!("invalid_args"));
 
     let _ = std::fs::remove_dir_all(&root);
@@ -255,8 +262,8 @@ fn fs_env_write_respects_create_parents_flag() {
         &json!({ "base_path": root.display().to_string() }),
     )
     .expect("filesystem__write should dispatch");
-    assert!(!outcome.succeeded);
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_err());
+    let payload = outcome_payload(&outcome);
     assert_eq!(payload["error_code"], json!("not_found"));
 
     let _ = std::fs::remove_dir_all(&root);

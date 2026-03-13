@@ -1,54 +1,23 @@
-use fathom_capability_domain::{ActionModeSupport, ActionSpec};
+use fathom_capability_domain::{CapabilityActionDefinition, CapabilityActionKey};
 use serde_json::Value;
-
 pub(super) const SYSTEM_CAPABILITY_DOMAIN_ID: &str = "system";
-const SYSTEM_ACTION_MAX_TIMEOUT_MS: u64 = 5_000;
-const SYSTEM_ACTION_DESIRED_TIMEOUT_MS: u64 = 2_000;
-
-pub(super) type ArgsObject = serde_json::Map<String, Value>;
+pub(super) const SYSTEM_LIST_EXECUTIONS_ACTION_KEY: CapabilityActionKey = CapabilityActionKey(0);
+pub(super) const SYSTEM_GET_EXECUTION_ACTION_KEY: CapabilityActionKey = CapabilityActionKey(1);
+pub(super) const SYSTEM_READ_EXECUTION_INPUT_ACTION_KEY: CapabilityActionKey =
+    CapabilityActionKey(2);
+pub(super) const SYSTEM_READ_EXECUTION_RESULT_ACTION_KEY: CapabilityActionKey =
+    CapabilityActionKey(3);
 
 pub(super) fn system_spec(
+    action_key: u16,
     action_name: &'static str,
     description: &'static str,
     input_schema: Value,
-) -> ActionSpec {
-    ActionSpec {
-        capability_domain_id: SYSTEM_CAPABILITY_DOMAIN_ID,
+) -> CapabilityActionDefinition {
+    CapabilityActionDefinition {
+        key: CapabilityActionKey(action_key),
         action_name,
         description,
         input_schema,
-        discovery: true,
-        mode_support: ActionModeSupport::AwaitOnly,
-        max_timeout_ms: SYSTEM_ACTION_MAX_TIMEOUT_MS,
-        desired_timeout_ms: Some(SYSTEM_ACTION_DESIRED_TIMEOUT_MS),
     }
-}
-
-pub(super) fn args_object(args: &Value) -> Result<&ArgsObject, String> {
-    args.as_object()
-        .ok_or_else(|| "action arguments must be a JSON object".to_string())
-}
-
-pub(super) fn require_non_empty_string<'a>(
-    args: &'a ArgsObject,
-    key: &str,
-) -> Result<&'a str, String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("missing or invalid string field `{key}`"))
-}
-
-pub(super) fn require_optional_u64(
-    args: &ArgsObject,
-    key: &str,
-    error_message: &str,
-) -> Result<(), String> {
-    if let Some(value) = args.get(key)
-        && value.as_u64().is_none()
-    {
-        return Err(error_message.to_string());
-    }
-    Ok(())
 }

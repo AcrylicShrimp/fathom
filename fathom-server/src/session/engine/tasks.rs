@@ -1,34 +1,41 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use tokio::sync::broadcast;
+use tokio::time::Instant;
 use tonic::Status;
 
 use crate::agent::ActionInvocation;
 use crate::capability_domain::{
-    CapabilityDomainActionSubmission, CapabilityDomainActorHandle, CapabilityDomainCommittedAction,
-    CapabilityDomainRegistry, RequestedExecutionMode, requested_execution_mode_from_args_json,
+    CapabilityDomainActionExecution, CapabilityDomainActionSubmission, CapabilityDomainActorHandle,
+    CapabilityDomainCommittedAction, ResolvedAction,
 };
 use crate::history;
 use crate::runtime::Runtime;
 use crate::session::diagnostics::execution_to_json;
-use crate::session::execution_context::ExecutionContext;
 use crate::session::payload_lookup::resolve_from_execution;
-use crate::session::state::{ActiveExecutionState, SessionState};
+use crate::session::state::{
+    ExecutionRuntimeState, ExecutionSubmissionExecution, ExecutionSubmissionState,
+    ExecutionSubmissionStatus, SessionState,
+};
 use crate::util::now_unix_ms;
-use fathom_capability_domain::ActionModeSupport;
+use fathom_capability_domain::{ActionError, CapabilityActionResult};
 use fathom_protocol::pb;
 use fathom_protocol::{execution_status_label, execution_update_phase_label};
+use serde_json::json;
 
 use super::events::{emit_event, emit_execution_update_event, enqueue_trigger};
 
 pub(super) struct QueuedExecution {
     pub(super) execution: pb::Execution,
     pub(super) outcome: QueuedExecutionOutcome,
+    pub(super) call_key: String,
+    pub(super) call_id: Option<String>,
 }
 
 pub(super) enum QueuedExecutionOutcome {
-    AwaitAccepted,
-    DetachedAccepted,
+    ForegroundAccepted,
+    BackgroundAccepted,
     Rejected,
 }
 
@@ -37,178 +44,240 @@ pub(super) enum CommitTurnPolicy {
     DeferUntilFutureTrigger,
 }
 
-pub(super) fn queue_execution(
+const FOREGROUND_WAIT_BUDGET: Duration = Duration::from_secs(10);
+
+#[derive(Clone)]
+struct AcceptedExecution {
+    execution_id: String,
+    resolved_action: ResolvedAction,
+    background_requested: bool,
+    call_key: String,
+    call_id: Option<String>,
+}
+
+struct AcceptedExecutionGroup {
+    capability_domain_id: String,
+    executions: Vec<AcceptedExecution>,
+    all_background_requested: bool,
+}
+
+pub(super) fn queue_executions(
     runtime: &Runtime,
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
     capability_domain_handles: &HashMap<String, CapabilityDomainActorHandle>,
-    action_invocation: ActionInvocation,
-) -> QueuedExecution {
-    let ActionInvocation {
-        action_id,
-        args_json,
-        call_key,
-        call_id,
-    } = action_invocation;
-    let execution_id = runtime.next_execution_id();
-    let now = now_unix_ms();
-    let requested_mode = requested_execution_mode_from_args_json(&args_json);
+    action_invocations: Vec<ActionInvocation>,
+) -> Vec<QueuedExecution> {
+    let mut queued_executions = Vec::with_capacity(action_invocations.len());
+    let mut grouped = Vec::<AcceptedExecutionGroup>::new();
+    let mut grouped_positions = HashMap::<String, usize>::new();
 
-    let mut execution = pb::Execution {
-        execution_id: execution_id.clone(),
-        session_id: state.session_id.clone(),
-        action_id: action_id.clone(),
-        args_json: args_json.clone(),
-        status: pb::ExecutionStatus::Running as i32,
-        result_message: String::new(),
-        created_at_unix_ms: now,
-        updated_at_unix_ms: now,
-    };
-    let mut outcome = QueuedExecutionOutcome::Rejected;
+    for action_invocation in action_invocations {
+        let ActionInvocation {
+            action_id,
+            args_json,
+            call_key,
+            call_id,
+        } = action_invocation;
+        let execution_id = runtime.next_execution_id();
+        let now = now_unix_ms();
+        let mut execution = pb::Execution {
+            execution_id: execution_id.clone(),
+            session_id: state.session_id.clone(),
+            action_id: action_id.clone(),
+            args_json: args_json.clone(),
+            status: pb::ExecutionStatus::Pending as i32,
+            result_message: String::new(),
+            created_at_unix_ms: now,
+            updated_at_unix_ms: now,
+        };
+        let mut outcome = QueuedExecutionOutcome::Rejected;
 
-    match requested_mode {
-        Ok(requested_mode) => {
-            let resolved = CapabilityDomainRegistry::resolve(&action_id);
-            if let Some(resolved_action) = resolved {
-                if !state
-                    .engaged_capability_domain_ids
-                    .contains(&resolved_action.capability_domain_id)
-                {
-                    execution.status = pb::ExecutionStatus::Failed as i32;
-                    execution.result_message = format!(
-                        "environment `{}` is not engaged for this session",
-                        resolved_action.capability_domain_id
-                    );
-                } else if requested_mode == RequestedExecutionMode::Detach
-                    && resolved_action.mode_support != ActionModeSupport::AwaitOrDetach
-                {
-                    execution.status = pb::ExecutionStatus::Failed as i32;
-                    execution.result_message = format!(
-                        "detach is not allowed for `{}`; use await",
-                        resolved_action.canonical_action_id
-                    );
-                } else if let Some(handle) =
-                    capability_domain_handles.get(&resolved_action.capability_domain_id)
-                {
-                    let env_seq =
-                        state.allocate_capability_domain_seq(&resolved_action.capability_domain_id);
-                    let execution_context = ExecutionContext::from_state(state);
-
-                    state.active_executions.insert(
-                        execution_id.clone(),
-                        ActiveExecutionState {
-                            requested_mode,
+        match background_requested_from_args_json(&args_json) {
+            Ok(background_requested) => {
+                let resolved = runtime.capability_domain_registry().resolve(&action_id);
+                if let Some(resolved_action) = resolved {
+                    if !state
+                        .engaged_capability_domain_ids
+                        .contains(&resolved_action.capability_domain_id)
+                    {
+                        execution.status = pb::ExecutionStatus::Failed as i32;
+                        execution.result_message = format!(
+                            "environment `{}` is not engaged for this session",
+                            resolved_action.capability_domain_id
+                        );
+                    } else if capability_domain_handles
+                        .contains_key(&resolved_action.capability_domain_id)
+                    {
+                        outcome = if background_requested {
+                            QueuedExecutionOutcome::BackgroundAccepted
+                        } else {
+                            QueuedExecutionOutcome::ForegroundAccepted
+                        };
+                        let group_index = if let Some(index) =
+                            grouped_positions.get(&resolved_action.capability_domain_id)
+                        {
+                            *index
+                        } else {
+                            let index = grouped.len();
+                            grouped_positions
+                                .insert(resolved_action.capability_domain_id.clone(), index);
+                            grouped.push(AcceptedExecutionGroup {
+                                capability_domain_id: resolved_action.capability_domain_id.clone(),
+                                executions: Vec::new(),
+                                all_background_requested: true,
+                            });
+                            index
+                        };
+                        let group = grouped
+                            .get_mut(group_index)
+                            .expect("group index must be valid");
+                        group.all_background_requested &= background_requested;
+                        group.executions.push(AcceptedExecution {
+                            execution_id: execution_id.clone(),
+                            resolved_action,
+                            background_requested,
                             call_key: call_key.clone(),
                             call_id: call_id.clone(),
-                        },
-                    );
-
-                    if requested_mode == RequestedExecutionMode::Await {
-                        state.in_flight_actions.insert(execution_id.clone());
-                        outcome = QueuedExecutionOutcome::AwaitAccepted;
+                        });
                     } else {
-                        outcome = QueuedExecutionOutcome::DetachedAccepted;
+                        execution.status = pb::ExecutionStatus::Failed as i32;
+                        execution.result_message = format!(
+                            "environment runtime `{}` is unavailable",
+                            resolved_action.capability_domain_id
+                        );
                     }
-
-                    let submission = CapabilityDomainActionSubmission {
-                        execution_id: execution_id.clone(),
-                        env_seq,
-                        resolved_action,
-                        args_json: execution.args_json.clone(),
-                        execution_context,
-                    };
-
-                    let handle = handle.clone();
-                    tokio::spawn(async move {
-                        handle.submit(submission).await;
-                    });
                 } else {
                     execution.status = pb::ExecutionStatus::Failed as i32;
-                    execution.result_message = format!(
-                        "environment runtime `{}` is unavailable",
-                        resolved_action.capability_domain_id
-                    );
+                    execution.result_message = format!("unknown action `{action_id}`");
                 }
-            } else {
+            }
+            Err(error) => {
                 execution.status = pb::ExecutionStatus::Failed as i32;
-                execution.result_message = format!("unknown action `{action_id}`");
+                execution.result_message = error;
             }
         }
-        Err(error) => {
-            execution.status = pb::ExecutionStatus::Failed as i32;
-            execution.result_message = error;
+
+        state
+            .executions
+            .insert(execution_id.clone(), execution.clone());
+        emit_execution_state_changed(state, events_tx, &execution);
+        history::append_execution_requested_history(state, &execution);
+        append_execution_started_record(runtime, state, &execution);
+
+        if matches!(outcome, QueuedExecutionOutcome::Rejected) {
+            append_execution_rejected_record(runtime, state, &execution);
+            enqueue_execution_update_trigger(
+                runtime,
+                state,
+                events_tx,
+                build_execution_update_trigger(
+                    runtime,
+                    &execution.execution_id,
+                    &execution.action_id,
+                    pb::ExecutionUpdateKind::ExecutionRejected,
+                    execution.result_message.clone(),
+                    String::new(),
+                ),
+            );
+        } else if matches!(outcome, QueuedExecutionOutcome::BackgroundAccepted) {
+            enqueue_execution_update_trigger(
+                runtime,
+                state,
+                events_tx,
+                build_execution_update_trigger(
+                    runtime,
+                    &execution.execution_id,
+                    &execution.action_id,
+                    pb::ExecutionUpdateKind::ExecutionBackgrounded,
+                    String::new(),
+                    String::new(),
+                ),
+            );
+        }
+
+        queued_executions.push(QueuedExecution {
+            execution,
+            outcome,
+            call_key,
+            call_id,
+        });
+    }
+
+    for group in grouped {
+        let submission_id = runtime.next_execution_submission_id();
+        let submission_background = group.all_background_requested;
+        let running_now = !state
+            .active_submission_ids_by_domain
+            .contains_key(&group.capability_domain_id);
+        let submission_status = match (running_now, submission_background) {
+            (true, true) => ExecutionSubmissionStatus::RunningBackground,
+            (true, false) => ExecutionSubmissionStatus::RunningForeground,
+            (false, _) => ExecutionSubmissionStatus::Queued,
+        };
+
+        state.execution_submissions.insert(
+            submission_id.clone(),
+            ExecutionSubmissionState {
+                capability_domain_id: group.capability_domain_id.clone(),
+                executions: group
+                    .executions
+                    .iter()
+                    .map(|execution| ExecutionSubmissionExecution {
+                        execution_id: execution.execution_id.clone(),
+                        action_key: execution.resolved_action.action_key,
+                    })
+                    .collect(),
+                status: submission_status,
+                foreground_wait_deadline: (!submission_background)
+                    .then(|| Instant::now() + FOREGROUND_WAIT_BUDGET),
+            },
+        );
+        if !submission_background {
+            state
+                .foreground_submission_ids
+                .insert(submission_id.clone());
+        }
+        for accepted in &group.executions {
+            state.execution_runtimes.insert(
+                accepted.execution_id.clone(),
+                ExecutionRuntimeState {
+                    submission_id: submission_id.clone(),
+                    background_requested: accepted.background_requested,
+                    call_key: accepted.call_key.clone(),
+                    call_id: accepted.call_id.clone(),
+                },
+            );
+        }
+
+        if running_now {
+            state
+                .active_submission_ids_by_domain
+                .insert(group.capability_domain_id.clone(), submission_id.clone());
+            start_execution_submission(
+                state,
+                events_tx,
+                capability_domain_handles,
+                &group.capability_domain_id,
+                &submission_id,
+            );
+        } else {
+            state
+                .queued_submission_ids_by_domain
+                .entry(group.capability_domain_id.clone())
+                .or_default()
+                .push_back(submission_id.clone());
         }
     }
 
-    state
-        .executions
-        .insert(execution_id.clone(), execution.clone());
-
-    emit_event(
-        events_tx,
-        &state.session_id,
-        pb::session_event::Kind::ExecutionStateChanged(pb::ExecutionStateChangedEvent {
-            execution: Some(execution.clone()),
-        }),
-    );
-
-    history::append_execution_requested_history(state, &execution);
-    runtime.diagnostics().append_session_record(
-        &state.session_id,
-        serde_json::json!({
-            "ts_unix_ms": now_unix_ms(),
-            "event": "execution.started",
-            "session_id": state.session_id,
-            "execution": execution_to_json(&execution),
-        }),
-    );
-
-    if matches!(outcome, QueuedExecutionOutcome::Rejected) {
-        runtime.diagnostics().append_session_record(
-            &state.session_id,
-            serde_json::json!({
-                "ts_unix_ms": now_unix_ms(),
-                "event": "execution.rejected",
-                "session_id": state.session_id,
-                "execution": execution_to_json(&execution),
-            }),
-        );
-        enqueue_execution_update_trigger(
-            runtime,
-            state,
-            events_tx,
-            build_execution_update_trigger(
-                runtime,
-                &execution.execution_id,
-                &execution.action_id,
-                pb::ExecutionUpdateKind::ExecutionRejected,
-                execution.result_message.clone(),
-                String::new(),
-            ),
-        );
-    } else if matches!(outcome, QueuedExecutionOutcome::DetachedAccepted) {
-        enqueue_execution_update_trigger(
-            runtime,
-            state,
-            events_tx,
-            build_execution_update_trigger(
-                runtime,
-                &execution.execution_id,
-                &execution.action_id,
-                pb::ExecutionUpdateKind::ExecutionDetached,
-                String::new(),
-                String::new(),
-            ),
-        );
-    }
-
-    QueuedExecution { execution, outcome }
+    queued_executions
 }
 
 pub(super) fn cancel_execution(
-    _runtime: &Runtime,
+    runtime: &Runtime,
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
+    capability_domain_handles: &HashMap<String, CapabilityDomainActorHandle>,
     execution_id: &str,
 ) -> Result<pb::CancelExecutionResponse, Status> {
     let Some(execution) = state.executions.get(execution_id) else {
@@ -230,29 +299,70 @@ pub(super) fn cancel_execution(
         });
     }
 
-    state.in_flight_actions.remove(execution_id);
-    state.active_executions.remove(execution_id);
+    let submission_id = state
+        .execution_runtimes
+        .get(execution_id)
+        .map(|runtime| runtime.submission_id.clone());
+    let Some(submission_id) = submission_id else {
+        return Ok(pb::CancelExecutionResponse {
+            canceled: false,
+            execution: Some(execution.clone()),
+        });
+    };
+    let Some(submission) = state.execution_submissions.remove(&submission_id) else {
+        return Ok(pb::CancelExecutionResponse {
+            canceled: false,
+            execution: Some(execution.clone()),
+        });
+    };
 
-    let execution = state
-        .executions
-        .get_mut(execution_id)
-        .expect("execution must exist after terminality check");
-    execution.status = pb::ExecutionStatus::Canceled as i32;
-    execution.result_message = "canceled by request".to_string();
-    execution.updated_at_unix_ms = now_unix_ms();
-    let execution_snapshot = execution.clone();
+    state.foreground_submission_ids.remove(&submission_id);
+    if state
+        .active_submission_ids_by_domain
+        .get(&submission.capability_domain_id)
+        .is_some_and(|active_submission_id| active_submission_id == &submission_id)
+    {
+        state
+            .active_submission_ids_by_domain
+            .remove(&submission.capability_domain_id);
+        start_next_queued_submission(
+            runtime,
+            state,
+            events_tx,
+            capability_domain_handles,
+            &submission.capability_domain_id,
+        );
+    } else if let Some(queue) = state
+        .queued_submission_ids_by_domain
+        .get_mut(&submission.capability_domain_id)
+    {
+        queue.retain(|queued_submission_id| queued_submission_id != &submission_id);
+        if queue.is_empty() {
+            state
+                .queued_submission_ids_by_domain
+                .remove(&submission.capability_domain_id);
+        }
+    }
 
-    emit_event(
-        events_tx,
-        &state.session_id,
-        pb::session_event::Kind::ExecutionStateChanged(pb::ExecutionStateChangedEvent {
-            execution: Some(execution_snapshot.clone()),
-        }),
-    );
+    let mut canceled_execution = None;
+    for submission_execution in submission.executions {
+        let submission_execution_id = submission_execution.execution_id;
+        state.execution_runtimes.remove(&submission_execution_id);
+        if let Some(execution) = state.executions.get_mut(&submission_execution_id) {
+            execution.status = pb::ExecutionStatus::Canceled as i32;
+            execution.result_message = "canceled by request".to_string();
+            execution.updated_at_unix_ms = now_unix_ms();
+            let execution_snapshot = execution.clone();
+            emit_execution_state_changed(state, events_tx, &execution_snapshot);
+            if submission_execution_id == execution_id {
+                canceled_execution = Some(execution_snapshot);
+            }
+        }
+    }
 
     Ok(pb::CancelExecutionResponse {
-        canceled: true,
-        execution: Some(execution_snapshot),
+        canceled: canceled_execution.is_some(),
+        execution: canceled_execution,
     })
 }
 
@@ -260,6 +370,7 @@ pub(super) fn handle_capability_domain_action_committed(
     runtime: &Runtime,
     state: &mut SessionState,
     events_tx: &broadcast::Sender<pb::SessionEvent>,
+    capability_domain_handles: &HashMap<String, CapabilityDomainActorHandle>,
     committed: CapabilityDomainCommittedAction,
 ) -> CommitTurnPolicy {
     if !state
@@ -269,45 +380,318 @@ pub(super) fn handle_capability_domain_action_committed(
         return CommitTurnPolicy::DeferUntilFutureTrigger;
     }
 
-    state.capability_domain_snapshots.insert(
-        committed.capability_domain_id.clone(),
-        committed.state_snapshot,
-    );
-
-    state.in_flight_actions.remove(&committed.execution_id);
-    let execution_state = state.active_executions.remove(&committed.execution_id);
-    let Some(execution) = state.executions.get_mut(&committed.execution_id) else {
+    let Some(submission) = state.execution_submissions.remove(&committed.submission_id) else {
         return CommitTurnPolicy::DeferUntilFutureTrigger;
     };
+    let submission_is_foreground = !matches!(
+        submission.status,
+        ExecutionSubmissionStatus::RunningBackground
+    );
 
+    state
+        .foreground_submission_ids
+        .remove(&committed.submission_id);
+    if state
+        .active_submission_ids_by_domain
+        .get(&submission.capability_domain_id)
+        .is_some_and(|active_submission_id| active_submission_id == &committed.submission_id)
+    {
+        state
+            .active_submission_ids_by_domain
+            .remove(&submission.capability_domain_id);
+    }
+
+    for committed_execution in committed.executions {
+        settle_committed_execution(runtime, state, events_tx, committed_execution);
+    }
+
+    start_next_queued_submission(
+        runtime,
+        state,
+        events_tx,
+        capability_domain_handles,
+        &submission.capability_domain_id,
+    );
+
+    if submission_is_foreground {
+        CommitTurnPolicy::ResumeNow
+    } else {
+        CommitTurnPolicy::DeferUntilFutureTrigger
+    }
+}
+
+pub(super) fn background_expired_submissions(
+    runtime: &Runtime,
+    state: &mut SessionState,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+) -> bool {
+    let now = Instant::now();
+    let expired_submission_ids = state
+        .foreground_submission_ids
+        .iter()
+        .filter(|submission_id| {
+            state
+                .execution_submissions
+                .get(*submission_id)
+                .and_then(|submission| submission.foreground_wait_deadline)
+                .is_some_and(|deadline| deadline <= now)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if expired_submission_ids.is_empty() {
+        return false;
+    }
+
+    for submission_id in expired_submission_ids {
+        background_submission(runtime, state, events_tx, &submission_id);
+    }
+    true
+}
+
+fn emit_execution_state_changed(
+    state: &SessionState,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+    execution: &pb::Execution,
+) {
+    emit_event(
+        events_tx,
+        &state.session_id,
+        pb::session_event::Kind::ExecutionStateChanged(pb::ExecutionStateChangedEvent {
+            execution: Some(execution.clone()),
+        }),
+    );
+}
+
+fn append_execution_started_record(
+    runtime: &Runtime,
+    state: &SessionState,
+    execution: &pb::Execution,
+) {
+    runtime.diagnostics().append_session_record(
+        &state.session_id,
+        serde_json::json!({
+            "ts_unix_ms": now_unix_ms(),
+            "event": "execution.started",
+            "session_id": state.session_id,
+            "execution": execution_to_json(execution),
+        }),
+    );
+}
+
+fn append_execution_rejected_record(
+    runtime: &Runtime,
+    state: &SessionState,
+    execution: &pb::Execution,
+) {
+    runtime.diagnostics().append_session_record(
+        &state.session_id,
+        serde_json::json!({
+            "ts_unix_ms": now_unix_ms(),
+            "event": "execution.rejected",
+            "session_id": state.session_id,
+            "execution": execution_to_json(execution),
+        }),
+    );
+}
+
+fn start_execution_submission(
+    state: &mut SessionState,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+    capability_domain_handles: &HashMap<String, CapabilityDomainActorHandle>,
+    capability_domain_id: &str,
+    submission_id: &str,
+) {
+    let submission_background = !state.foreground_submission_ids.contains(submission_id);
+    let Some(submission) = state.execution_submissions.get_mut(submission_id) else {
+        return;
+    };
+    submission.status = if submission_background {
+        ExecutionSubmissionStatus::RunningBackground
+    } else {
+        ExecutionSubmissionStatus::RunningForeground
+    };
+    if submission_background {
+        submission.foreground_wait_deadline = None;
+    }
+    let submission_executions = submission.executions.clone();
+
+    let mut execution_snapshots = Vec::new();
+    let now = now_unix_ms();
+    for submission_execution in &submission_executions {
+        let Some(execution) = state.executions.get_mut(&submission_execution.execution_id) else {
+            continue;
+        };
+        if execution.status != pb::ExecutionStatus::Running as i32 {
+            execution.status = pb::ExecutionStatus::Running as i32;
+            execution.updated_at_unix_ms = now;
+            execution_snapshots.push(execution.clone());
+        }
+    }
+    for execution in &execution_snapshots {
+        emit_execution_state_changed(state, events_tx, execution);
+    }
+
+    let Some(handle) = capability_domain_handles.get(capability_domain_id) else {
+        return;
+    };
+    let submission = CapabilityDomainActionSubmission {
+        submission_id: submission_id.to_string(),
+        executions: submission_executions
+            .into_iter()
+            .filter_map(|submission_execution| {
+                state
+                    .executions
+                    .get(&submission_execution.execution_id)
+                    .map(|execution| CapabilityDomainActionExecution {
+                        execution_id: submission_execution.execution_id,
+                        action_key: submission_execution.action_key,
+                        args_json: execution.args_json.clone(),
+                    })
+            })
+            .collect(),
+    };
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        handle.submit(submission).await;
+    });
+}
+
+fn background_submission(
+    runtime: &Runtime,
+    state: &mut SessionState,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+    submission_id: &str,
+) {
+    let Some(submission) = state.execution_submissions.get_mut(submission_id) else {
+        return;
+    };
+    if !state.foreground_submission_ids.remove(submission_id) {
+        return;
+    }
+    submission.foreground_wait_deadline = None;
+    if matches!(
+        submission.status,
+        ExecutionSubmissionStatus::RunningForeground
+    ) {
+        submission.status = ExecutionSubmissionStatus::RunningBackground;
+    }
+    let submission_executions = submission.executions.clone();
+
+    for submission_execution in submission_executions {
+        let Some(execution_runtime) = state
+            .execution_runtimes
+            .get_mut(&submission_execution.execution_id)
+        else {
+            continue;
+        };
+        execution_runtime.background_requested = true;
+        let Some(execution) = state.executions.get(&submission_execution.execution_id) else {
+            continue;
+        };
+        let detail =
+            settled_execution_output(execution, pb::ExecutionUpdatePhase::ExecutionBackgrounded);
+        emit_execution_update_event(
+            events_tx,
+            &state.session_id,
+            pb::ExecutionUpdatePhase::ExecutionBackgrounded,
+            execution_runtime.call_key.clone(),
+            execution_runtime.call_id.clone(),
+            Some(execution.action_id.clone()),
+            Some(execution.execution_id.clone()),
+            String::new(),
+            String::new(),
+            detail,
+        );
+        enqueue_execution_update_trigger(
+            runtime,
+            state,
+            events_tx,
+            build_execution_update_trigger(
+                runtime,
+                &execution.execution_id,
+                &execution.action_id,
+                pb::ExecutionUpdateKind::ExecutionBackgrounded,
+                String::new(),
+                String::new(),
+            ),
+        );
+    }
+}
+
+fn start_next_queued_submission(
+    _runtime: &Runtime,
+    state: &mut SessionState,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+    capability_domain_handles: &HashMap<String, CapabilityDomainActorHandle>,
+    capability_domain_id: &str,
+) {
+    let (next_submission_id, queue_is_empty) = if let Some(queue) = state
+        .queued_submission_ids_by_domain
+        .get_mut(capability_domain_id)
+    {
+        (queue.pop_front(), queue.is_empty())
+    } else {
+        (None, false)
+    };
+    if queue_is_empty {
+        state
+            .queued_submission_ids_by_domain
+            .remove(capability_domain_id);
+    }
+    let Some(next_submission_id) = next_submission_id else {
+        return;
+    };
+    state
+        .active_submission_ids_by_domain
+        .insert(capability_domain_id.to_string(), next_submission_id.clone());
+    start_execution_submission(
+        state,
+        events_tx,
+        capability_domain_handles,
+        capability_domain_id,
+        &next_submission_id,
+    );
+}
+
+fn settle_committed_execution(
+    runtime: &Runtime,
+    state: &mut SessionState,
+    events_tx: &broadcast::Sender<pb::SessionEvent>,
+    committed_execution: crate::capability_domain::CapabilityDomainCommittedExecution,
+) {
+    let Some(execution_runtime) = state
+        .execution_runtimes
+        .remove(&committed_execution.execution_id)
+    else {
+        return;
+    };
+    let Some(execution) = state.executions.get_mut(&committed_execution.execution_id) else {
+        return;
+    };
     let status =
         pb::ExecutionStatus::try_from(execution.status).unwrap_or(pb::ExecutionStatus::Unspecified);
     if status == pb::ExecutionStatus::Canceled {
-        return CommitTurnPolicy::DeferUntilFutureTrigger;
+        return;
     }
     if !matches!(
         status,
         pb::ExecutionStatus::Running | pb::ExecutionStatus::Pending
     ) {
-        return CommitTurnPolicy::DeferUntilFutureTrigger;
+        return;
     }
 
-    execution.status = if committed.succeeded {
+    let succeeded = action_result_succeeded(&committed_execution.result);
+    execution.status = if succeeded {
         pb::ExecutionStatus::Succeeded as i32
     } else {
         pb::ExecutionStatus::Failed as i32
     };
-    execution.result_message = committed.message;
+    execution.result_message = serialize_action_result_message(&committed_execution.result);
     execution.updated_at_unix_ms = now_unix_ms();
     let execution_snapshot = execution.clone();
 
-    emit_event(
-        events_tx,
-        &state.session_id,
-        pb::session_event::Kind::ExecutionStateChanged(pb::ExecutionStateChangedEvent {
-            execution: Some(execution_snapshot.clone()),
-        }),
-    );
+    emit_execution_state_changed(state, events_tx, &execution_snapshot);
     runtime.diagnostics().append_session_record(
         &state.session_id,
         serde_json::json!({
@@ -321,26 +705,16 @@ pub(super) fn handle_capability_domain_action_committed(
         state.push_pending_payload_lookup(lookup);
     }
 
-    let requested_mode = execution_state
-        .as_ref()
-        .map(|state| state.requested_mode)
-        .or_else(|| requested_execution_mode_from_args_json(&execution_snapshot.args_json).ok())
-        .unwrap_or(RequestedExecutionMode::Await);
-    let (trigger_kind, phase, policy) =
-        outcome_phase_for_commit(requested_mode, committed.succeeded);
+    let (trigger_kind, phase, _) =
+        outcome_phase_for_commit(execution_runtime.background_requested, succeeded);
     let detail = settled_execution_output(&execution_snapshot, phase);
 
     emit_execution_update_event(
         events_tx,
         &state.session_id,
         phase,
-        execution_state
-            .as_ref()
-            .map(|item| item.call_key.clone())
-            .unwrap_or_default(),
-        execution_state
-            .as_ref()
-            .and_then(|item| item.call_id.clone()),
+        execution_runtime.call_key,
+        execution_runtime.call_id,
         Some(execution_snapshot.action_id.clone()),
         Some(execution_snapshot.execution_id.clone()),
         String::new(),
@@ -356,7 +730,7 @@ pub(super) fn handle_capability_domain_action_committed(
             &execution_snapshot.execution_id,
             &execution_snapshot.action_id,
             trigger_kind,
-            if committed.succeeded {
+            if succeeded {
                 String::new()
             } else {
                 execution_snapshot.result_message.clone()
@@ -364,7 +738,6 @@ pub(super) fn handle_capability_domain_action_committed(
             execution_snapshot.result_message.clone(),
         ),
     );
-    policy
 }
 
 fn enqueue_execution_update_trigger(
@@ -407,15 +780,13 @@ pub(super) fn settled_execution_output(
         .map(execution_status_label)
         .unwrap_or("unknown");
     match phase {
-        pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded
-        | pb::ExecutionUpdatePhase::DetachedExecutionSucceeded => format!(
+        pb::ExecutionUpdatePhase::ExecutionSucceeded => format!(
             "{} execution `{}` finished as {}",
             execution_update_phase_label(phase),
             execution.execution_id,
             status
         ),
-        pb::ExecutionUpdatePhase::AwaitedExecutionFailed
-        | pb::ExecutionUpdatePhase::DetachedExecutionFailed => {
+        pb::ExecutionUpdatePhase::ExecutionFailed => {
             format!(
                 "{} execution `{}` finished as {} message={}",
                 execution_update_phase_label(phase),
@@ -424,7 +795,7 @@ pub(super) fn settled_execution_output(
                 truncate_inline(&execution.result_message, 180)
             )
         }
-        pb::ExecutionUpdatePhase::ExecutionDetached => {
+        pb::ExecutionUpdatePhase::ExecutionBackgrounded => {
             format!(
                 "{} execution `{}`",
                 execution_update_phase_label(phase),
@@ -447,7 +818,7 @@ pub(super) fn settled_execution_output(
 pub(super) fn queued_action_output(
     execution: &pb::Execution,
     call_id: Option<&str>,
-    requested_mode: RequestedExecutionMode,
+    background: bool,
 ) -> String {
     let status = pb::ExecutionStatus::try_from(execution.status)
         .map(execution_status_label)
@@ -455,11 +826,7 @@ pub(super) fn queued_action_output(
     let call_suffix = call_id
         .map(|value| format!(" call_id={value}"))
         .unwrap_or_default();
-    let mode_suffix = if requested_mode == RequestedExecutionMode::Detach {
-        " mode=detach"
-    } else {
-        ""
-    };
+    let mode_suffix = if background { " background=true" } else { "" };
 
     format!(
         "submitted action `{}` as {} ({status}){}{}",
@@ -468,35 +835,78 @@ pub(super) fn queued_action_output(
 }
 
 fn outcome_phase_for_commit(
-    requested_mode: RequestedExecutionMode,
+    background: bool,
     succeeded: bool,
 ) -> (
     pb::ExecutionUpdateKind,
     pb::ExecutionUpdatePhase,
     CommitTurnPolicy,
 ) {
-    match (requested_mode, succeeded) {
-        (RequestedExecutionMode::Await, true) => (
-            pb::ExecutionUpdateKind::AwaitedExecutionSucceeded,
-            pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded,
-            CommitTurnPolicy::ResumeNow,
-        ),
-        (RequestedExecutionMode::Await, false) => (
-            pb::ExecutionUpdateKind::AwaitedExecutionFailed,
-            pb::ExecutionUpdatePhase::AwaitedExecutionFailed,
-            CommitTurnPolicy::ResumeNow,
-        ),
-        (RequestedExecutionMode::Detach, true) => (
-            pb::ExecutionUpdateKind::DetachedExecutionSucceeded,
-            pb::ExecutionUpdatePhase::DetachedExecutionSucceeded,
-            CommitTurnPolicy::DeferUntilFutureTrigger,
-        ),
-        (RequestedExecutionMode::Detach, false) => (
-            pb::ExecutionUpdateKind::DetachedExecutionFailed,
-            pb::ExecutionUpdatePhase::DetachedExecutionFailed,
-            CommitTurnPolicy::DeferUntilFutureTrigger,
-        ),
+    let (kind, phase) = if succeeded {
+        (
+            pb::ExecutionUpdateKind::ExecutionSucceeded,
+            pb::ExecutionUpdatePhase::ExecutionSucceeded,
+        )
+    } else {
+        (
+            pb::ExecutionUpdateKind::ExecutionFailed,
+            pb::ExecutionUpdatePhase::ExecutionFailed,
+        )
+    };
+    let policy = if background {
+        CommitTurnPolicy::DeferUntilFutureTrigger
+    } else {
+        CommitTurnPolicy::ResumeNow
+    };
+    (kind, phase, policy)
+}
+
+fn background_requested_from_args_json(args_json: &str) -> Result<bool, String> {
+    let value: serde_json::Value = serde_json::from_str(args_json)
+        .map_err(|error| format!("failed to parse action args: {error}"))?;
+    let Some(object) = value.as_object() else {
+        return Err("action arguments must be a JSON object".to_string());
+    };
+    match object.get("background") {
+        None => Ok(false),
+        Some(serde_json::Value::Bool(background)) => Ok(*background),
+        Some(_) => Err("`background` must be a boolean when provided".to_string()),
     }
+}
+
+fn action_result_succeeded(result: &CapabilityActionResult) -> bool {
+    result.outcome.is_ok()
+}
+
+fn serialize_action_result_message(result: &CapabilityActionResult) -> String {
+    let payload = match &result.outcome {
+        Ok(success) => json!({
+            "ok": true,
+            "data": success.payload,
+            "execution_time_ms": result.execution_time_ms,
+        }),
+        Err(ActionError::InputError(error)) => json!({
+            "ok": false,
+            "error": {
+                "kind": "input_error",
+                "code": error.code,
+                "message": error.message,
+                "details": error.details,
+            },
+            "execution_time_ms": result.execution_time_ms,
+        }),
+        Err(ActionError::RuntimeError(error)) => json!({
+            "ok": false,
+            "error": {
+                "kind": "runtime_error",
+                "code": error.code,
+                "message": error.message,
+                "details": error.details,
+            },
+            "execution_time_ms": result.execution_time_ms,
+        }),
+    };
+    payload.to_string()
 }
 
 fn truncate_inline(value: &str, max_chars: usize) -> String {
@@ -514,61 +924,96 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use tokio::sync::{broadcast, mpsc};
+    use tokio::time::Instant;
 
     use super::{
-        CommitTurnPolicy, QueuedExecutionOutcome, handle_capability_domain_action_committed,
-        queue_execution,
+        CommitTurnPolicy, QueuedExecutionOutcome, background_expired_submissions,
+        handle_capability_domain_action_committed, queue_executions,
     };
     use crate::agent::ActionInvocation;
     use crate::capability_domain::{
-        CapabilityDomainCommittedAction, CapabilityDomainRegistry, RequestedExecutionMode,
+        CapabilityDomainActorHandle, CapabilityDomainCommittedAction,
+        CapabilityDomainCommittedExecution, build_default_capability_domain_registry,
         spawn_capability_domain_actor,
     };
     use crate::runtime::Runtime;
-    use crate::session::state::ActiveExecutionState;
+    use crate::session::state::{
+        ExecutionRuntimeState, ExecutionSubmissionExecution, ExecutionSubmissionState,
+        ExecutionSubmissionStatus,
+    };
     use crate::session::{SessionCommand, SessionState};
     use crate::util::{default_agent_profile, default_user_profile};
+    use fathom_capability_domain::{
+        CapabilityActionKey, CapabilityActionResult, CapabilityDomainSessionContext,
+    };
     use fathom_protocol::pb;
+    use serde_json::json;
 
     fn test_state() -> SessionState {
         let user_id = "user-a".to_string();
+        let registry = build_default_capability_domain_registry(
+            &std::env::current_dir().expect("current directory for registry"),
+        );
         SessionState::new(
             "session-1".to_string(),
             "agent-a".to_string(),
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
+            registry
+                .installed_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            CapabilityDomainRegistry::initial_capability_domain_snapshots()
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
+        )
+    }
+
+    fn shell_handle(
+        runtime: &Runtime,
+        state: &SessionState,
+    ) -> (
+        HashMap<String, CapabilityDomainActorHandle>,
+        mpsc::Receiver<SessionCommand>,
+    ) {
+        let (session_command_tx, session_command_rx) = mpsc::channel::<SessionCommand>(16);
+        let shell_instance = runtime
+            .capability_domain_registry()
+            .domain_factory("shell")
+            .expect("shell factory")
+            .create_instance(CapabilityDomainSessionContext {
+                session_id: state.session_id.clone(),
+            });
+        let shell_handle =
+            spawn_capability_domain_actor("shell".to_string(), shell_instance, session_command_tx);
+        (
+            HashMap::from([("shell".to_string(), shell_handle)]),
+            session_command_rx,
         )
     }
 
     #[test]
-    fn queue_execution_rejects_illegal_detach_and_enqueues_execution_rejected_trigger() {
+    fn queue_executions_reject_invalid_background_hint_and_enqueue_execution_rejected_trigger() {
         let runtime = Runtime::new(2, 10);
         let (events_tx, _) = broadcast::channel(16);
         let mut state = test_state();
         let capability_domain_handles = HashMap::new();
 
-        let queued = queue_execution(
+        let queued = queue_executions(
             &runtime,
             &mut state,
             &events_tx,
             &capability_domain_handles,
-            ActionInvocation {
+            vec![ActionInvocation {
                 action_id: "filesystem__list".to_string(),
-                args_json: r#"{"path":".","execution_mode":"detach"}"#.to_string(),
+                args_json: r#"{"path":".","background":"yes"}"#.to_string(),
                 call_key: "call-key-1".to_string(),
                 call_id: Some("call-id-1".to_string()),
-            },
-        );
+            }],
+        )
+        .pop()
+        .expect("queued execution");
 
         assert!(matches!(queued.outcome, QueuedExecutionOutcome::Rejected));
-        assert!(state.in_flight_actions.is_empty());
+        assert!(!state.has_blocking_submissions());
 
         let trigger = state
             .trigger_queue
@@ -580,7 +1025,6 @@ mod tests {
             panic!("expected execution update trigger");
         };
         assert_eq!(update.execution_id, queued.execution.execution_id);
-        assert_eq!(update.action_id, "filesystem__list");
         assert_eq!(
             pb::ExecutionUpdateKind::try_from(update.kind).expect("execution update kind"),
             pb::ExecutionUpdateKind::ExecutionRejected
@@ -588,52 +1032,117 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queue_execution_detach_acceptance_enqueues_execution_detached_without_blocking() {
+    async fn queue_executions_background_acceptance_backgrounds_without_blocking() {
         let runtime = Runtime::new(2, 10);
         let (events_tx, _) = broadcast::channel(16);
         let mut state = test_state();
-        let (session_command_tx, _session_command_rx) = mpsc::channel::<SessionCommand>(16);
-        let shell_snapshot = state
-            .capability_domain_snapshots
-            .get("shell")
-            .cloned()
-            .expect("shell snapshot");
-        let shell_handle = spawn_capability_domain_actor(
-            runtime.clone(),
-            "shell".to_string(),
-            shell_snapshot,
-            session_command_tx,
-        );
-        let capability_domain_handles = HashMap::from([("shell".to_string(), shell_handle)]);
+        let (capability_domain_handles, _session_command_rx) = shell_handle(&runtime, &state);
 
-        let queued = queue_execution(
+        let queued = queue_executions(
             &runtime,
             &mut state,
             &events_tx,
             &capability_domain_handles,
-            ActionInvocation {
+            vec![ActionInvocation {
                 action_id: "shell__run".to_string(),
-                args_json: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
+                args_json: r#"{"command":"pwd","background":true}"#.to_string(),
+                call_key: "call-key-1".to_string(),
+                call_id: Some("call-id-1".to_string()),
+            }],
+        )
+        .pop()
+        .expect("queued execution");
+
+        assert!(matches!(
+            queued.outcome,
+            QueuedExecutionOutcome::BackgroundAccepted
+        ));
+        assert!(!state.has_blocking_submissions());
+        assert!(
+            state
+                .execution_runtimes
+                .contains_key(&queued.execution.execution_id)
+        );
+        assert_eq!(
+            state
+                .execution_submissions
+                .values()
+                .next()
+                .expect("submission")
+                .status,
+            ExecutionSubmissionStatus::RunningBackground
+        );
+    }
+
+    #[test]
+    fn background_expired_submissions_moves_running_foreground_submission_to_background() {
+        let runtime = Runtime::new(2, 10);
+        let (events_tx, mut events_rx) = broadcast::channel(16);
+        let mut state = test_state();
+        let execution_id = "execution-1".to_string();
+        let submission_id = "execution-submission-1".to_string();
+
+        state.executions.insert(
+            execution_id.clone(),
+            pb::Execution {
+                execution_id: execution_id.clone(),
+                session_id: state.session_id.clone(),
+                action_id: "shell__run".to_string(),
+                args_json: r#"{"command":"pwd"}"#.to_string(),
+                status: pb::ExecutionStatus::Running as i32,
+                result_message: String::new(),
+                created_at_unix_ms: 100,
+                updated_at_unix_ms: 110,
+            },
+        );
+        state
+            .foreground_submission_ids
+            .insert(submission_id.clone());
+        state.execution_runtimes.insert(
+            execution_id.clone(),
+            ExecutionRuntimeState {
+                submission_id: submission_id.clone(),
+                background_requested: false,
                 call_key: "call-key-1".to_string(),
                 call_id: Some("call-id-1".to_string()),
             },
         );
-
-        assert!(matches!(
-            queued.outcome,
-            QueuedExecutionOutcome::DetachedAccepted
-        ));
-        assert!(state.in_flight_actions.is_empty());
-        assert!(
-            state
-                .active_executions
-                .contains_key(&queued.execution.execution_id)
+        state.execution_submissions.insert(
+            submission_id.clone(),
+            ExecutionSubmissionState {
+                capability_domain_id: "shell".to_string(),
+                executions: vec![ExecutionSubmissionExecution {
+                    execution_id: execution_id.clone(),
+                    action_key: CapabilityActionKey(0),
+                }],
+                status: ExecutionSubmissionStatus::RunningForeground,
+                foreground_wait_deadline: Some(Instant::now()),
+            },
         );
 
+        assert!(background_expired_submissions(
+            &runtime, &mut state, &events_tx
+        ));
+        assert!(!state.has_blocking_submissions());
+        assert_eq!(
+            state
+                .execution_submissions
+                .get(&submission_id)
+                .expect("submission")
+                .status,
+            ExecutionSubmissionStatus::RunningBackground
+        );
+        assert!(
+            state
+                .execution_runtimes
+                .get(&execution_id)
+                .expect("execution runtime")
+                .background_requested
+        );
         let trigger = state
             .trigger_queue
             .back()
-            .expect("execution_detached trigger");
+            .expect("execution_backgrounded trigger");
         let pb::trigger::Kind::ExecutionUpdate(update) =
             trigger.kind.as_ref().expect("trigger kind")
         else {
@@ -641,59 +1150,196 @@ mod tests {
         };
         assert_eq!(
             pb::ExecutionUpdateKind::try_from(update.kind).expect("execution update kind"),
-            pb::ExecutionUpdateKind::ExecutionDetached
+            pb::ExecutionUpdateKind::ExecutionBackgrounded
+        );
+        let execution_update =
+            collect_execution_update_event(&mut events_rx).expect("execution update event");
+        assert_eq!(
+            execution_update.phase,
+            pb::ExecutionUpdatePhase::ExecutionBackgrounded as i32
         );
     }
 
     #[test]
-    fn awaited_commit_resumes_agent_and_emits_awaited_execution_trigger() {
+    fn background_expired_submissions_keeps_queued_submission_state_queued() {
         let runtime = Runtime::new(2, 10);
-        let (events_tx, mut events_rx) = broadcast::channel(16);
+        let (events_tx, _) = broadcast::channel(16);
         let mut state = test_state();
-        let created_at = 100;
-        let updated_at = 110;
         let execution_id = "execution-1".to_string();
-        let execution = pb::Execution {
-            execution_id: execution_id.clone(),
-            session_id: state.session_id.clone(),
-            action_id: "filesystem__list".to_string(),
-            args_json: r#"{"path":"."}"#.to_string(),
-            status: pb::ExecutionStatus::Running as i32,
-            result_message: String::new(),
-            created_at_unix_ms: created_at,
-            updated_at_unix_ms: updated_at,
-        };
-        state.executions.insert(execution_id.clone(), execution);
-        state.in_flight_actions.insert(execution_id.clone());
-        state.active_executions.insert(
+        let submission_id = "execution-submission-1".to_string();
+
+        state.executions.insert(
             execution_id.clone(),
-            ActiveExecutionState {
-                requested_mode: RequestedExecutionMode::Await,
+            pb::Execution {
+                execution_id: execution_id.clone(),
+                session_id: state.session_id.clone(),
+                action_id: "shell__run".to_string(),
+                args_json: r#"{"command":"pwd"}"#.to_string(),
+                status: pb::ExecutionStatus::Pending as i32,
+                result_message: String::new(),
+                created_at_unix_ms: 100,
+                updated_at_unix_ms: 110,
+            },
+        );
+        state
+            .foreground_submission_ids
+            .insert(submission_id.clone());
+        state.execution_runtimes.insert(
+            execution_id.clone(),
+            ExecutionRuntimeState {
+                submission_id: submission_id.clone(),
+                background_requested: false,
                 call_key: "call-key-1".to_string(),
                 call_id: Some("call-id-1".to_string()),
             },
         );
+        state.execution_submissions.insert(
+            submission_id.clone(),
+            ExecutionSubmissionState {
+                capability_domain_id: "shell".to_string(),
+                executions: vec![ExecutionSubmissionExecution {
+                    execution_id: execution_id.clone(),
+                    action_key: CapabilityActionKey(0),
+                }],
+                status: ExecutionSubmissionStatus::Queued,
+                foreground_wait_deadline: Some(Instant::now()),
+            },
+        );
 
-        let committed = CapabilityDomainCommittedAction {
-            execution_id: execution_id.clone(),
-            capability_domain_id: "filesystem".to_string(),
-            succeeded: true,
-            message: r#"{"entries":["Cargo.toml"]}"#.to_string(),
-            state_snapshot: state
-                .capability_domain_snapshots
-                .get("filesystem")
-                .cloned()
-                .expect("filesystem snapshot"),
-        };
+        assert!(background_expired_submissions(
+            &runtime, &mut state, &events_tx
+        ));
+        assert!(!state.has_blocking_submissions());
+        assert_eq!(
+            state
+                .execution_submissions
+                .get(&submission_id)
+                .expect("submission")
+                .status,
+            ExecutionSubmissionStatus::Queued
+        );
+        assert!(
+            state
+                .execution_runtimes
+                .get(&execution_id)
+                .expect("execution runtime")
+                .background_requested
+        );
+    }
 
-        let policy =
-            handle_capability_domain_action_committed(&runtime, &mut state, &events_tx, committed);
+    #[tokio::test]
+    async fn queued_foreground_submission_blocks_until_committed() {
+        let runtime = Runtime::new(2, 10);
+        let (events_tx, _) = broadcast::channel(16);
+        let mut state = test_state();
+        let (capability_domain_handles, _session_command_rx) = shell_handle(&runtime, &state);
+
+        state.active_submission_ids_by_domain.insert(
+            "shell".to_string(),
+            "execution-submission-active".to_string(),
+        );
+
+        let queued = queue_executions(
+            &runtime,
+            &mut state,
+            &events_tx,
+            &capability_domain_handles,
+            vec![ActionInvocation {
+                action_id: "shell__run".to_string(),
+                args_json: r#"{"command":"pwd"}"#.to_string(),
+                call_key: "call-key-1".to_string(),
+                call_id: Some("call-id-1".to_string()),
+            }],
+        )
+        .pop()
+        .expect("queued execution");
+
+        assert!(matches!(
+            queued.outcome,
+            QueuedExecutionOutcome::ForegroundAccepted
+        ));
+        assert!(state.has_blocking_submissions());
+        assert_eq!(
+            state
+                .execution_submissions
+                .values()
+                .next()
+                .expect("submission")
+                .status,
+            ExecutionSubmissionStatus::Queued
+        );
+    }
+
+    #[test]
+    fn foreground_submission_commit_resumes_agent_and_emits_execution_succeeded_trigger() {
+        let runtime = Runtime::new(2, 10);
+        let (events_tx, mut events_rx) = broadcast::channel(16);
+        let mut state = test_state();
+        let capability_domain_handles = HashMap::new();
+        let execution_id = "execution-1".to_string();
+        let submission_id = "execution-submission-1".to_string();
+
+        state.executions.insert(
+            execution_id.clone(),
+            pb::Execution {
+                execution_id: execution_id.clone(),
+                session_id: state.session_id.clone(),
+                action_id: "filesystem__list".to_string(),
+                args_json: r#"{"path":"."}"#.to_string(),
+                status: pb::ExecutionStatus::Running as i32,
+                result_message: String::new(),
+                created_at_unix_ms: 100,
+                updated_at_unix_ms: 110,
+            },
+        );
+        state
+            .foreground_submission_ids
+            .insert(submission_id.clone());
+        state.execution_runtimes.insert(
+            execution_id.clone(),
+            ExecutionRuntimeState {
+                submission_id: submission_id.clone(),
+                background_requested: false,
+                call_key: "call-key-1".to_string(),
+                call_id: Some("call-id-1".to_string()),
+            },
+        );
+        state.execution_submissions.insert(
+            submission_id.clone(),
+            ExecutionSubmissionState {
+                capability_domain_id: "filesystem".to_string(),
+                executions: vec![ExecutionSubmissionExecution {
+                    execution_id: execution_id.clone(),
+                    action_key: CapabilityActionKey(0),
+                }],
+                status: ExecutionSubmissionStatus::RunningForeground,
+                foreground_wait_deadline: None,
+            },
+        );
+        state
+            .active_submission_ids_by_domain
+            .insert("filesystem".to_string(), submission_id.clone());
+
+        let policy = handle_capability_domain_action_committed(
+            &runtime,
+            &mut state,
+            &events_tx,
+            &capability_domain_handles,
+            CapabilityDomainCommittedAction {
+                submission_id,
+                capability_domain_id: "filesystem".to_string(),
+                executions: vec![CapabilityDomainCommittedExecution {
+                    execution_id: execution_id.clone(),
+                    result: CapabilityActionResult::success(json!({"entries":["Cargo.toml"]}), 0),
+                }],
+            },
+        );
 
         assert!(matches!(policy, CommitTurnPolicy::ResumeNow));
         let trigger = state
             .trigger_queue
             .back()
-            .expect("awaited execution trigger");
+            .expect("execution_succeeded trigger");
         let pb::trigger::Kind::ExecutionUpdate(update) =
             trigger.kind.as_ref().expect("trigger kind")
         else {
@@ -701,64 +1347,83 @@ mod tests {
         };
         assert_eq!(
             pb::ExecutionUpdateKind::try_from(update.kind).expect("execution update kind"),
-            pb::ExecutionUpdateKind::AwaitedExecutionSucceeded
+            pb::ExecutionUpdateKind::ExecutionSucceeded
         );
         let execution_update =
             collect_execution_update_event(&mut events_rx).expect("execution update event");
         assert_eq!(
             execution_update.phase,
-            pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded as i32
+            pb::ExecutionUpdatePhase::ExecutionSucceeded as i32
         );
     }
 
     #[test]
-    fn detached_commit_defers_agent_wakeup_and_emits_detached_execution_trigger() {
+    fn background_submission_commit_defers_agent_wakeup_and_emits_execution_succeeded_trigger() {
         let runtime = Runtime::new(2, 10);
         let (events_tx, mut events_rx) = broadcast::channel(16);
         let mut state = test_state();
-        let created_at = 100;
-        let updated_at = 110;
+        let capability_domain_handles = HashMap::new();
         let execution_id = "execution-2".to_string();
-        let execution = pb::Execution {
-            execution_id: execution_id.clone(),
-            session_id: state.session_id.clone(),
-            action_id: "shell__run".to_string(),
-            args_json: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
-            status: pb::ExecutionStatus::Running as i32,
-            result_message: String::new(),
-            created_at_unix_ms: created_at,
-            updated_at_unix_ms: updated_at,
-        };
-        state.executions.insert(execution_id.clone(), execution);
-        state.active_executions.insert(
+        let submission_id = "execution-submission-2".to_string();
+
+        state.executions.insert(
             execution_id.clone(),
-            ActiveExecutionState {
-                requested_mode: RequestedExecutionMode::Detach,
+            pb::Execution {
+                execution_id: execution_id.clone(),
+                session_id: state.session_id.clone(),
+                action_id: "shell__run".to_string(),
+                args_json: r#"{"command":"pwd","background":true}"#.to_string(),
+                status: pb::ExecutionStatus::Running as i32,
+                result_message: String::new(),
+                created_at_unix_ms: 100,
+                updated_at_unix_ms: 110,
+            },
+        );
+        state.execution_runtimes.insert(
+            execution_id.clone(),
+            ExecutionRuntimeState {
+                submission_id: submission_id.clone(),
+                background_requested: true,
                 call_key: "call-key-2".to_string(),
                 call_id: Some("call-id-2".to_string()),
             },
         );
+        state.execution_submissions.insert(
+            submission_id.clone(),
+            ExecutionSubmissionState {
+                capability_domain_id: "shell".to_string(),
+                executions: vec![ExecutionSubmissionExecution {
+                    execution_id: execution_id.clone(),
+                    action_key: CapabilityActionKey(0),
+                }],
+                status: ExecutionSubmissionStatus::RunningBackground,
+                foreground_wait_deadline: None,
+            },
+        );
+        state
+            .active_submission_ids_by_domain
+            .insert("shell".to_string(), submission_id.clone());
 
-        let committed = CapabilityDomainCommittedAction {
-            execution_id: execution_id.clone(),
-            capability_domain_id: "shell".to_string(),
-            succeeded: true,
-            message: r#"{"stdout":"/tmp"}"#.to_string(),
-            state_snapshot: state
-                .capability_domain_snapshots
-                .get("shell")
-                .cloned()
-                .expect("shell snapshot"),
-        };
-
-        let policy =
-            handle_capability_domain_action_committed(&runtime, &mut state, &events_tx, committed);
+        let policy = handle_capability_domain_action_committed(
+            &runtime,
+            &mut state,
+            &events_tx,
+            &capability_domain_handles,
+            CapabilityDomainCommittedAction {
+                submission_id,
+                capability_domain_id: "shell".to_string(),
+                executions: vec![CapabilityDomainCommittedExecution {
+                    execution_id: execution_id.clone(),
+                    result: CapabilityActionResult::success(json!({"stdout":"/tmp"}), 0),
+                }],
+            },
+        );
 
         assert!(matches!(policy, CommitTurnPolicy::DeferUntilFutureTrigger));
         let trigger = state
             .trigger_queue
             .back()
-            .expect("detached execution trigger");
+            .expect("execution_succeeded trigger");
         let pb::trigger::Kind::ExecutionUpdate(update) =
             trigger.kind.as_ref().expect("trigger kind")
         else {
@@ -766,13 +1431,13 @@ mod tests {
         };
         assert_eq!(
             pb::ExecutionUpdateKind::try_from(update.kind).expect("execution update kind"),
-            pb::ExecutionUpdateKind::DetachedExecutionSucceeded
+            pb::ExecutionUpdateKind::ExecutionSucceeded
         );
         let execution_update =
             collect_execution_update_event(&mut events_rx).expect("execution update event");
         assert_eq!(
             execution_update.phase,
-            pb::ExecutionUpdatePhase::DetachedExecutionSucceeded as i32
+            pb::ExecutionUpdatePhase::ExecutionSucceeded as i32
         );
     }
 

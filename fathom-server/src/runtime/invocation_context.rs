@@ -1,13 +1,11 @@
 use super::Runtime;
 use crate::agent::{
-    ActionModeSupportContract, AgentInvocationContext, CapabilityAction, CapabilityDomain,
-    CapabilityRecipe, CapabilitySurface, HarnessContract, IdentityEnvelope, ParticipantEnvelope,
+    AgentInvocationContext, CapabilityAction, CapabilityDomain, CapabilityRecipe,
+    CapabilitySurface, HarnessContract, IdentityEnvelope, ParticipantEnvelope,
     ResolvedPayloadLookupHint, SessionAnchor, SessionBaseline,
 };
-use crate::capability_domain::CapabilityDomainRegistry;
 use crate::profile_material::{agent_identity_material, participant_profile_material};
 use crate::session::SessionState;
-use fathom_capability_domain::ActionModeSupport;
 use fathom_protocol::pb;
 use serde_json::json;
 
@@ -84,23 +82,20 @@ impl Runtime {
     }
 
     fn build_capability_surface(&self, state: &SessionState) -> CapabilitySurface {
+        let registry = self.capability_domain_registry();
         let mut capability_domains = state
             .engaged_capability_domain_ids
             .iter()
             .filter_map(|capability_domain_id| {
-                let environment =
-                    CapabilityDomainRegistry::capability_domain_summary(capability_domain_id)?;
-                let mut actions = CapabilityDomainRegistry::capability_domain_action_summaries(
-                    capability_domain_id,
-                )?
-                .into_iter()
-                .map(|action| CapabilityAction {
-                    action_id: action.id,
-                    description: action.description,
-                    mode_support: map_mode_support(action.mode_support),
-                    discovery: action.discovery,
-                })
-                .collect::<Vec<_>>();
+                let environment = registry.capability_domain_summary(capability_domain_id)?;
+                let mut actions = registry
+                    .capability_domain_action_summaries(capability_domain_id)?
+                    .into_iter()
+                    .map(|action| CapabilityAction {
+                        action_id: action.id,
+                        description: action.description,
+                    })
+                    .collect::<Vec<_>>();
                 actions.sort_by(|a, b| a.action_id.cmp(&b.action_id));
                 let mut recipes = environment
                     .recipes
@@ -157,20 +152,12 @@ fn participant_envelope_source_revision(state: &SessionState) -> String {
         .join(",")
 }
 
-fn map_mode_support(mode_support: ActionModeSupport) -> ActionModeSupportContract {
-    match mode_support {
-        ActionModeSupport::AwaitOnly => ActionModeSupportContract::AwaitOnly,
-        ActionModeSupport::AwaitOrDetach => ActionModeSupportContract::AwaitOrDetach,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::Runtime;
-    use crate::agent::{ActionModeSupportContract, SessionCompaction, SummaryBlockRef};
-    use crate::capability_domain::CapabilityDomainRegistry;
+    use crate::agent::{SessionCompaction, SummaryBlockRef};
     use crate::session::SessionState;
     use crate::util::{default_agent_profile, default_user_profile};
     use serde_json::json;
@@ -185,12 +172,11 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
+            runtime
+                .capability_domain_registry()
+                .installed_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            CapabilityDomainRegistry::initial_capability_domain_snapshots()
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
         );
 
         let context = runtime.build_agent_invocation_context(&state, &[]);
@@ -223,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_invocation_context_includes_capability_surface_with_mode_support() {
+    fn agent_invocation_context_includes_capability_surface_actions() {
         let runtime = Runtime::new(2, 10);
         let user_id = "user-a".to_string();
         let state = SessionState::new(
@@ -232,12 +218,11 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
+            runtime
+                .capability_domain_registry()
+                .installed_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            CapabilityDomainRegistry::initial_capability_domain_snapshots()
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
         );
 
         let context = runtime.build_agent_invocation_context(&state, &[]);
@@ -263,19 +248,7 @@ mod tests {
                 .capability_domains
                 .iter()
                 .flat_map(|environment| environment.actions.iter())
-                .any(|action| action.mode_support == ActionModeSupportContract::AwaitOrDetach)
-        );
-        assert!(
-            context
-                .session_baseline
-                .capability_surface
-                .capability_domains
-                .iter()
-                .flat_map(|environment| environment.actions.iter())
-                .all(|action| matches!(
-                    action.mode_support,
-                    ActionModeSupportContract::AwaitOnly | ActionModeSupportContract::AwaitOrDetach
-                ))
+                .all(|action| !action.action_id.is_empty() && !action.description.is_empty())
         );
     }
 
@@ -290,12 +263,11 @@ mod tests {
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
+            runtime
+                .capability_domain_registry()
+                .installed_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            CapabilityDomainRegistry::initial_capability_domain_snapshots()
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
         );
 
         state.agent_profile_copy.display_name = "Updated Agent".to_string();
@@ -312,7 +284,7 @@ mod tests {
                 id: "history-summary-000024".to_string(),
                 source_range_start: 0,
                 source_range_end: 24,
-                summary_text: "history-summary-000024 source=[0,24) execution_requested=9 awaited_execution_succeeded=9 actions=[system__get_time] users=[user-stale]".to_string(),
+                summary_text: "history-summary-000024 source=[0,24) execution_requested=9 execution_succeeded=9 actions=[system__list_executions] users=[user-stale]".to_string(),
                 created_at_unix_ms: 1_765_000_000_000,
             }],
         };

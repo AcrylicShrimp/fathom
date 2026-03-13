@@ -120,7 +120,7 @@ pub(super) fn append_turn_ended_record(
             "turn_id": turn_id,
             "history_size": state.history.len(),
             "pending_trigger_count": state.trigger_queue.len(),
-            "in_flight_action_count": state.in_flight_actions.len(),
+            "blocking_submission_count": state.foreground_submission_ids.len(),
             "agent_summary": agent_summary.map(|summary| serde_json::json!({
                 "action_call_count": summary.action_call_count,
                 "assistant_output_count": summary.assistant_output_count,

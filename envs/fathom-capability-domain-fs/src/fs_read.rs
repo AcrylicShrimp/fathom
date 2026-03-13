@@ -1,57 +1,22 @@
-use fathom_capability_domain::{Action, ActionModeSupport, ActionSpec};
-use serde_json::{Value, json};
+use fathom_capability_domain::{CapabilityActionDefinition, CapabilityActionKey};
+use serde_json::json;
 
-use crate::validate::{args_object, optional_u64, require_relative_path};
-use crate::{
-    FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS, FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
-    FILESYSTEM_CAPABILITY_DOMAIN_ID,
-};
+pub(crate) const FS_READ_ACTION_KEY: CapabilityActionKey = CapabilityActionKey(2);
 
-const READ_MAX_LIMIT_LINES: u64 = 2_000;
-
-pub struct FsReadAction;
-
-impl Action for FsReadAction {
-    fn spec(&self) -> ActionSpec {
-        ActionSpec {
-            capability_domain_id: FILESYSTEM_CAPABILITY_DOMAIN_ID,
-            action_name: "read",
-            description: "Read UTF-8 text from a relative file path under the current base path. Supports line-windowed reads for large files.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "offset_line": { "type": "integer", "minimum": 1 },
-                    "limit_lines": { "type": "integer", "minimum": 1 }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
-            discovery: false,
-            mode_support: ActionModeSupport::AwaitOnly,
-            max_timeout_ms: FILESYSTEM_ACTION_MAX_TIMEOUT_MS,
-            desired_timeout_ms: Some(FILESYSTEM_ACTION_DESIRED_TIMEOUT_MS),
-        }
-    }
-
-    fn validate(&self, args: &Value) -> Result<(), String> {
-        let args = args_object(args)?;
-        require_relative_path(args, "path")?;
-        if let Some(offset_line) = optional_u64(args, "offset_line")?
-            && offset_line == 0
-        {
-            return Err("filesystem__read.offset_line must be >= 1".to_string());
-        }
-        if let Some(limit_lines) = optional_u64(args, "limit_lines")? {
-            if limit_lines == 0 {
-                return Err("filesystem__read.limit_lines must be >= 1".to_string());
-            }
-            if limit_lines > READ_MAX_LIMIT_LINES {
-                return Err(format!(
-                    "filesystem__read.limit_lines must be <= {READ_MAX_LIMIT_LINES}"
-                ));
-            }
-        }
-        Ok(())
+pub(crate) fn definition() -> CapabilityActionDefinition {
+    CapabilityActionDefinition {
+        key: FS_READ_ACTION_KEY,
+        action_name: "read",
+        description: "Read UTF-8 text from a relative file path under the current base path. Supports line-windowed reads for large files.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "offset_line": { "type": "integer", "minimum": 1 },
+                "limit_lines": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }),
     }
 }

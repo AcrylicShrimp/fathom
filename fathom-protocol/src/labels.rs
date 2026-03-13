@@ -34,11 +34,10 @@ pub fn execution_update_phase_label(phase: pb::ExecutionUpdatePhase) -> &'static
         pb::ExecutionUpdatePhase::Unspecified => "unspecified",
         pb::ExecutionUpdatePhase::ArgumentsDelta => "arguments.delta",
         pb::ExecutionUpdatePhase::ArgumentsReady => "arguments.ready",
-        pb::ExecutionUpdatePhase::AwaitedExecutionSucceeded => "awaited_execution_succeeded",
-        pb::ExecutionUpdatePhase::AwaitedExecutionFailed => "awaited_execution_failed",
-        pb::ExecutionUpdatePhase::ExecutionDetached => "execution_detached",
-        pb::ExecutionUpdatePhase::DetachedExecutionSucceeded => "detached_execution_succeeded",
-        pb::ExecutionUpdatePhase::DetachedExecutionFailed => "detached_execution_failed",
+        pb::ExecutionUpdatePhase::ExecutionSucceeded => "execution_succeeded",
+        pb::ExecutionUpdatePhase::ExecutionFailed => "execution_failed",
+        pb::ExecutionUpdatePhase::ExecutionBackgrounded => "execution_backgrounded",
         pb::ExecutionUpdatePhase::ExecutionRejected => "execution_rejected",
+        pb::ExecutionUpdatePhase::ExecutionCanceled => "execution_canceled",
     }
 }

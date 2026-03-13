@@ -8,11 +8,10 @@ pub(super) enum TimelineKind {
     UserMessage,
     AssistantOutput,
     ExecutionRequested,
-    AwaitedExecutionSucceeded,
-    AwaitedExecutionFailed,
-    ExecutionDetached,
-    DetachedExecutionSucceeded,
-    DetachedExecutionFailed,
+    ExecutionSucceeded,
+    ExecutionFailed,
+    ExecutionBackgrounded,
+    ExecutionCanceled,
     ExecutionRejected,
 }
 
@@ -76,37 +75,42 @@ fn timeline_event_from_prompt_event(event: &PromptEvent, seq: usize) -> Option<T
         }
         PromptEvent::ExecutionRequested(payload) => {
             let args_preview = preview_to_inline(&payload.args_preview);
+            let background = if payload.background {
+                " background=true"
+            } else {
+                ""
+            };
             Some(TimelineEvent {
                 ts_unix_ms: seq as i64,
                 seq,
                 kind: TimelineKind::ExecutionRequested,
                 action_id: Some(payload.action_id.clone()),
                 line: format!(
-                    "execution_requested execution_id={} action_id={} mode={} args_preview={}",
-                    payload.execution_id, payload.action_id, payload.execution_mode, args_preview
+                    "execution_requested execution_id={} action_id={}{} args_preview={}",
+                    payload.execution_id, payload.action_id, background, args_preview
                 ),
             })
         }
-        PromptEvent::AwaitedExecutionSucceeded(payload) => {
+        PromptEvent::ExecutionSucceeded(payload) => {
             let payload_preview = preview_to_inline(&payload.payload_preview);
             Some(TimelineEvent {
                 ts_unix_ms: seq as i64,
                 seq,
-                kind: TimelineKind::AwaitedExecutionSucceeded,
+                kind: TimelineKind::ExecutionSucceeded,
                 action_id: Some(payload.action_id.clone()),
                 line: format!(
-                    "awaited_execution_succeeded execution_id={} action_id={} payload_preview={}",
+                    "execution_succeeded execution_id={} action_id={} payload_preview={}",
                     payload.execution_id, payload.action_id, payload_preview
                 ),
             })
         }
-        PromptEvent::AwaitedExecutionFailed(payload) => Some(TimelineEvent {
+        PromptEvent::ExecutionFailed(payload) => Some(TimelineEvent {
             ts_unix_ms: seq as i64,
             seq,
-            kind: TimelineKind::AwaitedExecutionFailed,
+            kind: TimelineKind::ExecutionFailed,
             action_id: Some(payload.action_id.clone()),
             line: format!(
-                "awaited_execution_failed execution_id={} action_id={} message={}{}",
+                "execution_failed execution_id={} action_id={} message={}{}",
                 payload.execution_id,
                 payload.action_id,
                 truncate_inline(&payload.message, MAX_INLINE_TEXT_CHARS),
@@ -117,44 +121,24 @@ fn timeline_event_from_prompt_event(event: &PromptEvent, seq: usize) -> Option<T
                     .unwrap_or_default()
             ),
         }),
-        PromptEvent::ExecutionDetached(payload) => Some(TimelineEvent {
+        PromptEvent::ExecutionBackgrounded(payload) => Some(TimelineEvent {
             ts_unix_ms: seq as i64,
             seq,
-            kind: TimelineKind::ExecutionDetached,
+            kind: TimelineKind::ExecutionBackgrounded,
             action_id: Some(payload.action_id.clone()),
             line: format!(
-                "execution_detached execution_id={} action_id={}",
+                "execution_backgrounded execution_id={} action_id={}",
                 payload.execution_id, payload.action_id
             ),
         }),
-        PromptEvent::DetachedExecutionSucceeded(payload) => {
-            let payload_preview = preview_to_inline(&payload.payload_preview);
-            Some(TimelineEvent {
-                ts_unix_ms: seq as i64,
-                seq,
-                kind: TimelineKind::DetachedExecutionSucceeded,
-                action_id: Some(payload.action_id.clone()),
-                line: format!(
-                    "detached_execution_succeeded execution_id={} action_id={} payload_preview={}",
-                    payload.execution_id, payload.action_id, payload_preview
-                ),
-            })
-        }
-        PromptEvent::DetachedExecutionFailed(payload) => Some(TimelineEvent {
+        PromptEvent::ExecutionCanceled(payload) => Some(TimelineEvent {
             ts_unix_ms: seq as i64,
             seq,
-            kind: TimelineKind::DetachedExecutionFailed,
+            kind: TimelineKind::ExecutionCanceled,
             action_id: Some(payload.action_id.clone()),
             line: format!(
-                "detached_execution_failed execution_id={} action_id={} message={}{}",
-                payload.execution_id,
-                payload.action_id,
-                truncate_inline(&payload.message, MAX_INLINE_TEXT_CHARS),
-                payload
-                    .payload_preview
-                    .as_ref()
-                    .map(|preview| format!(" payload_preview={}", preview_to_inline(preview)))
-                    .unwrap_or_default()
+                "execution_canceled execution_id={} action_id={}",
+                payload.execution_id, payload.action_id
             ),
         }),
         PromptEvent::ExecutionRejected(payload) => Some(TimelineEvent {

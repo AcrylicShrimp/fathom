@@ -1,12 +1,12 @@
 use crate::agent::types::{
-    PromptAssistantOutput, PromptEvent, PromptExecutionDetached, PromptExecutionRequested,
+    PromptAssistantOutput, PromptEvent, PromptExecutionBackgrounded, PromptExecutionRequested,
     PromptExecutionSucceeded, PromptInput, PromptPayloadLookupAvailable, PromptStablePrefix,
     PromptUserMessage,
 };
 use crate::agent::{
-    ActionModeSupportContract, CapabilityAction, CapabilityDomain, CapabilityRecipe,
-    CapabilitySurface, CompiledPrompt, HarnessContract, IdentityEnvelope, ParticipantEnvelope,
-    SessionAnchor, SessionBaseline, SummaryBlockRef,
+    CapabilityAction, CapabilityDomain, CapabilityRecipe, CapabilitySurface, CompiledPrompt,
+    HarnessContract, IdentityEnvelope, ParticipantEnvelope, SessionAnchor, SessionBaseline,
+    SummaryBlockRef,
 };
 use crate::history::PayloadPreview;
 use crate::util::default_agent_profile;
@@ -63,8 +63,6 @@ fn base_input() -> PromptInput {
                                 description:
                                     "List directory entries for a non-empty relative path."
                                         .to_string(),
-                                mode_support: ActionModeSupportContract::AwaitOnly,
-                                discovery: false,
                             }],
                             recipes: vec![CapabilityRecipe {
                                 title: "Find files".to_string(),
@@ -77,12 +75,12 @@ fn base_input() -> PromptInput {
                         CapabilityDomain {
                             id: "system".to_string(),
                             name: "System".to_string(),
-                            description: "Inspect runtime context and metadata.".to_string(),
+                            description: "Inspect runtime execution state and payloads."
+                                .to_string(),
                             actions: vec![CapabilityAction {
-                                action_id: "system__get_time".to_string(),
-                                description: "Get current server time context.".to_string(),
-                                mode_support: ActionModeSupportContract::AwaitOnly,
-                                discovery: true,
+                                action_id: "system__list_executions".to_string(),
+                                description: "List execution summaries for the current session."
+                                    .to_string(),
                             }],
                             recipes: vec![],
                         },
@@ -130,8 +128,8 @@ fn bundle_contains_layered_messages_and_stats() {
     assert!(debug_prompt.contains("# Identity Envelope"));
     assert!(debug_prompt.contains("# Session Baseline"));
     assert!(debug_prompt.contains("### Filesystem (`filesystem`)"));
-    assert!(debug_prompt.contains("- `filesystem__list` · `await_only`"));
-    assert!(debug_prompt.contains("- `system__get_time` · `await_only` · `discovery`"));
+    assert!(debug_prompt.contains("- `filesystem__list`"));
+    assert!(debug_prompt.contains("- `system__list_executions`"));
     assert!(debug_prompt.contains("## Your Task"));
     assert!(debug_prompt.contains("## Response vs Execution"));
     assert!(debug_prompt.contains("## Execution Rules"));
@@ -239,10 +237,10 @@ fn transcript_events_drive_execution_requests_and_outcomes() {
         PromptEvent::ExecutionRequested(PromptExecutionRequested {
             execution_id: "execution-1".to_string(),
             action_id: "filesystem__list".to_string(),
-            execution_mode: "await".to_string(),
+            background: false,
             args_preview: sample_preview("execution://execution-1/args"),
         }),
-        PromptEvent::AwaitedExecutionSucceeded(PromptExecutionSucceeded {
+        PromptEvent::ExecutionSucceeded(PromptExecutionSucceeded {
             execution_id: "execution-1".to_string(),
             action_id: "filesystem__list".to_string(),
             payload_preview: sample_preview("execution://execution-1/result"),
@@ -253,12 +251,14 @@ fn transcript_events_drive_execution_requests_and_outcomes() {
     let debug_prompt = bundle.as_debug_prompt();
 
     assert!(debug_prompt.contains("user_message user=user-default text=show me the repo files"));
-    assert!(debug_prompt.contains(
-        "execution_requested execution_id=execution-1 action_id=filesystem__list mode=await"
-    ));
-    assert!(debug_prompt.contains(
-        "awaited_execution_succeeded execution_id=execution-1 action_id=filesystem__list"
-    ));
+    assert!(
+        debug_prompt
+            .contains("execution_requested execution_id=execution-1 action_id=filesystem__list")
+    );
+    assert!(
+        debug_prompt
+            .contains("execution_succeeded execution_id=execution-1 action_id=filesystem__list")
+    );
 }
 
 #[test]
@@ -268,14 +268,14 @@ fn transcript_preserves_execution_event_order() {
         PromptEvent::ExecutionRequested(PromptExecutionRequested {
             execution_id: "execution-7".to_string(),
             action_id: "shell__run".to_string(),
-            execution_mode: "detach".to_string(),
+            background: true,
             args_preview: sample_preview("execution://execution-7/args"),
         }),
-        PromptEvent::ExecutionDetached(PromptExecutionDetached {
+        PromptEvent::ExecutionBackgrounded(PromptExecutionBackgrounded {
             execution_id: "execution-7".to_string(),
             action_id: "shell__run".to_string(),
         }),
-        PromptEvent::DetachedExecutionSucceeded(PromptExecutionSucceeded {
+        PromptEvent::ExecutionSucceeded(PromptExecutionSucceeded {
             execution_id: "execution-7".to_string(),
             action_id: "shell__run".to_string(),
             payload_preview: sample_preview("execution://execution-7/result"),
@@ -284,17 +284,17 @@ fn transcript_preserves_execution_event_order() {
 
     let debug_prompt = compile_input(&input).as_debug_prompt();
     let execution_request_index = debug_prompt
-        .find("execution_requested execution_id=execution-7 action_id=shell__run mode=detach")
+        .find("execution_requested execution_id=execution-7 action_id=shell__run background=true")
         .expect("execution_requested line");
-    let detached_index = debug_prompt
-        .find("execution_detached execution_id=execution-7 action_id=shell__run")
-        .expect("execution_detached line");
+    let backgrounded_index = debug_prompt
+        .find("execution_backgrounded execution_id=execution-7 action_id=shell__run")
+        .expect("execution_backgrounded line");
     let success_index = debug_prompt
-        .find("detached_execution_succeeded execution_id=execution-7 action_id=shell__run")
-        .expect("detached success line");
+        .find("execution_succeeded execution_id=execution-7 action_id=shell__run")
+        .expect("execution_succeeded line");
 
-    assert!(execution_request_index < detached_index);
-    assert!(detached_index < success_index);
+    assert!(execution_request_index < backgrounded_index);
+    assert!(backgrounded_index < success_index);
 }
 
 #[test]
@@ -354,7 +354,7 @@ fn bundle_includes_session_compaction_summaries() {
         id: "history-summary-000024".to_string(),
         source_range_start: 0,
         source_range_end: 24,
-        summary_text: "history-summary-000024 source=[0,24) events=24 user_message=3 assistant_output=2 execution_requested=4 awaited_execution_succeeded=4 awaited_execution_failed=0 execution_detached=0 detached_execution_succeeded=0 detached_execution_failed=0 execution_rejected=0 refresh_profile=1 heartbeat=0 cron=0 statuses=[succeeded:4] actions=[filesystem__list] users=[user-default]".to_string(),
+        summary_text: "history-summary-000024 source=[0,24) events=24 user_message=3 assistant_output=2 execution_requested=4 execution_succeeded=4 execution_failed=0 execution_backgrounded=0 execution_canceled=0 execution_rejected=0 refresh_profile=1 heartbeat=0 cron=0 statuses=[succeeded:4] actions=[filesystem__list] users=[user-default]".to_string(),
         created_at_unix_ms: 1_765_000_000_000,
     }];
 

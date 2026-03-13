@@ -106,6 +106,10 @@ impl<'a> TurnDeltaTransport<'a> {
         self.action_dispatcher.action_dispatches()
     }
 
+    pub(super) fn flush_action_invocations(&mut self) {
+        self.action_dispatcher.flush_action_invocations();
+    }
+
     pub(super) fn drain_streamed_assistant_outputs(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.streamed_assistant_outputs)
     }
@@ -138,7 +142,7 @@ mod tests {
     use super::TurnDeltaTransport;
     use crate::agent::{ActionArgDeltaNote, ActionArgDoneNote, ModelDeltaEvent, StreamNote};
     use crate::capability_domain::CapabilityDomainActorHandle;
-    use crate::capability_domain::CapabilityDomainRegistry;
+    use crate::capability_domain::build_default_capability_domain_registry;
     use crate::runtime::Runtime;
     use crate::session::SessionState;
     use crate::util::{default_agent_profile, default_user_profile};
@@ -146,18 +150,19 @@ mod tests {
 
     fn test_state() -> SessionState {
         let user_id = "user-a".to_string();
+        let registry = build_default_capability_domain_registry(
+            &std::env::current_dir().expect("current directory for registry"),
+        );
         SessionState::new(
             "session-1".to_string(),
             "agent-a".to_string(),
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
+            registry
+                .installed_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            CapabilityDomainRegistry::initial_capability_domain_snapshots()
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
         )
     }
 

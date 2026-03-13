@@ -1,6 +1,19 @@
+use fathom_capability_domain::{ActionError, CapabilityActionResult};
 use serde_json::{Value, json};
 
 use super::execute_action;
+
+fn outcome_payload(outcome: &CapabilityActionResult) -> Value {
+    match &outcome.outcome {
+        Ok(success) => success.payload.clone(),
+        Err(ActionError::InputError(error)) => error.details.clone().unwrap_or_else(
+            || json!({ "error": { "code": error.code, "message": error.message } }),
+        ),
+        Err(ActionError::RuntimeError(error)) => error.details.clone().unwrap_or_else(
+            || json!({ "error": { "code": error.code, "message": error.message } }),
+        ),
+    }
+}
 
 #[cfg(unix)]
 #[tokio::test]
@@ -19,9 +32,8 @@ async fn shell_run_echo_succeeds() {
     )
     .await
     .expect("shell__run should dispatch");
-    assert!(outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_ok());
+    let payload = outcome_payload(&outcome);
     assert_eq!(payload["data"]["stdout"], json!("hello"));
     assert_eq!(payload["data"]["exit_code"], json!(0));
     assert_eq!(payload["data"]["timed_out"], json!(false));
@@ -46,9 +58,8 @@ async fn shell_run_non_zero_exit_fails() {
     )
     .await
     .expect("shell__run should dispatch");
-    assert!(!outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_err());
+    let payload = outcome_payload(&outcome);
     assert_eq!(payload["error"]["code"], json!("execution_failed"));
     assert_eq!(payload["data"]["exit_code"], json!(7));
 
@@ -72,9 +83,8 @@ async fn shell_run_timeout_fails() {
     )
     .await
     .expect("shell__run should dispatch");
-    assert!(!outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_err());
+    let payload = outcome_payload(&outcome);
     assert_eq!(payload["error"]["code"], json!("timeout"));
     assert_eq!(payload["data"]["timed_out"], json!(true));
 
@@ -99,9 +109,8 @@ async fn shell_run_rejects_escape_path() {
     )
     .await
     .expect("shell__run should dispatch");
-    assert!(!outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_err());
+    let payload = outcome_payload(&outcome);
     let code = payload["error"]["code"].as_str().unwrap_or_default();
     assert!(!code.is_empty());
 
@@ -128,9 +137,8 @@ async fn shell_run_applies_env_overrides() {
     )
     .await
     .expect("shell__run should dispatch");
-    assert!(outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_ok());
+    let payload = outcome_payload(&outcome);
     assert_eq!(payload["data"]["stdout"], json!("value-from-env"));
 
     let _ = std::fs::remove_dir_all(&root);
@@ -153,9 +161,8 @@ async fn shell_run_truncates_large_stdout() {
     )
     .await
     .expect("shell__run should dispatch");
-    assert!(outcome.succeeded);
-
-    let payload: Value = serde_json::from_str(&outcome.message).expect("valid json payload");
+    assert!(outcome.outcome.is_ok());
+    let payload = outcome_payload(&outcome);
     let stdout = payload["data"]["stdout"].as_str().unwrap_or_default();
     let truncated = payload["data"]["stdout_truncated_bytes"]
         .as_u64()

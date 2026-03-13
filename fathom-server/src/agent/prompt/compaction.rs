@@ -132,11 +132,10 @@ fn summarize_timeline_batch(index: usize, batch: &[TimelineEvent]) -> String {
             TimelineKind::UserMessage => "user_message",
             TimelineKind::AssistantOutput => "assistant_output",
             TimelineKind::ExecutionRequested => "execution_requested",
-            TimelineKind::AwaitedExecutionSucceeded => "awaited_execution_succeeded",
-            TimelineKind::AwaitedExecutionFailed => "awaited_execution_failed",
-            TimelineKind::ExecutionDetached => "execution_detached",
-            TimelineKind::DetachedExecutionSucceeded => "detached_execution_succeeded",
-            TimelineKind::DetachedExecutionFailed => "detached_execution_failed",
+            TimelineKind::ExecutionSucceeded => "execution_succeeded",
+            TimelineKind::ExecutionFailed => "execution_failed",
+            TimelineKind::ExecutionBackgrounded => "execution_backgrounded",
+            TimelineKind::ExecutionCanceled => "execution_canceled",
             TimelineKind::ExecutionRejected => "execution_rejected",
         };
         *counts.entry(key).or_default() += 1;
@@ -146,7 +145,7 @@ fn summarize_timeline_batch(index: usize, batch: &[TimelineEvent]) -> String {
     }
     let actions_preview = actions.into_iter().take(4).collect::<Vec<_>>().join(",");
     format!(
-        "summary_block[{index}] ts=[{first_ts},{last_ts}] events={} user_message={} assistant_output={} execution_requested={} awaited_execution_succeeded={} awaited_execution_failed={} execution_detached={} detached_execution_succeeded={} detached_execution_failed={} execution_rejected={} actions=[{}]",
+        "summary_block[{index}] ts=[{first_ts},{last_ts}] events={} user_message={} assistant_output={} execution_requested={} execution_succeeded={} execution_failed={} execution_backgrounded={} execution_canceled={} execution_rejected={} actions=[{}]",
         batch.len(),
         counts.get("user_message").copied().unwrap_or_default(),
         counts.get("assistant_output").copied().unwrap_or_default(),
@@ -155,23 +154,16 @@ fn summarize_timeline_batch(index: usize, batch: &[TimelineEvent]) -> String {
             .copied()
             .unwrap_or_default(),
         counts
-            .get("awaited_execution_succeeded")
+            .get("execution_succeeded")
+            .copied()
+            .unwrap_or_default(),
+        counts.get("execution_failed").copied().unwrap_or_default(),
+        counts
+            .get("execution_backgrounded")
             .copied()
             .unwrap_or_default(),
         counts
-            .get("awaited_execution_failed")
-            .copied()
-            .unwrap_or_default(),
-        counts
-            .get("execution_detached")
-            .copied()
-            .unwrap_or_default(),
-        counts
-            .get("detached_execution_succeeded")
-            .copied()
-            .unwrap_or_default(),
-        counts
-            .get("detached_execution_failed")
+            .get("execution_canceled")
             .copied()
             .unwrap_or_default(),
         counts

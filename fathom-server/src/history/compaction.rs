@@ -48,25 +48,25 @@ fn adjusted_batch_len(history: &[HistoryEvent], proposed: usize) -> usize {
             (&last_compacted.kind, &next_live.kind),
             (
                 HistoryEventKind::ExecutionRequested(_),
-                HistoryEventKind::AwaitedExecutionSucceeded(_)
-                    | HistoryEventKind::AwaitedExecutionFailed(_)
-                    | HistoryEventKind::ExecutionDetached(_)
-                    | HistoryEventKind::DetachedExecutionSucceeded(_)
-                    | HistoryEventKind::DetachedExecutionFailed(_)
+                HistoryEventKind::ExecutionSucceeded(_)
+                    | HistoryEventKind::ExecutionFailed(_)
+                    | HistoryEventKind::ExecutionBackgrounded(_)
+                    | HistoryEventKind::ExecutionCanceled(_)
                     | HistoryEventKind::ExecutionRejected(_)
             )
         ) && last_compacted.actor_id
             == next_live.actor_id;
-        let splits_detach_terminal_pair = matches!(
+        let splits_background_terminal_pair = matches!(
             (&last_compacted.kind, &next_live.kind),
             (
-                HistoryEventKind::ExecutionDetached(_),
-                HistoryEventKind::DetachedExecutionSucceeded(_)
-                    | HistoryEventKind::DetachedExecutionFailed(_)
+                HistoryEventKind::ExecutionBackgrounded(_),
+                HistoryEventKind::ExecutionSucceeded(_)
+                    | HistoryEventKind::ExecutionFailed(_)
+                    | HistoryEventKind::ExecutionCanceled(_)
             )
         ) && last_compacted.actor_id == next_live.actor_id;
 
-        if !splits_execution_request_terminal_pair && !splits_detach_terminal_pair {
+        if !splits_execution_request_terminal_pair && !splits_background_terminal_pair {
             break;
         }
         batch_len -= 1;
@@ -128,7 +128,7 @@ fn summarize_history_batch(
         .join(",");
 
     format!(
-        "{block_id} source=[{source_range_start},{source_range_end}) ts=[{first_ts},{last_ts}] events={} user_message={} assistant_output={} execution_requested={} awaited_execution_succeeded={} awaited_execution_failed={} execution_detached={} detached_execution_succeeded={} detached_execution_failed={} execution_rejected={} refresh_profile={} heartbeat={} cron={} statuses=[{}] actions=[{}] users=[{}]",
+        "{block_id} source=[{source_range_start},{source_range_end}) ts=[{first_ts},{last_ts}] events={} user_message={} assistant_output={} execution_requested={} execution_succeeded={} execution_failed={} execution_backgrounded={} execution_canceled={} execution_rejected={} refresh_profile={} heartbeat={} cron={} statuses=[{}] actions=[{}] users=[{}]",
         batch.len(),
         counts.get("user_message").copied().unwrap_or_default(),
         counts.get("assistant_output").copied().unwrap_or_default(),
@@ -137,23 +137,16 @@ fn summarize_history_batch(
             .copied()
             .unwrap_or_default(),
         counts
-            .get("awaited_execution_succeeded")
+            .get("execution_succeeded")
+            .copied()
+            .unwrap_or_default(),
+        counts.get("execution_failed").copied().unwrap_or_default(),
+        counts
+            .get("execution_backgrounded")
             .copied()
             .unwrap_or_default(),
         counts
-            .get("awaited_execution_failed")
-            .copied()
-            .unwrap_or_default(),
-        counts
-            .get("execution_detached")
-            .copied()
-            .unwrap_or_default(),
-        counts
-            .get("detached_execution_succeeded")
-            .copied()
-            .unwrap_or_default(),
-        counts
-            .get("detached_execution_failed")
+            .get("execution_canceled")
             .copied()
             .unwrap_or_default(),
         counts
@@ -174,7 +167,7 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     use super::{COMPACTION_BATCH_EVENTS, MIN_LIVE_HISTORY_EVENTS, maybe_compact_history};
-    use crate::capability_domain::CapabilityDomainRegistry;
+    use crate::capability_domain::build_default_capability_domain_registry;
     use crate::history::schema::{
         ExecutionSucceededHistoryPayload, HistoryActorKind, HistoryEventKind,
         UserMessageHistoryPayload,
@@ -185,18 +178,19 @@ mod tests {
 
     fn test_state() -> SessionState {
         let user_id = "user-a".to_string();
+        let registry = build_default_capability_domain_registry(
+            &std::env::current_dir().expect("current directory for registry"),
+        );
         SessionState::new(
             "session-1".to_string(),
             "agent-a".to_string(),
             vec![user_id.clone()],
             default_agent_profile("agent-a"),
             HashMap::from([(user_id.clone(), default_user_profile(&user_id))]),
-            CapabilityDomainRegistry::default_engaged_capability_domain_ids()
+            registry
+                .installed_capability_domain_ids()
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            CapabilityDomainRegistry::initial_capability_domain_snapshots()
-                .into_iter()
-                .collect::<HashMap<_, _>>(),
         )
     }
 
@@ -222,7 +216,7 @@ mod tests {
                         text: format!("message-{index}"),
                     })
                 } else {
-                    HistoryEventKind::AwaitedExecutionSucceeded(ExecutionSucceededHistoryPayload {
+                    HistoryEventKind::ExecutionSucceeded(ExecutionSucceededHistoryPayload {
                         canonical_action_id: "filesystem__list".to_string(),
                         payload_preview: PayloadPreview {
                             head: "[]".to_string(),

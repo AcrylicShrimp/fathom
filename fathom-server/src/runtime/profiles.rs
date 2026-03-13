@@ -22,32 +22,6 @@ impl Runtime {
         profile.clone()
     }
 
-    pub(crate) async fn list_user_profiles(&self) -> Vec<pb::UserProfile> {
-        let mut profiles = self
-            .inner
-            .user_profiles
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        profiles.sort_by(|a, b| a.user_id.cmp(&b.user_id));
-        profiles
-    }
-
-    pub(crate) async fn list_agent_profiles(&self) -> Vec<pb::AgentProfile> {
-        let mut profiles = self
-            .inner
-            .agent_profiles
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        profiles.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
-        profiles
-    }
-
     pub(crate) async fn upsert_user_profile(
         &self,
         mut profile: pb::UserProfile,

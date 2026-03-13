@@ -1,320 +1,164 @@
-use std::collections::{BTreeMap, VecDeque};
-use std::time::Duration;
-
-use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use crate::capability_domain::{CapabilityDomainRegistry, ResolvedAction};
-use crate::runtime::Runtime;
-use crate::session::execution_context::ExecutionContext;
 use crate::session::state::SessionCommand;
-use crate::util::now_unix_ms;
 
-use fathom_capability_domain::{ActionOutcome, CapabilityDomainSnapshot, FinalizedAction};
+use fathom_capability_domain::{
+    CapabilityActionKey, CapabilityActionResult, CapabilityActionSubmission, DomainInstance,
+};
+use serde_json::Value;
 
-const EXECUTION_TIMEOUT_GRACE_MS: u64 = 250;
+const ACTION_BACKGROUND_KEY: &str = "background";
+
+#[derive(Debug, Clone)]
+pub(crate) struct CapabilityDomainCommittedExecution {
+    pub(crate) execution_id: String,
+    pub(crate) result: CapabilityActionResult,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct CapabilityDomainCommittedAction {
-    pub(crate) execution_id: String,
+    pub(crate) submission_id: String,
     pub(crate) capability_domain_id: String,
-    pub(crate) succeeded: bool,
-    pub(crate) message: String,
-    pub(crate) state_snapshot: CapabilityDomainSnapshot,
+    pub(crate) executions: Vec<CapabilityDomainCommittedExecution>,
 }
 
 #[derive(Clone)]
 pub(crate) struct CapabilityDomainActorHandle {
-    command_tx: mpsc::Sender<CapabilityDomainActorCommand>,
+    command_tx: mpsc::Sender<CapabilityDomainActionSubmission>,
 }
 
 impl CapabilityDomainActorHandle {
     pub(crate) async fn submit(&self, submission: CapabilityDomainActionSubmission) {
-        let _ = self
-            .command_tx
-            .send(CapabilityDomainActorCommand::Submit(submission))
-            .await;
+        let _ = self.command_tx.send(submission).await;
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct CapabilityDomainActionSubmission {
-    pub(crate) execution_id: String,
-    pub(crate) env_seq: u64,
-    pub(crate) resolved_action: ResolvedAction,
-    pub(crate) args_json: String,
-    pub(crate) execution_context: ExecutionContext,
-}
-
-pub(crate) enum CapabilityDomainActorCommand {
-    Submit(CapabilityDomainActionSubmission),
-    ExecutionFinished(CapabilityDomainFinishedExecution),
+    pub(crate) submission_id: String,
+    pub(crate) executions: Vec<CapabilityDomainActionExecution>,
 }
 
 #[derive(Clone)]
-pub(crate) struct CapabilityDomainFinishedExecution {
-    execution_id: String,
-    env_seq: u64,
-    resolved_action: ResolvedAction,
-    args_json: String,
-    outcome: ActionOutcome,
+pub(crate) struct CapabilityDomainActionExecution {
+    pub(crate) execution_id: String,
+    pub(crate) action_key: CapabilityActionKey,
+    pub(crate) args_json: String,
 }
 
 pub(crate) fn spawn_capability_domain_actor(
-    runtime: Runtime,
-    _capability_domain_id: String,
-    initial_snapshot: CapabilityDomainSnapshot,
+    capability_domain_id: String,
+    mut domain_instance: Box<dyn DomainInstance>,
     session_command_tx: mpsc::Sender<SessionCommand>,
 ) -> CapabilityDomainActorHandle {
-    let (command_tx, command_rx) = mpsc::channel(128);
+    let (command_tx, mut command_rx) = mpsc::channel::<CapabilityDomainActionSubmission>(128);
     let handle = CapabilityDomainActorHandle {
         command_tx: command_tx.clone(),
     };
 
-    tokio::spawn(run_capability_domain_actor(
-        runtime,
-        command_tx,
-        command_rx,
-        session_command_tx,
-        initial_snapshot,
-    ));
+    tokio::spawn(async move {
+        while let Some(submission) = command_rx.recv().await {
+            let executions = execute_submission(&mut *domain_instance, &submission).await;
+            let committed = CapabilityDomainCommittedAction {
+                submission_id: submission.submission_id,
+                capability_domain_id: capability_domain_id.clone(),
+                executions,
+            };
+            let _ = session_command_tx
+                .send(SessionCommand::CapabilityDomainActionCommitted { committed })
+                .await;
+        }
+    });
 
     handle
 }
 
-async fn run_capability_domain_actor(
-    runtime: Runtime,
-    command_tx: mpsc::Sender<CapabilityDomainActorCommand>,
-    mut command_rx: mpsc::Receiver<CapabilityDomainActorCommand>,
-    session_command_tx: mpsc::Sender<SessionCommand>,
-    mut snapshot: CapabilityDomainSnapshot,
-) {
-    let mut pending = VecDeque::<CapabilityDomainActionSubmission>::new();
-    let mut completed = BTreeMap::<u64, CapabilityDomainFinishedExecution>::new();
-    let mut running_count = 0usize;
-    let mut next_commit_seq = 1u64;
+async fn execute_submission(
+    domain_instance: &mut dyn DomainInstance,
+    submission: &CapabilityDomainActionSubmission,
+) -> Vec<CapabilityDomainCommittedExecution> {
+    let mut prepared_actions = Vec::new();
+    let mut results = vec![None; submission.executions.len()];
 
-    while let Some(command) = command_rx.recv().await {
-        match command {
-            CapabilityDomainActorCommand::Submit(submission) => {
-                pending.push_back(submission);
-                maybe_start_pending(
-                    &runtime,
-                    &command_tx,
-                    &snapshot,
-                    &mut pending,
-                    &mut running_count,
-                );
-            }
-            CapabilityDomainActorCommand::ExecutionFinished(execution) => {
-                running_count = running_count.saturating_sub(1);
-                completed.insert(execution.env_seq, execution);
-
-                while let Some(done) = completed.remove(&next_commit_seq) {
-                    let finalized = FinalizedAction {
-                        seq: done.env_seq,
-                        canonical_action_id: done.resolved_action.canonical_action_id.clone(),
-                        action_name: done.resolved_action.action_name.clone(),
-                        args_json: done.args_json.clone(),
-                        succeeded: done.outcome.succeeded,
-                        message: done.outcome.message.clone(),
-                        state_patch: done.outcome.state_patch.clone(),
-                    };
-
-                    let (succeeded, message) = match CapabilityDomainRegistry::apply_transition(
-                        &done.resolved_action,
-                        &snapshot.state_json,
-                        &finalized,
-                    ) {
-                        Ok(transition) => {
-                            if let Some(patch) = transition.state_patch {
-                                apply_json_merge_patch(&mut snapshot.state_json, &patch);
-                                (done.outcome.succeeded, done.outcome.message)
-                            } else {
-                                (done.outcome.succeeded, done.outcome.message)
-                            }
-                        }
-                        Err(error) => (false, format!("environment transition failed: {error}")),
-                    };
-
-                    snapshot.updated_at_unix_ms = now_unix_ms();
-
-                    let committed = CapabilityDomainCommittedAction {
-                        execution_id: done.execution_id,
-                        capability_domain_id: done.resolved_action.capability_domain_id,
-                        succeeded,
-                        message,
-                        state_snapshot: snapshot.clone(),
-                    };
-
-                    let _ = session_command_tx
-                        .send(SessionCommand::CapabilityDomainActionCommitted { committed })
-                        .await;
-
-                    next_commit_seq += 1;
-                }
-
-                maybe_start_pending(
-                    &runtime,
-                    &command_tx,
-                    &snapshot,
-                    &mut pending,
-                    &mut running_count,
-                );
-            }
-        }
-    }
-}
-
-fn maybe_start_pending(
-    runtime: &Runtime,
-    command_tx: &mpsc::Sender<CapabilityDomainActorCommand>,
-    snapshot: &CapabilityDomainSnapshot,
-    pending: &mut VecDeque<CapabilityDomainActionSubmission>,
-    running_count: &mut usize,
-) {
-    let max_parallel = runtime.execution_capacity();
-    while *running_count < max_parallel {
-        let Some(submission) = pending.pop_front() else {
-            break;
-        };
-        *running_count += 1;
-
-        let effective_timeout_ms = match submission
-            .resolved_action
-            .timeout_policy
-            .effective_timeout_ms()
-        {
-            Ok(timeout_ms) => timeout_ms,
-            Err(error) => {
-                let finished = CapabilityDomainFinishedExecution {
-                    execution_id: submission.execution_id,
-                    env_seq: submission.env_seq,
-                    resolved_action: submission.resolved_action,
-                    args_json: submission.args_json,
-                    outcome: timeout_policy_failure_outcome(&error),
-                };
-                let command_tx = command_tx.clone();
-                tokio::spawn(async move {
-                    let _ = command_tx
-                        .send(CapabilityDomainActorCommand::ExecutionFinished(finished))
-                        .await;
-                });
-                continue;
-            }
-        };
-
-        let runtime = runtime.clone();
-        let command_tx = command_tx.clone();
-        let capability_domain_state = snapshot.state_json.clone();
-
-        tokio::spawn(async move {
-            let timeout_with_grace_ms =
-                effective_timeout_ms.saturating_add(EXECUTION_TIMEOUT_GRACE_MS);
-            let timeout_duration = Duration::from_millis(timeout_with_grace_ms);
-            let action_future = CapabilityDomainRegistry::execute_action(
-                &runtime,
-                &submission.execution_context,
-                &submission.resolved_action,
-                &submission.args_json,
-                &capability_domain_state,
-                effective_timeout_ms,
-            );
-            let outcome = match tokio::time::timeout(timeout_duration, action_future).await {
-                Ok(Some(outcome)) => outcome,
-                Ok(None) => ActionOutcome {
-                    succeeded: false,
-                    message: format!(
-                        "environment action `{}` execution unavailable",
-                        submission.resolved_action.canonical_action_id
-                    ),
-                    state_patch: None,
+    for (index, execution) in submission.executions.iter().enumerate() {
+        match parse_submission_args(&execution.args_json) {
+            Ok(args) => prepared_actions.push((
+                index,
+                CapabilityActionSubmission {
+                    action_key: execution.action_key,
+                    args,
                 },
-                Err(_) => timeout_exceeded_outcome(
-                    &submission.resolved_action.canonical_action_id,
-                    effective_timeout_ms,
-                ),
-            };
-
-            let finished = CapabilityDomainFinishedExecution {
-                execution_id: submission.execution_id,
-                env_seq: submission.env_seq,
-                resolved_action: submission.resolved_action,
-                args_json: submission.args_json,
-                outcome,
-            };
-
-            let _ = command_tx
-                .send(CapabilityDomainActorCommand::ExecutionFinished(finished))
-                .await;
-        });
-    }
-}
-
-fn timeout_policy_failure_outcome(reason: &str) -> ActionOutcome {
-    ActionOutcome {
-        succeeded: false,
-        message: json!({
-            "ok": false,
-            "error_code": "timeout_policy_invalid",
-            "message": reason,
-        })
-        .to_string(),
-        state_patch: None,
-    }
-}
-
-fn timeout_exceeded_outcome(canonical_action_id: &str, timeout_ms: u64) -> ActionOutcome {
-    ActionOutcome {
-        succeeded: false,
-        message: json!({
-            "ok": false,
-            "error_code": "timeout_exceeded",
-            "canonical_action_id": canonical_action_id,
-            "timeout_ms": timeout_ms,
-            "message": format!("action execution exceeded timeout of {timeout_ms}ms"),
-        })
-        .to_string(),
-        state_patch: None,
-    }
-}
-
-fn apply_json_merge_patch(target: &mut Value, patch: &Value) {
-    if let Value::Object(patch_object) = patch {
-        if !target.is_object() {
-            *target = Value::Object(serde_json::Map::new());
+            )),
+            Err(error) => results[index] = Some(error),
         }
-        let target_object = target
-            .as_object_mut()
-            .expect("target must be object after initialization");
+    }
 
-        for (key, value) in patch_object {
-            if value.is_null() {
-                target_object.remove(key);
-            } else if let Some(target_value) = target_object.get_mut(key) {
-                apply_json_merge_patch(target_value, value);
-            } else {
-                target_object.insert(key.clone(), value.clone());
+    if !prepared_actions.is_empty() {
+        let domain_results = domain_instance
+            .execute_actions(
+                prepared_actions
+                    .iter()
+                    .map(|(_, submission)| submission.clone())
+                    .collect(),
+            )
+            .await;
+
+        if domain_results.len() != prepared_actions.len() {
+            let error = CapabilityActionResult::runtime_error(
+                "invalid_result_count",
+                format!(
+                    "capability domain returned {} results for {} submitted actions",
+                    domain_results.len(),
+                    prepared_actions.len()
+                ),
+                None,
+                0,
+            );
+            for (index, _) in &prepared_actions {
+                results[*index] = Some(error.clone());
+            }
+        } else {
+            for ((index, _), result) in prepared_actions.into_iter().zip(domain_results) {
+                results[index] = Some(result);
             }
         }
-    } else {
-        *target = patch.clone();
     }
+
+    submission
+        .executions
+        .iter()
+        .enumerate()
+        .map(|(index, execution)| CapabilityDomainCommittedExecution {
+            execution_id: execution.execution_id.clone(),
+            result: results[index].clone().unwrap_or_else(|| {
+                CapabilityActionResult::runtime_error(
+                    "missing_execution_result",
+                    "capability domain execution produced no result",
+                    None,
+                    0,
+                )
+            }),
+        })
+        .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::apply_json_merge_patch;
-
-    #[test]
-    fn merge_patch_overwrites_leaf_and_removes_null_fields() {
-        let mut target = json!({"a":1,"b":{"x":2,"y":3},"c":9});
-        let patch = json!({"a":2,"b":{"x":null,"z":4},"c":null});
-
-        apply_json_merge_patch(&mut target, &patch);
-
-        assert_eq!(target, json!({"a":2,"b":{"y":3,"z":4}}));
-    }
+fn parse_submission_args(args_json: &str) -> Result<Value, CapabilityActionResult> {
+    let mut value: Value = serde_json::from_str(args_json).map_err(|error| {
+        CapabilityActionResult::input_error(
+            "invalid_args_json",
+            format!("failed to parse action arguments: {error}"),
+            None,
+            0,
+        )
+    })?;
+    let Value::Object(object) = &mut value else {
+        return Err(CapabilityActionResult::input_error(
+            "invalid_args",
+            "action arguments must be a JSON object",
+            None,
+            0,
+        ));
+    };
+    object.remove(ACTION_BACKGROUND_KEY);
+    Ok(value)
 }

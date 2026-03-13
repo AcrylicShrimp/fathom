@@ -1,4 +1,3 @@
-pub(crate) const ACTION_MAX_TIMEOUT_MS: u64 = 60_000;
 pub(crate) const ACTION_DESIRED_TIMEOUT_MS: u64 = 20_000;
 pub(crate) const DEFAULT_MAX_STDOUT_BYTES: usize = 65_536;
 pub(crate) const DEFAULT_MAX_STDERR_BYTES: usize = 65_536;

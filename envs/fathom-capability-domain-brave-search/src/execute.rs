@@ -2,7 +2,7 @@ mod error;
 mod http;
 mod result;
 
-use fathom_capability_domain::ActionOutcome;
+use fathom_capability_domain::CapabilityActionResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -22,14 +22,14 @@ pub async fn execute_action(
     args_json: &str,
     _environment_state: &Value,
     execution_timeout_ms: u64,
-) -> Option<ActionOutcome> {
+) -> Option<CapabilityActionResult> {
     match action_name {
         "web_search" => Some(execute_web_search(args_json, execution_timeout_ms).await),
         _ => None,
     }
 }
 
-async fn execute_web_search(args_json: &str, execution_timeout_ms: u64) -> ActionOutcome {
+async fn execute_web_search(args_json: &str, execution_timeout_ms: u64) -> CapabilityActionResult {
     let args = match parse_args::<WebSearchArgs>(args_json, "brave_search__web_search") {
         Ok(args) => args,
         Err(error) => return result::failure("web_search", &error, None),

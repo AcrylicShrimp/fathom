@@ -38,11 +38,10 @@ impl ExecutionsEventsTab {
             } if matches!(
                 phase.as_str(),
                 "arguments.ready"
-                    | "awaited_execution_succeeded"
-                    | "awaited_execution_failed"
-                    | "execution_detached"
-                    | "detached_execution_succeeded"
-                    | "detached_execution_failed"
+                    | "execution_succeeded"
+                    | "execution_failed"
+                    | "execution_backgrounded"
+                    | "execution_canceled"
                     | "execution_rejected"
             )
         ) || matches!(
@@ -357,13 +356,13 @@ mod tests {
         tab.on_event(&EventRecord::Session {
             session_id: "s1".to_string(),
             kind: SessionEventRecordKind::ExecutionUpdate {
-                phase: "execution_detached".to_string(),
+                phase: "execution_backgrounded".to_string(),
                 call_key: "call-1".to_string(),
                 call_id: "fc_1".to_string(),
                 action_id: "shell__run".to_string(),
                 execution_id: "execution-1".to_string(),
-                args_preview: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
-                detail: "submitted action `shell__run` as execution-1 (running) mode=detach"
+                args_preview: r#"{"command":"pwd","background":true}"#.to_string(),
+                detail: "submitted action `shell__run` as execution-1 (running) background=true"
                     .to_string(),
             },
         });
@@ -373,8 +372,8 @@ mod tests {
                 execution_id: "execution-1".to_string(),
                 action_id: "shell__run".to_string(),
                 status: "succeeded".to_string(),
-                args_json: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
-                args_preview: r#"{"command":"pwd","execution_mode":"detach"}"#.to_string(),
+                args_json: r#"{"command":"pwd","background":true}"#.to_string(),
+                args_preview: r#"{"command":"pwd","background":true}"#.to_string(),
                 result_message: String::new(),
                 result_preview: String::new(),
             },

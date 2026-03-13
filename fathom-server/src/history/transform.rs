@@ -1,13 +1,13 @@
 use fathom_capability_domain::parse_action_id;
 
-use crate::capability_domain::{RequestedExecutionMode, requested_execution_mode_from_args_json};
-use crate::history::EXECUTION_PAYLOAD_LOOKUP_ACTION;
+use crate::history::EXECUTION_INPUT_LOOKUP_ACTION;
 use crate::history::preview::build_payload_preview;
 use crate::history::schema::{
-    AssistantOutputHistoryPayload, CronHistoryPayload, ExecutionDetachedHistoryPayload,
-    ExecutionFailedHistoryPayload, ExecutionRejectedHistoryPayload,
-    ExecutionRequestedHistoryPayload, ExecutionSucceededHistoryPayload, HistoryActorKind,
-    HistoryEvent, HistoryEventKind, RefreshProfileHistoryPayload, UserMessageHistoryPayload,
+    AssistantOutputHistoryPayload, CronHistoryPayload, ExecutionBackgroundedHistoryPayload,
+    ExecutionCanceledHistoryPayload, ExecutionFailedHistoryPayload,
+    ExecutionRejectedHistoryPayload, ExecutionRequestedHistoryPayload,
+    ExecutionSucceededHistoryPayload, HistoryActorKind, HistoryEvent, HistoryEventKind,
+    RefreshProfileHistoryPayload, UserMessageHistoryPayload,
 };
 use crate::session::state::SessionState;
 use fathom_protocol::pb;
@@ -101,10 +101,7 @@ pub(crate) fn execution_requested_line(
         .map(execution_status_label)
         .unwrap_or("unknown");
     let (capability_domain_id, action_name) = parse_action_identity(&execution.action_id);
-    let execution_mode = requested_execution_mode_from_args_json(&execution.args_json)
-        .unwrap_or(RequestedExecutionMode::Await)
-        .as_str()
-        .to_string();
+    let background = background_requested_from_args_json(&execution.args_json);
 
     HistoryEvent {
         ts_unix_ms: execution.updated_at_unix_ms,
@@ -115,16 +112,24 @@ pub(crate) fn execution_requested_line(
             canonical_action_id: execution.action_id.clone(),
             capability_domain_id,
             action_name,
-            execution_mode,
+            background,
             status: status.to_string(),
             args_preview,
-            lookup_action: EXECUTION_PAYLOAD_LOOKUP_ACTION.to_string(),
+            lookup_action: EXECUTION_INPUT_LOOKUP_ACTION.to_string(),
         }),
     }
 }
 
 fn parse_action_identity(action_id: &str) -> (String, String) {
     parse_action_id(action_id).unwrap_or_else(|| ("unknown".to_string(), action_id.to_string()))
+}
+
+fn background_requested_from_args_json(args_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(args_json)
+        .ok()
+        .and_then(|value| value.get("background").cloned())
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 fn execution_update_history_kind(update: &pb::ExecutionUpdateTrigger) -> HistoryEventKind {
@@ -140,39 +145,29 @@ fn execution_update_history_kind(update: &pb::ExecutionUpdateTrigger) -> History
         .unwrap_or(pb::ExecutionUpdateKind::Unspecified);
 
     match kind {
-        pb::ExecutionUpdateKind::AwaitedExecutionSucceeded => {
-            HistoryEventKind::AwaitedExecutionSucceeded(ExecutionSucceededHistoryPayload {
+        pb::ExecutionUpdateKind::ExecutionSucceeded => {
+            HistoryEventKind::ExecutionSucceeded(ExecutionSucceededHistoryPayload {
                 canonical_action_id: update.action_id.clone(),
                 payload_preview: payload_preview.unwrap_or_else(|| {
                     build_payload_preview("", format!("execution://{}/result", update.execution_id))
                 }),
             })
         }
-        pb::ExecutionUpdateKind::AwaitedExecutionFailed => {
-            HistoryEventKind::AwaitedExecutionFailed(ExecutionFailedHistoryPayload {
+        pb::ExecutionUpdateKind::ExecutionFailed => {
+            HistoryEventKind::ExecutionFailed(ExecutionFailedHistoryPayload {
                 canonical_action_id: update.action_id.clone(),
                 message: update.message.clone(),
                 payload_preview,
             })
         }
-        pb::ExecutionUpdateKind::ExecutionDetached => {
-            HistoryEventKind::ExecutionDetached(ExecutionDetachedHistoryPayload {
+        pb::ExecutionUpdateKind::ExecutionBackgrounded => {
+            HistoryEventKind::ExecutionBackgrounded(ExecutionBackgroundedHistoryPayload {
                 canonical_action_id: update.action_id.clone(),
             })
         }
-        pb::ExecutionUpdateKind::DetachedExecutionSucceeded => {
-            HistoryEventKind::DetachedExecutionSucceeded(ExecutionSucceededHistoryPayload {
+        pb::ExecutionUpdateKind::ExecutionCanceled => {
+            HistoryEventKind::ExecutionCanceled(ExecutionCanceledHistoryPayload {
                 canonical_action_id: update.action_id.clone(),
-                payload_preview: payload_preview.unwrap_or_else(|| {
-                    build_payload_preview("", format!("execution://{}/result", update.execution_id))
-                }),
-            })
-        }
-        pb::ExecutionUpdateKind::DetachedExecutionFailed => {
-            HistoryEventKind::DetachedExecutionFailed(ExecutionFailedHistoryPayload {
-                canonical_action_id: update.action_id.clone(),
-                message: update.message.clone(),
-                payload_preview,
             })
         }
         pb::ExecutionUpdateKind::ExecutionRejected | pb::ExecutionUpdateKind::Unspecified => {
