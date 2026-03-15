@@ -84,7 +84,6 @@ impl DomainFactory for ShellDomainFactory {
                 title: "Start longer-running shell work".to_string(),
                 steps: vec![
                     "Use `shell__run` when the command may continue beyond the current turn.".to_string(),
-                    "Request detached execution only when the result is not required before responding.".to_string(),
                     "Keep the command and working directory focused so later status and result updates remain interpretable.".to_string(),
                 ],
             },
